@@ -17,7 +17,7 @@ SECRET_KEY = os.getenv(
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv("DEBUG", "True") == "True"
 
-# Railway / local / ngrok hosts via env
+# Hosts via env (local + cloud)
 ALLOWED_HOSTS = os.getenv(
     "ALLOWED_HOSTS",
     "localhost,127.0.0.1,192.168.0.105,0.0.0.0,.ngrok-free.dev,unsickerly-unbeclouded-cherish.ngrok-free.dev"
@@ -68,14 +68,14 @@ CORS_ALLOW_HEADERS = [
 ]
 CORS_ALLOW_CREDENTIALS = True
 
-# CSRF Trusted Origins (Railway domain include karo)
+# CSRF Trusted Origins (Render + others)
 CSRF_TRUSTED_ORIGINS = [
     'http://localhost:3000',
     'http://localhost:3001',
     'https://unsickerly-unbeclouded-cherish.ngrok-free.dev',
     'https://atom-dashboard-ui.vercel.app',
     'https://atom-dashboard-99yh8cbss-atomones-projects.vercel.app',
-    'https://web-production-7dc1b.up.railway.app',   # <-- apna Railway URL
+    'https://<your-render-service>.onrender.com',  # yahan apna exact Render URL daal
 ]
 
 # REST Framework
@@ -114,7 +114,7 @@ DATABASES = {
         'NAME': os.getenv('DB_NAME', 'Atomone'),
         'USER': os.getenv('DB_USER', 'postgres'),
         'PASSWORD': os.getenv('DB_PASSWORD', 'atomone'),
-        'HOST': os.getenv('DB_HOST', '192.168.0.35'),  # Railway ke liye public IP/domain
+        'HOST': os.getenv('DB_HOST', '192.168.0.35'),  # cloud / public IP yahan
         'PORT': os.getenv('DB_PORT', '5432'),
         'OPTIONS': {
             'options': '-c default_transaction_isolation=serializable -c timezone=Asia/Kolkata'
