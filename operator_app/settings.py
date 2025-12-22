@@ -15,7 +15,7 @@ SECRET_KEY = os.getenv(
 )
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True  # TEMP: Render par error diagnose karne ke liye
+DEBUG = "True"  # TEMP: Render par error diagnose karne ke liye
 
 # Hosts via env (local + cloud)
 ALLOWED_HOSTS = os.getenv(
