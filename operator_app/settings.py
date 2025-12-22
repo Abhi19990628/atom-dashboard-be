@@ -75,7 +75,7 @@ CSRF_TRUSTED_ORIGINS = [
     'https://unsickerly-unbeclouded-cherish.ngrok-free.dev',
     'https://atom-dashboard-ui.vercel.app',
     'https://atom-dashboard-99yh8cbss-atomones-projects.vercel.app',
-    'https://<your-render-service>.onrender.com',  # yahan apna exact Render URL daal
+    'https://atom-dashboard-be.onrender.com',
 ]
 
 # REST Framework
