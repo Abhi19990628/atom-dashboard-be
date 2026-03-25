@@ -1,5 +1,6 @@
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
+from django.db import transaction
 from django.db import connection
 from .models import OperatorAssignment, IdleReport
 from datetime import datetime, timedelta
@@ -11,6 +12,11 @@ from apps.machines.machine_state import MACHINE_STATE
 from .models import Plant2HourlyIdletime 
 from apps.mqtt.simple_plant2 import EXACT_REQUIREMENT_STATE
 from apps.data_storage.hourly_idle_tracker import HOURLY_IDLE_TRACKER
+from rest_framework.views import APIView
+from rest_framework import status
+from .serializers import InspectionReportSerializer
+from .models import InspectionReport
+from .models import MachineChecksheetReport, MachineChecksheetObservation
 import pytz
 
 @api_view(['GET'])
@@ -3167,3 +3173,258 @@ def plant2_hourly_idle_summary(request):
             'error': str(e),
             'data': []
         }, status=500)
+        
+
+
+
+
+
+
+from django.http import JsonResponse
+from django.utils import timezone
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+
+# Import All Relevant Models and Serializer
+from .models import InspectionReport, L1_PartInfoMaster, L2_ProcessReportMaster, L3_ParameterDetailMaster
+from .serializers import InspectionReportSerializer
+
+
+# ==================================================
+# 🟢 1. DROPDOWN API (Connects to L1 and L2 Models)
+# ==================================================
+class MasterDropdownView(APIView):
+    def get(self, request):
+        filter_type = request.query_params.get('filter') 
+        
+        if filter_type == 'customer':
+            data = L1_PartInfoMaster.objects.values_list('customer_name', flat=True).distinct()
+            return Response(list(data))
+            
+        elif filter_type == 'part':
+            cust = request.query_params.get('cust')
+            data = L1_PartInfoMaster.objects.filter(customer_name=cust).values_list('part_name', flat=True).distinct()
+            return Response(list(data))
+
+        elif filter_type == 'operation':
+            cust = request.query_params.get('cust')
+            part = request.query_params.get('part')
+            ops = L2_ProcessReportMaster.objects.filter(
+                part_info__customer_name=cust, 
+                part_info__part_name=part
+            ).values_list('report_name', flat=True).distinct()
+            return Response(list(ops))
+        
+        return Response([])
+
+
+# ==================================================
+# 🟢 2. AUTO-FILL PARAMETERS API (Connects to L3 Model)
+# ==================================================
+class MasterParametersView(APIView):
+    def get(self, request):
+        cust = request.query_params.get('customer')
+        part = request.query_params.get('part')
+        op_name = request.query_params.get('operation')
+        
+        if not all([cust, part, op_name]):
+            return Response({"error": "Missing filters"}, status=400)
+
+        process = L2_ProcessReportMaster.objects.filter(
+            part_info__customer_name=cust,
+            part_info__part_name=part,
+            report_name=op_name
+        ).first()
+
+        if not process: 
+            return Response({"error": "Process Not Found in Master Data"}, status=404)
+
+        params = L3_ParameterDetailMaster.objects.filter(process_report=process).order_by('id')
+        
+        product_list = []
+        process_list = []
+        prod_sr = 1
+        proc_sr = 11
+
+        for p in params:
+            raw_spec = p.specification or ""
+            final_spec = raw_spec
+            final_tol = "-"
+
+            if "±" in raw_spec:
+                parts = raw_spec.split("±", 1)
+                final_spec = parts[0].strip()          
+                final_tol = "± " + parts[1].strip()    
+                
+            elif "+" in raw_spec:
+                parts = raw_spec.split("+", 1)
+                final_spec = parts[0].strip()
+                final_tol = "+" + parts[1].strip()
+
+            item_data = {
+                "item": p.parameter_name,
+                "spec": final_spec,
+                "tol": final_tol,
+                "instr": p.instrument,
+                "category": p.category
+            }
+
+            if p.category == 'PRODUCT':
+                item_data['sr_no'] = prod_sr
+                product_list.append(item_data)
+                prod_sr += 1
+            else:
+                item_data['sr_no'] = proc_sr
+                process_list.append(item_data)
+                proc_sr += 1
+
+        return Response({
+            "productItems": product_list,
+            "processItems": process_list,
+            "part_number": process.part_info.part_no, 
+            "model_name": process.part_info.model_name
+        })
+
+
+# ==================================================
+# 🟢 3. SAVE INSPECTION REPORT API (Fixed for your Model)
+# ==================================================
+class SaveInspectionReportView(APIView):
+    def post(self, request):
+        try:
+            data = request.data
+            master = data.get('master_data', {})
+            logs = data.get('logs', [])
+            
+            date_val = master.get('date') or timezone.now().date()
+            cust = master.get('customer', 'Unknown')
+            part = master.get('part_name', 'Unknown')
+            op = master.get('operation', 'Unknown')
+            part_no = master.get('part_number', 'N/A')
+            plant = master.get('plant_location', 'PLANT 1')
+
+            # Get the latest operator and machine from the currently active log
+            current_operator = logs[-1].get('operator', 'Unknown') if logs else 'Unknown'
+            current_machine = logs[-1].get('machine', 'N/A') if logs else 'N/A'
+
+            # 🔥 SMART LOGIC: Check if report exists for today
+            report, created = InspectionReport.objects.get_or_create(
+                customer_account=cust,
+                part_name=part,
+                operation=op,
+                inspection_date=date_val,
+                defaults={
+                    'part_number': part_no,
+                    'plant_location': plant,
+                    'operator_name': current_operator, # Required by your model
+                    'machine_number': current_machine, # Required by your model
+                    'inspection_data': {}
+                }
+            )
+
+            # Update top level info if it changed
+            report.operator_name = current_operator
+            report.machine_number = current_machine
+
+            # 🔥 THE MAGIC: Save ALL stages (Setup, 4Hr, Last) cleanly into JSONField
+            report.inspection_data = {
+                "parameters": data.get('parameters', []),
+                "logs": logs
+            }
+            
+            # Save to Database
+            report.save()
+
+            if created:
+                msg = "✅ New Report Created Successfully!"
+            else:
+                msg = "✅ Report Updated Successfully! (New Stage Added)"
+
+            return Response({"message": msg, "report_id": report.id}, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            print("Django Error: ", str(e)) 
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# ==================================================
+# 🟢 4. FETCH PREVIOUS REPORT API
+# ==================================================
+class GetInspectionReportView(APIView):
+    def get(self, request):
+        customer = request.query_params.get('customer', None)
+        part_name = request.query_params.get('part_name', None)
+        operation = request.query_params.get('operation', None)
+        date = request.query_params.get('date', None)
+
+        filters = {}
+        if customer: filters['customer_account__icontains'] = customer
+        if part_name: filters['part_name__icontains'] = part_name
+        if operation: filters['operation__icontains'] = operation
+        if date: filters['inspection_date'] = date
+
+        reports = InspectionReport.objects.filter(**filters).order_by('-id')
+
+        if reports.exists():
+             latest_report = reports.first() 
+             serializer = InspectionReportSerializer(latest_report)
+             return Response(serializer.data, status=status.HTTP_200_OK)
+        else:
+             return Response({"message": "No report found for given filters"}, status=status.HTTP_404_NOT_FOUND)
+         
+         
+# ==================================================
+# 🟢 5. SAVE DAILY MACHINE CHECK SHEET (POKA-YOKE)
+# ==================================================
+class SaveMachineChecksheetView(APIView):
+    @transaction.atomic  # 
+    def post(self, request):
+        try:
+            data = request.data
+            
+            # 1. Main Report Create Karo (Parent Table)
+            report = MachineChecksheetReport.objects.create(
+                date=data.get('date', timezone.now().date()),
+                plant_name=data.get('plant_name', 'Plant 1'),
+                machine_no=data.get('machine_no', ''),
+                checked_by_maintenance=data.get('checked_by_maintenance', ''),
+                verified_by_production=data.get('verified_by_production', '')
+            )
+
+            # 2. Check Parameters (Poka-Yoke details) Extract Karo (Child Table)
+            check_points_data = data.get('check_points', [])
+            observations = []
+            
+            # Loop chala kar saare points ko list mein daalo
+            for index, item in enumerate(check_points_data):
+                observations.append(
+                    MachineChecksheetObservation(
+                        report=report,
+                        s_no=item.get('s_no', index + 1), # Agar frontend se s_no nahi aaya toh loop ka number le lega
+                        poka_yoke_detail=item.get('poka_yoke_detail', ''),
+                        checking_method=item.get('checking_method', ''),
+                        reference_sop=item.get('reference_sop', ''),
+                        is_ok=item.get('is_ok', True),
+                        remarks=item.get('remarks', '')
+                    )
+                )
+            
+            # Bulk create: Ek hi baar mein saare parameters database mein save kar dega (Fast performance)
+            if observations:
+                MachineChecksheetObservation.objects.bulk_create(observations)
+
+            return Response({
+                "success": True, 
+                "message": "✅ Daily Checksheet Saved Successfully!", 
+                "report_id": report.id
+            }, status=status.HTTP_201_CREATED)
+
+        except Exception as e:
+            print("❌ Django Error (Checksheet Save): ", str(e))
+            import traceback
+            traceback.print_exc()
+            return Response({
+                "success": False, 
+                "error": str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

@@ -128,7 +128,7 @@ def on_message(client, userdata, msg):
 
 
 def start_test_listener():
-    print("\n" + "🎯"*35)
+    print("\n" + "🎯"*35)   
     print("J-MAPPING JSON MESSAGE TESTER")
     print("🎯"*35)
     print("\n📋 J-GROUP MAPPING:")
@@ -138,7 +138,7 @@ def start_test_listener():
     print("   J1: Machines 16-20")
     print("   J5: Machines 41-46")
     print("\n🔍 Looking for JSON messages:")
-    print("   Format: {\"client_id\": \"217\", \"card\": \"...\", \"die_height\": \"588.01\"}")
+    print("   Format: {\"client_id\": x217\", \"card\": \"...\", \"die_height\": \"588.01\"}")
     print("\n⏳ Connecting to broker...")
     
     client = mqtt.Client(client_id="j_mapping_tester", protocol=mqtt.MQTTv311)
