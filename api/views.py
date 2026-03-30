@@ -16,7 +16,10 @@ from rest_framework.views import APIView
 from rest_framework import status
 from .serializers import InspectionReportSerializer
 from .models import InspectionReport
+from django.views.decorators.csrf import csrf_exempt  # ← ADD THIS LINE
+from django.views.decorators.http import require_http_methods
 from .models import MachineChecksheetReport, MachineChecksheetObservation
+import json
 import pytz
 
 @api_view(['GET'])
@@ -3428,3 +3431,57 @@ class SaveMachineChecksheetView(APIView):
                 "success": False, 
                 "error": str(e)
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+@never_cache
+@api_view(['GET'])
+def get_today_pokayoke_data(request):
+    """Simple version - No observations/check_points"""
+    try:
+        plant_name = request.GET.get('plant_name')
+        date_str = request.GET.get('date')
+
+        if not plant_name:
+            return Response({'success': False, 'error': 'plant_name is required'}, status=400)
+
+        # Safe date handling
+        if date_str:
+            try:
+                filter_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+            except ValueError:
+                filter_date = datetime.now().date()
+        else:
+            filter_date = datetime.now().date()
+
+        # Get only main report data (no related observations)
+        queryset = MachineChecksheetReport.objects.filter(
+            plant_name=plant_name,
+            date=filter_date
+        ).order_by('-created_at')
+
+        data_list = []
+        for report in queryset:
+            data_list.append({
+                'id': report.id,
+                'date': str(report.date),
+                'plant_name': report.plant_name,
+                'machine_no': report.machine_no,
+                'checked_by_maintenance': report.checked_by_maintenance or 'Not provided',
+                'verified_by_production': report.verified_by_production or 'Not provided',
+            })
+
+        return Response({
+            'success': True,
+            'count': len(data_list),
+            'data': data_list,
+            'plant_name': plant_name,
+            'date': str(filter_date)
+        })
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return Response({
+            'success': False,
+            'error': str(e),
+            'data': []
+        }, status=500)

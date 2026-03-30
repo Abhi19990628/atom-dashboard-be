@@ -6,6 +6,7 @@ from .views import SaveMachineChecksheetView
 
 urlpatterns = [
     # Dashboard APIs
+   
     path('dashboard/', views.get_dashboard_data, name='get_dashboard_data'),
     path('available-dates/', views.get_available_dates, name='get_available_dates'),
     path('dashboard-tables/', views.get_assignment_idle_data, name='get_assignment_idle_data'),
@@ -49,5 +50,8 @@ urlpatterns = [
     path('master-dropdown/', MasterDropdownView.as_view(), name='master_dropdown'),
     path('master-parameters/', MasterParametersView.as_view(), name='master_parameters'),
     path('save-checksheet/', SaveMachineChecksheetView.as_view(), name='save_checksheet'),
+#path('save-checksheet/', SaveMachineChecksheetView.as_view(), name='save_checksheet'),
+    path('get_today_pokayoke_data/', views.get_today_pokayoke_data, name='get_today_pokayoke_data'),
+  #  path('get-machines-with-data/', views.get_machines_with_data, name='get_machines_with_data'),
 ]
 
