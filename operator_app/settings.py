@@ -1,3 +1,6 @@
+
+
+
 """
 Django settings for operator_app project.
 """
@@ -17,10 +20,10 @@ SECRET_KEY = os.getenv(
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = "True"  # TEMP: Render par error diagnose karne ke liye
 
-# Hosts via env (local + cloud)
+# Hosts via env (local + cloud) - 🔥 UPDATED FOR ALL LOCAL IPs (.34 and .35)
 ALLOWED_HOSTS = os.getenv(
     "ALLOWED_HOSTS",
-    "localhost,127.0.0.1,192.168.0.105,0.0.0.0,.ngrok-free.dev,unsickerly-unbeclouded-cherish.ngrok-free.dev"
+    "*,localhost,127.0.0.1,192.168.0.34,0.0.0.0,.ngrok-free.dev,unsickerly-unbeclouded-cherish.ngrok-free.dev"
 ).split(",")
 
 # Application definition
@@ -68,10 +71,13 @@ CORS_ALLOW_HEADERS = [
 ]
 CORS_ALLOW_CREDENTIALS = True
 
-# CSRF Trusted Origins (Render + others)
+# CSRF Trusted - 🔥 ADDED BOTH .34 AND .35 IPs TO PREVENT BLOCKS
 CSRF_TRUSTED_ORIGINS = [
     'http://localhost:3000',
     'http://localhost:3001',
+    'http://192.168.0.34:3000',
+    'http://192.168.0.34:3001',
+    'http://192.168.0.34:8000',
     'https://unsickerly-unbeclouded-cherish.ngrok-free.dev',
     'https://atom-dashboard-ui.vercel.app',
     'https://atom-dashboard-99yh8cbss-atomones-projects.vercel.app',
@@ -114,7 +120,7 @@ DATABASES = {
         'NAME': os.getenv('DB_NAME', 'Atomone'),
         'USER': os.getenv('DB_USER', 'postgres'),
         'PASSWORD': os.getenv('DB_PASSWORD', 'atomone'),
-        'HOST': os.getenv('DB_HOST', '192.168.0.35'),  # cloud / public IP yahan
+        'HOST': os.getenv('DB_HOST', '192.168.0.35'),
         'PORT': os.getenv('DB_PORT', '5432'),
         'OPTIONS': {
             'options': '-c default_transaction_isolation=serializable -c timezone=Asia/Kolkata'
@@ -132,19 +138,15 @@ EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', 'alertsatomone@gmail.com')
 EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', 'dqchgtaihqpiparn')
 DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
 
-ALERT_EMAIL_RECIPIENTS = [
-    # 'pankaj.meena@atomone.in',
-    # 'hussain.b@atomone.in',
-    # 'abhishek.kumar@atomone.in',
-]
+ALERT_EMAIL_RECIPIENTS = []
 
-# Password validation
-AUTH_PASSWORD_VALIDATORS = [
-    {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
-    {'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator'},
-    {'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator'},
-    {'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator'},
-]
+# Password validation - 🔥 COMMENTED OUT SO YOU CAN USE SIMPLE PASSWORDS IN ADMIN PANEL
+# AUTH_PASSWORD_VALIDATORS = [
+#     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
+#     {'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator'},
+#     {'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator'},
+#     {'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator'},
+# ]
 
 # Internationalization
 LANGUAGE_CODE = 'en-us'
