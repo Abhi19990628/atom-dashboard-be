@@ -53,5 +53,11 @@ urlpatterns = [
 #path('save-checksheet/', SaveMachineChecksheetView.as_view(), name='save_checksheet'),
     path('get_today_pokayoke_data/', views.get_today_pokayoke_data, name='get_today_pokayoke_data'),
   #  path('get-machines-with-data/', views.get_machines_with_data, name='get_machines_with_data'),
+
+      path('api/plant-wise-total/', views.get_plant_wise_total, name='plant_wise_total'),
+    path('api/monthly-summary/', views.get_monthly_summary, name='monthly_summary'),
+    path('api/machine-wise/', views.get_machine_wise_production, name='machine_wise'),
+    path('api/machine-analysis/', views.get_machine_analysis, name='machine_analysis'),
+    path('api/date-range/', views.get_date_range, name='date_range'),
 ]
 

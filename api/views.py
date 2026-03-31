@@ -2,6 +2,7 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from django.db import transaction
 from django.db import connection
+from django.db.models import Sum,Count
 from .models import OperatorAssignment, IdleReport
 from datetime import datetime, timedelta
 from apps.mqtt.mqtt_client import PLANT1_TOPICS, PLANT2_TOPICS
@@ -3485,3 +3486,428 @@ def get_today_pokayoke_data(request):
             'error': str(e),
             'data': []
         }, status=500)
+
+
+
+#gfrom rest_framework.decorators import api_view
+from rest_framework.response import Response
+from django.db import connection
+from datetime import datetime, timedelta
+from calendar import monthrange
+from django.utils import timezone
+
+# ============================================
+# 1. MACHINE ANALYSIS - USING YOUR EXACT QUERY
+# ============================================
+@api_view(['GET'])
+def get_machine_analysis(request):
+    """
+    Get machine analysis using EXACT query logic from your screenshot
+    URL: /api/machine-analysis/?plant=plant1&machine_no=42&month=3&year=2026
+    """
+    plant = request.GET.get('plant', 'plant1')
+    machine_no = request.GET.get('machine_no')
+    month = int(request.GET.get('month', datetime.now().month))
+    year = int(request.GET.get('year', datetime.now().year))
+    
+    if not machine_no:
+        return Response({'error': 'machine_no required'}, status=400)
+    
+    try:
+        with connection.cursor() as cursor:
+            # EXACT query from your screenshot - but filtered for specific machine
+            cursor.execute(f"""
+                SELECT 
+                    -- Production Total
+                    COALESCE(SUM(count), 0) as total_production,
+                    
+                    -- Idle Total
+                    COALESCE(SUM(idle_time), 0) as total_idle_minutes,
+                    ROUND(COALESCE(SUM(idle_time), 0) / 60, 2) as total_idle_hours,
+                    
+                    -- Shutdown Days (days with production = 0)
+                    COUNT(DISTINCT CASE WHEN count = 0 THEN DATE(timestamp) END) as shutdown_days,
+                    
+                    -- Active Days
+                    COUNT(DISTINCT CASE WHEN count > 0 THEN DATE(timestamp) END) as active_days,
+                    
+                    -- Days with Data
+                    COUNT(DISTINCT DATE(timestamp)) as days_with_data
+                    
+                FROM {plant}_data
+                WHERE machine_no = %s
+                  AND EXTRACT(YEAR FROM timestamp) = %s 
+                  AND EXTRACT(MONTH FROM timestamp) = %s
+                GROUP BY machine_no
+            """, [machine_no, year, month])
+            
+            row = cursor.fetchone()
+            
+            if not row:
+                return Response({'error': 'No data found'}, status=404)
+            
+            total_production = row[0] or 0
+            total_idle_minutes = row[1] or 0
+            total_idle_hours = row[2] or 0
+            shutdown_days = row[3] or 0
+            active_days = row[4] or 0
+            days_with_data = row[5] or 0
+            
+            # Calculate days in month
+            days_in_month = monthrange(year, month)[1]
+            inactive_days = days_in_month - active_days
+            days_without_data = days_in_month - days_with_data
+            
+            # Calculate percentages
+            active_percentage = round((active_days / days_in_month) * 100, 2) if days_in_month > 0 else 0
+            inactive_percentage = round((inactive_days / days_in_month) * 100, 2) if days_in_month > 0 else 0
+            
+            # Get daily breakdown for chart
+            cursor.execute(f"""
+                SELECT 
+                    DATE(timestamp) as day,
+                    COALESCE(SUM(count), 0) as production,
+                    COALESCE(SUM(idle_time), 0) as idle_minutes,
+                    ROUND(COALESCE(SUM(idle_time), 0) / 60, 2) as idle_hours
+                FROM {plant}_data
+                WHERE machine_no = %s
+                  AND EXTRACT(YEAR FROM timestamp) = %s 
+                  AND EXTRACT(MONTH FROM timestamp) = %s
+                GROUP BY DATE(timestamp)
+                ORDER BY day
+            """, [machine_no, year, month])
+            
+            daily_rows = cursor.fetchall()
+            
+            # Create daily breakdown dictionary
+            daily_dict = {}
+            for daily_row in daily_rows:
+                day_date = daily_row[0]
+                daily_dict[day_date.day] = {
+                    'production': daily_row[1],
+                    'idle_minutes': daily_row[2],
+                    'idle_hours': daily_row[3],
+                    'has_data': True
+                }
+            
+            # Build complete daily breakdown for all days in month
+            daily_breakdown = []
+            for day in range(1, days_in_month + 1):
+                if day in daily_dict:
+                    daily_breakdown.append({
+                        'day': day,
+                        'production': daily_dict[day]['production'],
+                        'idle_minutes': daily_dict[day]['idle_minutes'],
+                        'idle_hours': daily_dict[day]['idle_hours'],
+                        'has_data': True
+                    })
+                else:
+                    daily_breakdown.append({
+                        'day': day,
+                        'production': 0,
+                        'idle_minutes': 0,
+                        'idle_hours': 0,
+                        'has_data': False
+                    })
+            
+            # Determine machine status
+            if active_percentage >= 70:
+                status = 'Operational'
+            elif active_percentage >= 30:
+                status = 'Needs Attention'
+            else:
+                status = 'Critical'
+            
+            return Response({
+                'machine_info': {
+                    'machine_no': int(machine_no),
+                    'machine_id': f"M-{str(machine_no).zfill(2)}",
+                    'plant': plant,
+                    'month': month,
+                    'year': year,
+                    'month_name': datetime(year, month, 1).strftime('%B'),
+                    'days_in_month': days_in_month
+                },
+                'production_summary': {
+                    'total_production': total_production,
+                    'active_days': active_days,
+                    'shutdown_days': shutdown_days,
+                    'days_with_data': days_with_data,
+                    'average_daily': round(total_production / days_in_month, 2),
+                    'average_on_active_days': round(total_production / active_days, 2) if active_days > 0 else 0
+                },
+                'idle_summary': {
+                    'total_idle_minutes': total_idle_minutes,
+                    'total_idle_hours': total_idle_hours,
+                    'average_idle_per_day': round(total_idle_minutes / days_in_month, 2),
+                    'average_idle_hours_per_day': round(total_idle_hours / days_in_month, 2)
+                },
+                'machine_status': {
+                    'active_days': active_days,
+                    'inactive_days': inactive_days,
+                    'shutdown_days': shutdown_days,
+                    'days_without_data': days_without_data,
+                    'active_percentage': active_percentage,
+                    'inactive_percentage': inactive_percentage,
+                    'status': status
+                },
+                'daily_breakdown': daily_breakdown
+            })
+            
+    except Exception as e:
+        return Response({'error': str(e)}, status=500)
+
+
+# ============================================
+# 2. MACHINE WISE PRODUCTION - USING YOUR EXACT QUERY
+# ============================================
+@api_view(['GET'])
+def get_machine_wise_production(request):
+    """
+    Get machine-wise production using EXACT query logic from your screenshot
+    URL: /api/machine-wise/?plant=plant1&month=3&year=2026
+    """
+    plant = request.GET.get('plant', 'plant1')
+    month = int(request.GET.get('month', datetime.now().month))
+    year = int(request.GET.get('year', datetime.now().year))
+    
+    try:
+        with connection.cursor() as cursor:
+            # EXACT query from your screenshot
+            cursor.execute(f"""
+                SELECT 
+                    machine_no,
+                    
+                    -- Production Total
+                    COALESCE(SUM(count), 0) as total_production,
+                    
+                    -- Idle Total
+                    COALESCE(SUM(idle_time), 0) as total_idle_minutes,
+                    ROUND(COALESCE(SUM(idle_time), 0) / 60, 2) as total_idle_hours,
+                    
+                    -- Shutdown Days (days with production = 0)
+                    COUNT(DISTINCT CASE WHEN count = 0 THEN DATE(timestamp) END) as shutdown_days,
+                    
+                    -- Active Days
+                    COUNT(DISTINCT CASE WHEN count > 0 THEN DATE(timestamp) END) as active_days,
+                    
+                    -- Days with Data
+                    COUNT(DISTINCT DATE(timestamp)) as days_with_data
+                    
+                FROM {plant}_data
+                WHERE EXTRACT(YEAR FROM timestamp) = %s 
+                  AND EXTRACT(MONTH FROM timestamp) = %s
+                GROUP BY machine_no
+                ORDER BY machine_no
+            """, [year, month])
+            
+            rows = cursor.fetchall()
+            
+            days_in_month = monthrange(year, month)[1]
+            machines = []
+            total_production_all = 0
+            total_idle_all = 0
+            
+            for row in rows:
+                machine_no = row[0]
+                production = row[1]
+                idle_minutes = row[2]
+                idle_hours = row[3]
+                shutdown_days = row[4]
+                active_days = row[5]
+                days_with_data = row[6]
+                
+                total_production_all += production
+                total_idle_all += idle_minutes
+                
+                inactive_days = days_in_month - active_days
+                active_percentage = round((active_days / days_in_month) * 100, 2) if days_in_month > 0 else 0
+                
+                machines.append({
+                    'machine_no': machine_no,
+                    'total_production': production,
+                    'total_idle_minutes': idle_minutes,
+                    'total_idle_hours': idle_hours,
+                    'shutdown_days': shutdown_days,
+                    'active_days': active_days,
+                    'inactive_days': inactive_days,
+                    'days_with_data': days_with_data,
+                    'active_percentage': active_percentage,
+                    'status': 'Active' if production > 0 else 'Inactive'
+                })
+            
+            return Response({
+                'plant': plant,
+                'month': month,
+                'year': year,
+                'month_name': datetime(year, month, 1).strftime('%B'),
+                'days_in_month': days_in_month,
+                'summary': {
+                    'total_production': total_production_all,
+                    'total_idle_hours': round(total_idle_all / 60, 2),
+                    'total_machines': len(machines),
+                    'active_machines': len([m for m in machines if m['total_production'] > 0]),
+                    'inactive_machines': len([m for m in machines if m['total_production'] == 0])
+                },
+                'machines': machines
+            })
+            
+    except Exception as e:
+        return Response({'error': str(e)}, status=500)
+
+
+# ============================================
+# 3. MONTHLY SUMMARY - AGGREGATED FROM MACHINE DATA
+# ============================================
+@api_view(['GET'])
+def get_monthly_summary(request):
+    """
+    Get monthly summary aggregated from all machines
+    URL: /api/monthly-summary/?plant=plant1&month=3&year=2026
+    """
+    plant = request.GET.get('plant', 'plant1')
+    month = int(request.GET.get('month', datetime.now().month))
+    year = int(request.GET.get('year', datetime.now().year))
+    
+    try:
+        with connection.cursor() as cursor:
+            # Get daily aggregated data for the plant
+            cursor.execute(f"""
+                SELECT 
+                    DATE(timestamp) as day,
+                    COALESCE(SUM(count), 0) as total_production,
+                    COALESCE(SUM(idle_time), 0) as total_idle_minutes,
+                    ROUND(COALESCE(SUM(idle_time), 0) / 60, 2) as total_idle_hours,
+                    COUNT(*) as record_count
+                FROM {plant}_data
+                WHERE EXTRACT(YEAR FROM timestamp) = %s 
+                  AND EXTRACT(MONTH FROM timestamp) = %s
+                GROUP BY DATE(timestamp)
+                ORDER BY day
+            """, [year, month])
+            
+            rows = cursor.fetchall()
+            
+            days_in_month = monthrange(year, month)[1]
+            daily_breakdown = []
+            total_production = 0
+            total_idle_minutes = 0
+            
+            daily_dict = {}
+            for row in rows:
+                day_date = row[0]
+                daily_dict[day_date.day] = {
+                    'production': row[1],
+                    'idle_minutes': row[2],
+                    'idle_hours': row[3],
+                    'has_data': True
+                }
+                total_production += row[1]
+                total_idle_minutes += row[2]
+            
+            # Build complete daily breakdown
+            for day in range(1, days_in_month + 1):
+                if day in daily_dict:
+                    daily_breakdown.append({
+                        'day': day,
+                        'date': datetime(year, month, day).strftime('%Y-%m-%d'),
+                        'production': daily_dict[day]['production'],
+                        'idle_minutes': daily_dict[day]['idle_minutes'],
+                        'idle_hours': daily_dict[day]['idle_hours'],
+                        'has_data': True
+                    })
+                else:
+                    daily_breakdown.append({
+                        'day': day,
+                        'date': datetime(year, month, day).strftime('%Y-%m-%d'),
+                        'production': 0,
+                        'idle_minutes': 0,
+                        'idle_hours': 0,
+                        'has_data': False
+                    })
+            
+            days_with_data = len(rows)
+            total_idle_hours = round(total_idle_minutes / 60, 2)
+            active_days = len([d for d in daily_breakdown if d['production'] > 0])
+            
+            return Response({
+                'plant': plant,
+                'month': month,
+                'year': year,
+                'month_name': datetime(year, month, 1).strftime('%B'),
+                'days_in_month': days_in_month,
+                'total_production': total_production,
+                'total_idle_minutes': total_idle_minutes,
+                'total_idle_hours': total_idle_hours,
+                'days_with_data': days_with_data,
+                'active_days': active_days,
+                'inactive_days': days_in_month - active_days,
+                'coverage': round((days_with_data / days_in_month) * 100, 2),
+                'daily_breakdown': daily_breakdown
+            })
+            
+    except Exception as e:
+        return Response({'error': str(e)}, status=500)
+
+
+# ============================================
+# 4. PLANT WISE TOTAL
+# ============================================
+@api_view(['GET'])
+def get_plant_wise_total(request):
+    """Get total production for both plants"""
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT COALESCE(SUM(count), 0) FROM plant1_data")
+            plant1_total = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT COALESCE(SUM(count), 0) FROM plant2_data")
+            plant2_total = cursor.fetchone()[0]
+            
+            return Response({
+                'plant1': plant1_total,
+                'plant2': plant2_total,
+                'total': plant1_total + plant2_total
+            })
+    except Exception as e:
+        return Response({'error': str(e)}, status=500)
+
+
+# ============================================
+# 5. DATE RANGE
+# ============================================
+@api_view(['GET'])
+def get_date_range(request):
+    """Get date range for a plant"""
+    plant = request.GET.get('plant', 'plant1')
+    
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(f"""
+                SELECT 
+                    MIN(DATE(timestamp)) as first_date,
+                    MAX(DATE(timestamp)) as last_date,
+                    COUNT(DISTINCT DATE(timestamp)) as total_days
+                FROM {plant}_data
+            """)
+            
+            row = cursor.fetchone()
+            
+            if row[0] is None:
+                return Response({
+                    'plant': plant,
+                    'message': 'No data found',
+                    'first_record': None,
+                    'last_record': None
+                })
+            
+            return Response({
+                'plant': plant,
+                'first_record': row[0],
+                'last_record': row[1],
+                'total_days': row[2],
+                'date_range': f"{row[0]} to {row[1]}"
+            })
+            
+    except Exception as e:
+        return Response({'error': str(e)}, status=500)
