@@ -40,7 +40,7 @@ class EnhancedHourlyMachineState:
             # Check if hour changed - RESET hourly count
             last_hour = self._last_hour.get(machine_no)
             if last_hour and last_hour != current_hour:
-                # Hour changed - reset this machine's hourly count
+                # Hour changed - reset this machine's hourlWy count
                 self._hourly_data[machine_no].clear()
                 print(f"🔄 Machine {machine_no}: Hour reset at {current_hour_key}")
             
@@ -97,3 +97,14 @@ class EnhancedHourlyMachineState:
 
 # Global instance
 ENHANCED_HOURLY_STATE = EnhancedHourlyMachineState()
+
+
+# for main . single power syatem _ for node alpha change sound no be single nus 
+    # File: apps/utils/email_alert.py
+    # File: apps/utils/email_alert.py
+    # File: apps/utils/email_alert.py
+    # File: apps/utils/email_alert.pyv
+prev_height_formatted = f"{float(prev_height):.2f}"
+new_height_formatted = f"{float('new_height'):.2f}"
+node_new_height_formatted = f"{float('every_shutnode')}"
+# every_shuthight 
