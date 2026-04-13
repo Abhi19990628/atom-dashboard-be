@@ -20,7 +20,7 @@ DEBUG = "True"  # TEMP: Render par error diagnose karne ke liye
 # Hosts via env (local + cloud)
 ALLOWED_HOSTS = os.getenv(
     "ALLOWED_HOSTS",
-    "localhost,127.0.0.1,192.168.0.105,0.0.0.0,.ngrok-free.dev,unsickerly-unbeclouded-cherish.ngrok-free.dev"
+    "localhost,127.0.0.1,192.168.0.34,0.0.0.0,.ngrok-free.dev,unsickerly-unbeclouded-cherish.ngrsok-free.dev"
 ).split(",")
 
 # Application definition
@@ -114,7 +114,7 @@ DATABASES = {
         'NAME': os.getenv('DB_NAME', 'Atomone'),
         'USER': os.getenv('DB_USER', 'postgres'),
         'PASSWORD': os.getenv('DB_PASSWORD', 'atomone'),
-        'HOST': os.getenv('DB_HOST', '192.168.0.35'),  # cloud / public IP yahan
+        'HOST': os.getenv('DB_HOST', '192.168.0.35'),  
         'PORT': os.getenv('DB_PORT', '5432'),
         'OPTIONS': {
             'options': '-c default_transaction_isolation=serializable -c timezone=Asia/Kolkata'
@@ -158,3 +158,6 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 
 # Default primary key field type
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+
+

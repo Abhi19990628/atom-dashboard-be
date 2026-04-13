@@ -2,7 +2,7 @@
 from django.urls import path
 from . import views
 from .views import SaveInspectionReportView, GetInspectionReportView, MasterDropdownView, MasterParametersView
-from .views import SaveMachineChecksheetView
+from .views import SaveMachineChecksheetView,SaveTipChangeView
 
 urlpatterns = [
     # Dashboard APIs
@@ -49,5 +49,8 @@ urlpatterns = [
     path('master-dropdown/', MasterDropdownView.as_view(), name='master_dropdown'),
     path('master-parameters/', MasterParametersView.as_view(), name='master_parameters'),
     path('save-checksheet/', SaveMachineChecksheetView.as_view(), name='save_checksheet'),
+    path('save-tip-data/', SaveTipChangeView.as_view(), name='save-tip-data'),
+    path('api/save-subscription/', views.save_subscription, name='save_subscription'),
+
 ]
 

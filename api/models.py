@@ -463,3 +463,33 @@ class DailyProductionReport(models.Model):
         if self.ok_quantity == 0 and self.total_production > 0:
             self.ok_quantity = self.total_production - (self.rejection_qty + self.rework_qty + self.not_confirm_qty)
         super().save(*args, **kwargs)
+        
+# =====================================================================
+# 🛠️ 6. TIP CHANGE & DRESSING MONITORING (React Form Model)
+# =====================================================================
+
+class TipChangeDressing(models.Model):
+    part_name = models.CharField(max_length=100)
+    prd_qty = models.IntegerField()
+    tip_change = models.CharField(max_length=10) 
+    tip_dressing = models.CharField(max_length=10)   
+    dressing_status = models.CharField(max_length=10) 
+    date = models.DateField(auto_now_add=True)
+
+    class Meta:
+        managed = True
+        db_table = "tip_change_dressing"
+
+    def __str__(self):
+        return f"{self.part_name} - {self.prd_qty}"
+    
+    
+
+class PushSubscription(models.Model):
+    endpoint = models.URLField(max_length=500, unique=True)
+    auth = models.CharField(max_length=100)
+    p256dh = models.CharField(max_length=100)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Push Subscription {self.id}"

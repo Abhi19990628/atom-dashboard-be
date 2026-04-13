@@ -311,7 +311,7 @@
 #             with connection.cursor() as cursor:
 #                 cursor.execute("""
 #                     SELECT COALESCE(SUM(idle_time), 0) 
-#                     FROM Plant2_hourly_idle
+#                     FROM "Plant2_hourly_idle"
 #                     WHERE machine_no = %s 
 #                     AND shift = %s
 #                     AND DATE(timestamp) = DATE(%s)
@@ -818,7 +818,8 @@
 #     'J3': [6, 7, 8, 9, 10],
 #     'J2': [11, 12, 13, 14, 15],
 #     'J1': [16, 17, 18, 19, 20],
-#     'J5': [41, 42, 43, 44, 45, 46]
+#     'J5': [41, 42, 43, 44, 45, 46],
+  
 # }
 
 # def get_machine_group(machine_no):
@@ -1943,7 +1944,9 @@ PASSWORD = "npd@Atom"
 PLANT2_TOPICS = [
     ("COUNT", 1), ("COUNT1", 1), ("COUNT2", 1), ("COUNT3", 1), 
     ("COUNT4", 1), ("COUNT52", 1),
-    ("J1", 1), ("J2", 1), ("J3", 1), ("J4", 1), ("J5", 1)
+    ("COUNT16", 1), ("COUNT17", 1), ("COUNT18", 1), ("COUNT19", 1),
+    ("J1", 1), ("J2", 1), ("J3", 1), ("J4", 1), ("J5", 1),
+    ("J6", 1), ("J7", 1), ("J8", 1), ("J9", 1)
 ]
 
 TOPIC_MACHINE_MAPPING = {
@@ -1952,6 +1955,10 @@ TOPIC_MACHINE_MAPPING = {
     'COUNT52': [11, 12, 13, 14, 15],
     'COUNT1': [16, 17, 18, 19, 20],
     'COUNT4': [41, 42, 43, 44, 45, 46],
+    'COUNT16': [21, 22, 23, 24, 25],
+    'COUNT17': [26, 27, 28, 29, 30],
+    'COUNT18': [31, 32, 33, 34, 35],
+    'COUNT19': [36, 37, 38, 39, 40],
     'COUNT': []
 }
 
@@ -1960,7 +1967,11 @@ MACHINE_GROUP_MAPPING = {
     'J3': [6, 7, 8, 9, 10],
     'J2': [11, 12, 13, 14, 15],
     'J1': [16, 17, 18, 19, 20],
-    'J5': [41, 42, 43, 44, 45, 46]
+    'J5': [41, 42, 43, 44, 45, 46],
+    'J6': [21, 22, 23, 24, 25],
+    'J7': [26, 27, 28, 29, 30],
+    'J8': [31, 32, 33, 34, 35],
+    'J9': [36, 37, 38, 39, 40]
 }
 
 def get_machine_group(machine_no):

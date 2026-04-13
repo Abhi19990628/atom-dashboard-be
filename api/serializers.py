@@ -1,47 +1,3 @@
-# from rest_framework import serializers
-# from .models import (
-#     Operator, 
-#     OperatorAssignment, 
-#     IdleReport, 
-#     Plant2HourlyIdletime, 
-#     InspectionReport
-# )
-
-# # 1. Operator Serializer
-# class OperatorSerializer(serializers.ModelSerializer):
-#     class Meta:
-#         model = Operator
-#         fields = '__all__'
-
-# # 2. Operator Assignment Serializer
-# class OperatorAssignmentSerializer(serializers.ModelSerializer):
-#     class Meta:
-#         model = OperatorAssignment
-#         fields = '__all__'
-
-# # 3. Idle Report Serializer
-# class IdleReportSerializer(serializers.ModelSerializer):
-#     class Meta:
-#         model = IdleReport
-#         fields = '__all__'
-
-# # 4. Hourly Idle Time Serializer
-# class Plant2HourlyIdletimeSerializer(serializers.ModelSerializer):
-#     class Meta:
-#         model = Plant2HourlyIdletime
-#         fields = '__all__'
-
-# # ==========================================
-# # 5. QMS INSPECTION REPORT SERIALIZER (NEW)
-# # ==========================================
-# class InspectionReportSerializer(serializers.ModelSerializer):
-#     class Meta:
-#         model = InspectionReport
-#         fields = '__all__'  
-#         # '__all__' ka matlab hai ye model ke saare fields 
-#         # (customer, part, JSON data sab kuch) automatically API ke liye set kar dega.
-
-
 from rest_framework import serializers
 from .models import (
     # Purane Models
@@ -58,7 +14,8 @@ from .models import (
     IncomingInspectionObservation,
     MachineChecksheetReport, 
     MachineChecksheetObservation,
-    DailyProductionReport
+    DailyProductionReport,
+    TipChangeDressing
 )
 
 # ==========================================
@@ -171,3 +128,10 @@ class DailyProductionReportSerializer(serializers.ModelSerializer):
     class Meta:
         model = DailyProductionReport
         fields = '__all__'
+        
+
+
+class TipChangeDressingSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TipChangeDressing
+        fields = '__all__'  
