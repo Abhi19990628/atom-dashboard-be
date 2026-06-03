@@ -13,7 +13,6 @@
 # from collections import defaultdict
 # import json
 # from apps.utils.email_alert import send_shut_height_alert
-# import threading
 # import os
 
 # # ✅ ULTIMATE FIX 1: Force system timezone to IST
@@ -54,6 +53,34 @@
 #         ist_timestamp.second
 #     )
 #     return naive_ist
+
+# # ✅ NAYA CODE: Event Logger Helper Function
+# def log_machine_event(plant_no, machine_no, event_type, timestamp, shift, details=""):
+#     """
+#     Ye function chup-chaap Machine_Event_Logs table mein data save karega.
+#     """
+#     try:
+#         from django.db import connection
+#         import pytz
+        
+#         IST = pytz.timezone("Asia/Kolkata")
+#         if timestamp.tzinfo is not None:
+#             ist_timestamp = timestamp.astimezone(IST)
+#         else:
+#             ist_timestamp = IST.localize(timestamp)
+
+#         timestamp_str = ist_timestamp.strftime('%Y-%m-%d %H:%M:%S')
+
+#         with connection.cursor() as cursor:
+#             cursor.execute("""
+#                 INSERT INTO "Machine_Event_Logs" 
+#                 (plant_no, machine_no, event_type, timestamp, shift, details)
+#                 VALUES (%s, %s, %s, %s::timestamp WITHOUT TIME ZONE, %s, %s)
+#             """, (plant_no, str(machine_no), event_type, timestamp_str, shift, details))
+            
+#         print(f"📝 EVENT SAVED | P{plant_no}-M{machine_no} | {event_type} | {timestamp_str}")
+#     except Exception as e:
+#         print(f"❌ Event Log Error P{plant_no}-M{machine_no}: {e}")
 
 
 # class StrictIdlePolicy:
@@ -174,11 +201,28 @@
 #                                 m not in self.last_json_time
 
 #                 if is_never_active:
+#                     # ✅ FIXED: 8:30 Shift Start logic for OFFLINE IDLE ONLY
+#                     hour_start = self._hour_start(now)
+                    
+#                     shift_a_start = now.replace(hour=8, minute=30, second=0, microsecond=0)
+#                     shift_b_start = now.replace(hour=20, minute=30, second=0, microsecond=0)
+                    
+#                     if shift_a_start <= now < shift_b_start:
+#                         actual_start = max(hour_start, shift_a_start)
+#                     elif now >= shift_b_start:
+#                         actual_start = max(hour_start, shift_b_start)
+#                     else:
+#                         prev_shift_b = shift_b_start - timedelta(days=1)
+#                         actual_start = max(hour_start, prev_shift_b)
+
+#                     elapsed_seconds = max(0, (now - actual_start).total_seconds())
+#                     elapsed_mins = int(elapsed_seconds / 60)
+
 #                     return {
-#                         'live_idle_time': '0m',
-#                         'accumulated_idle_time': '0m',
-#                         'hourly_idle_total': 60,
-#                         'is_idle': False,
+#                         'live_idle_time': f'{elapsed_mins}m',
+#                         'accumulated_idle_time': f'{elapsed_mins}m',
+#                         'hourly_idle_total': elapsed_mins,
+#                         'is_idle': True,  # True hona chahiye taaki offline idle track ho
 #                         'idle_type': IdleType.NO_SIGNAL_AS_IDLE,
 #                         'status': 'No Signal (Offline)',
 #                         'data_source': DataSource.NONE,
@@ -188,6 +232,7 @@
 #                         'json_seconds_ago': None
 #                     }
 
+#             # 👉 Yahan se ONLINE IDLE ka logic shuru hota hai jo bilkul safe aur UNCHANGED hai
 #             live, acc, total = self._compute_live_and_accumulated(m, now)
 
 #             has_count = m in self.last_count_time
@@ -420,6 +465,16 @@
 #                             args=(2, machine_no, old_height, new_height_value, now_ist),
 #                             daemon=True
 #                         ).start()
+
+#                         # ✅ NAYA CODE: Tool/Height Change record karein
+#                         log_machine_event(
+#                             plant_no=2,
+#                             machine_no=machine_no,
+#                             event_type="SHUT_HEIGHT_CHANGE",
+#                             timestamp=now_ist,
+#                             shift=current_shift,
+#                             details=f"Height changed from {old_height} to {new_height_value} | Tool: {tool_id}"
+#                         )
 
 #                         if segment['segment_count'] > 0:
 #                             self.save_segment_to_db(machine_no, segment)
@@ -801,7 +856,9 @@
 # PLANT2_TOPICS = [
 #     ("COUNT", 1), ("COUNT1", 1), ("COUNT2", 1), ("COUNT3", 1), 
 #     ("COUNT4", 1), ("COUNT52", 1),
-#     ("J1", 1), ("J2", 1), ("J3", 1), ("J4", 1), ("J5", 1)
+#     ("COUNT16", 1), ("COUNT17", 1), ("COUNT18", 1), ("COUNT19", 1),
+#     ("J1", 1), ("J2", 1), ("J3", 1), ("J4", 1), ("J5", 1),
+#     ("J6", 1), ("J7", 1), ("J8", 1), ("J9", 1)
 # ]
 
 # TOPIC_MACHINE_MAPPING = {
@@ -810,6 +867,10 @@
 #     'COUNT52': [11, 12, 13, 14, 15],
 #     'COUNT1': [16, 17, 18, 19, 20],
 #     'COUNT4': [41, 42, 43, 44, 45, 46],
+#     'COUNT16': [21, 22, 23, 24, 25],
+#     'COUNT17': [26, 27, 28, 29, 30],
+#     'COUNT18': [31, 32, 33, 34, 35],
+#     'COUNT19': [36, 37, 38, 39, 40],
 #     'COUNT': []
 # }
 
@@ -819,7 +880,10 @@
 #     'J2': [11, 12, 13, 14, 15],
 #     'J1': [16, 17, 18, 19, 20],
 #     'J5': [41, 42, 43, 44, 45, 46],
-  
+#     'J6': [21, 22, 23, 24, 25],
+#     'J7': [26, 27, 28, 29, 30],
+#     'J8': [31, 32, 33, 34, 35],
+#     'J9': [36, 37, 38, 39, 40]
 # }
 
 # def get_machine_group(machine_no):
@@ -1069,6 +1133,78 @@
 #     thread.start()
 
 
+# # ✅ NAYA CODE: Ye thread lagatar machine ka status dekhega aur database me record karega
+# def start_machine_event_monitor():
+#     """Ye background thread har 5 second me ON/OFF check karega"""
+#     def monitor_worker():
+#         import time as time_module
+#         print("🔍 Plant 2 - Machine ON/OFF Event Monitor Started!")
+#         machine_last_state = {} 
+
+#         all_mapped_machines = set()
+#         for machines_list in TOPIC_MACHINE_MAPPING.values():
+#             all_mapped_machines.update(machines_list)
+
+#         while True:
+#             try:
+#                 time_module.sleep(5) 
+#                 ist_tz = pytz.timezone('Asia/Kolkata')
+#                 now_ist = datetime.now(ist_tz)
+                
+#                 for machine_no in all_mapped_machines:
+#                     status = EXACT_REQUIREMENT_STATE.get_machine_status(machine_no)
+#                     is_currently_on = status['machine_on']
+                    
+#                     if machine_no not in machine_last_state:
+#                         machine_last_state[machine_no] = is_currently_on
+#                         continue
+                        
+#                     was_on_before = machine_last_state[machine_no]
+                    
+#                     # CONDITION 1: Machine OFF se ON hui
+#                     if is_currently_on and not was_on_before:
+#                         shift = EXACT_REQUIREMENT_STATE.get_shift_from_time(now_ist)
+#                         log_machine_event(
+#                             plant_no=2,
+#                             machine_no=machine_no,
+#                             event_type="ON",
+#                             timestamp=now_ist,
+#                             shift=shift,
+#                             details="Machine Power/Signal Restored"
+#                         )
+#                         machine_last_state[machine_no] = True
+                        
+#                     # CONDITION 2: Machine ON se OFF hui (3 min grace wali)
+#                     elif not is_currently_on and was_on_before:
+#                         exact_off_time_str = status['offline_since'] 
+                        
+#                         if exact_off_time_str:
+#                             today = now_ist.date()
+#                             time_obj = datetime.strptime(exact_off_time_str, '%H:%M:%S').time()
+#                             exact_off_time = IST.localize(datetime.combine(today, time_obj))
+#                         else:
+#                             exact_off_time = now_ist
+                            
+#                         shift = EXACT_REQUIREMENT_STATE.get_shift_from_time(exact_off_time)
+                        
+#                         log_machine_event(
+#                             plant_no=2,
+#                             machine_no=machine_no,
+#                             event_type="OFF",
+#                             timestamp=exact_off_time,  # Purana time (jab sach me band hui thi)
+#                             shift=shift,
+#                             details="Machine Offline (No signal for 3 mins)"
+#                         )
+#                         machine_last_state[machine_no] = False
+                        
+#             except Exception as e:
+#                 print(f"❌ Event Monitor Error: {e}")
+#                 time_module.sleep(5)
+
+#     thread = threading.Thread(target=monitor_worker, daemon=True)
+#     thread.start()
+
+
 # def on_message(client, userdata, msg):
 #     try:
 #         topic = msg.topic
@@ -1134,12 +1270,12 @@
 
 #     print_active_machines_summary()
 #     save_hourly_idle_time_to_db()
+    
+#     # ✅ NAYA CODE: Background Monitor start karein
+#     start_machine_event_monitor()
 
 #     client.loop_start()
 #     print("✅ MQTT Loop Started (Plant 2)\n")
-
-
-
 
 # backend/apps/mqtt/simple_plant2.py - ULTIMATE FIXED VERSION
 
@@ -1156,8 +1292,11 @@ from threading import RLock
 from collections import defaultdict
 import json
 from apps.utils.email_alert import send_shut_height_alert
-import threading
 import os
+
+# ✅ NAYE IMPORTS AUTOMATIC NOTIFICATION KE LIYE
+from api.models import Notification
+from django.contrib.auth.models import Group
 
 # ✅ ULTIMATE FIX 1: Force system timezone to IST
 os.environ['TZ'] = 'Asia/Kolkata'
@@ -1197,6 +1336,34 @@ def convert_to_naive_ist(timestamp):
         ist_timestamp.second
     )
     return naive_ist
+
+
+def log_machine_event(plant_no, machine_no, event_type, timestamp, shift, details=""):
+    """
+    Ye function chup-chaap Machine_Event_Logs table mein data save karega.
+    """
+    try:
+        from django.db import connection
+        import pytz
+        
+        IST = pytz.timezone("Asia/Kolkata")
+        if timestamp.tzinfo is not None:
+            ist_timestamp = timestamp.astimezone(IST)
+        else:
+            ist_timestamp = IST.localize(timestamp)
+
+        timestamp_str = ist_timestamp.strftime('%Y-%m-%d %H:%M:%S')
+
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO "Machine_Event_Logs" 
+                (plant_no, machine_no, event_type, timestamp, shift, details)
+                VALUES (%s, %s, %s, %s::timestamp WITHOUT TIME ZONE, %s, %s)
+            """, (plant_no, str(machine_no), event_type, timestamp_str, shift, details))
+            
+        print(f"📝 EVENT SAVED | P{plant_no}-M{machine_no} | {event_type} | {timestamp_str}")
+    except Exception as e:
+        print(f"❌ Event Log Error P{plant_no}-M{machine_no}: {e}")
 
 
 class StrictIdlePolicy:
@@ -1317,11 +1484,27 @@ class StrictIdlePolicy:
                                 m not in self.last_json_time
 
                 if is_never_active:
+                    hour_start = self._hour_start(now)
+                    
+                    shift_a_start = now.replace(hour=8, minute=30, second=0, microsecond=0)
+                    shift_b_start = now.replace(hour=20, minute=30, second=0, microsecond=0)
+                    
+                    if shift_a_start <= now < shift_b_start:
+                        actual_start = max(hour_start, shift_a_start)
+                    elif now >= shift_b_start:
+                        actual_start = max(hour_start, shift_b_start)
+                    else:
+                        prev_shift_b = shift_b_start - timedelta(days=1)
+                        actual_start = max(hour_start, prev_shift_b)
+
+                    elapsed_seconds = max(0, (now - actual_start).total_seconds())
+                    elapsed_mins = int(elapsed_seconds / 60)
+
                     return {
-                        'live_idle_time': '0m',
-                        'accumulated_idle_time': '0m',
-                        'hourly_idle_total': 60,
-                        'is_idle': False,
+                        'live_idle_time': f'{elapsed_mins}m',
+                        'accumulated_idle_time': f'{elapsed_mins}m',
+                        'hourly_idle_total': elapsed_mins,
+                        'is_idle': True,  
                         'idle_type': IdleType.NO_SIGNAL_AS_IDLE,
                         'status': 'No Signal (Offline)',
                         'data_source': DataSource.NONE,
@@ -1400,6 +1583,8 @@ class Plant2ExactRequirementState:
         self.current_hours = {}
         self.current_shifts = {}
 
+        self.pending_reasons = {}
+
         self.last_count_time = {}
         self.hour_first_count_time = {}
 
@@ -1418,6 +1603,56 @@ class Plant2ExactRequirementState:
 
         self.off_threshold_seconds = 180
         self.idle_tracker = StrictIdlePolicy(grace_seconds=180, enable_no_signal_as_idle=True)
+
+    def set_pending_reason(self, machine_no, category, reason, remarks):
+        """Frontend se aaya reason RAM me save karta hai"""
+        with self.lock:
+            self.pending_reasons[machine_no] = {
+                'category': category,
+                'reason': reason,
+                'remarks': remarks,
+                'timestamp': datetime.now(pytz.timezone('Asia/Kolkata'))
+            }
+            print(f"📝 Buffer Updated for M{machine_no}: {category} -> {reason}")
+
+    def save_resolved_downtime_to_db(self, machine_no, now_ist, current_shift, idle_mins, machine_status_val, is_hour_change=False):
+        """DB mein final isolated downtime (Reason ke saath ya bina) save karega"""
+        with self.lock:
+            if idle_mins > 0: 
+                category = "Uncategorized"
+                specific_reason = "Reason Not Provided"
+
+                if machine_no in self.pending_reasons:
+                    pending_data = self.pending_reasons[machine_no]
+                    category = pending_data['category']
+                    specific_reason = pending_data['reason']
+                    if pending_data.get('remarks'):
+                        specific_reason += f" - {pending_data['remarks']}"
+                    
+                    # ✅ CARRY FORWARD LOGIC:
+                    # Yahan se 'del self.pending_reasons[machine_no]' hata diya hai taaki
+                    # ghanta change hone par reason RAM se na hate aur agle ghante bhi carry forward ho.
+
+                try:
+                    timestamp_str = now_ist.strftime('%Y-%m-%d %H:%M:%S')
+                    
+                    with connection.cursor() as cursor:
+                        cursor.execute("""
+                            INSERT INTO "hourly_downtime_logs" 
+                            (timestamp, machine_no, idle_time, shift, reason_category, specific_reason, machine_status)
+                            VALUES (%s::timestamp WITHOUT TIME ZONE, %s, %s, %s, %s, %s, %s)
+                        """, (
+                            timestamp_str,
+                            str(machine_no),
+                            int(idle_mins),
+                            current_shift,
+                            category,
+                            specific_reason[:255],
+                            machine_status_val
+                        ))
+                    print(f"✅ DOWNTIME LOGGED | M{machine_no} | {machine_status_val} | {category} | Idle: {idle_mins}m")
+                except Exception as e:
+                    print(f"❌ DB Downtime Save Error M{machine_no}: {e}")
 
     def get_shift_from_time(self, dt):
         ist_dt = dt.astimezone(pytz.timezone('Asia/Kolkata')) if dt.tzinfo else pytz.timezone('Asia/Kolkata').localize(dt)
@@ -1443,10 +1678,6 @@ class Plant2ExactRequirementState:
                 return IST.localize(datetime.combine(date, shift_b_start_time))
 
     def get_shift_idle_from_hourly_table(self, machine_no, shift_start, shift, now):
-        """
-        ✅ Plant2_hourly_idle table se shift ka total idle nikalta hai
-        Date + Shift wise sum karta hai
-        """
         try:
             shift_start_naive = convert_to_naive_ist(shift_start)
             now_naive = convert_to_naive_ist(now)
@@ -1478,16 +1709,17 @@ class Plant2ExactRequirementState:
             return 0
 
     def reset_shift_state(self, machine_no=None):
-        """✅ FIX: Only called on SHIFT change, not hour change"""
         with self.lock:
             if machine_no is None:
                 self.machine_on_since.clear()
                 self.first_count_time.clear()
-                print("🔄 All machines: Shift state reset")
+                self.pending_reasons.clear() # ✅ SHIFT RESET: Saare purane reasons hata do
+                print("🔄 All machines: Shift state & reasons reset")
             else:
                 self.machine_on_since.pop(machine_no, None)
                 self.first_count_time.pop(machine_no, None)
-                print(f"🔄 M{machine_no}: Shift state reset")
+                self.pending_reasons.pop(machine_no, None) # ✅ SINGLE RESET: Specific machine ka reason hata do
+                print(f"🔄 M{machine_no}: Shift state & reason reset")
 
     def update_json_status(self, machine_no, card=None, die_height=0.0):
         with self.lock:
@@ -1512,7 +1744,9 @@ class Plant2ExactRequirementState:
             current_hour = now_ist.replace(minute=0, second=0, microsecond=0)
             current_shift = self.get_shift_from_time(now_ist)
 
-            # ✅ FIX 2: Machine ON tracking (shift level, not hour level)
+            # ✅ COUNT AAYA: Machine working state me aa gayi, toh idle reason ko clear kar do!
+            self.pending_reasons.pop(machine_no, None)
+
             if machine_no not in self.machine_on_since:
                 self.machine_on_since[machine_no] = now_ist
                 print(f"🟢 M{machine_no}: Machine ON at {now_ist.strftime('%H:%M:%S')}")
@@ -1564,8 +1798,14 @@ class Plant2ExactRequirementState:
                             daemon=True
                         ).start()
 
-                        if segment['segment_count'] > 0:
-                            self.save_segment_to_db(machine_no, segment)
+                        log_machine_event(
+                            plant_no=2,
+                            machine_no=machine_no,
+                            event_type="SHUT_HEIGHT_CHANGE",
+                            timestamp=now_ist,
+                            shift=current_shift,
+                            details=f"Height changed from {old_height} to {new_height_value} | Tool: {tool_id}"
+                        )
 
                         segment['shut_height'] = new_height_value
                         segment['tool_id'] = tool_id
@@ -1577,12 +1817,9 @@ class Plant2ExactRequirementState:
                 if segment['shut_height'] and segment['shut_height'] > 0:
                     segment['segment_count'] += count_increment
 
-            # ✅ FIX 3: Hour change auto reset (count only, state preserved)
             if machine_no in self.current_hours:
                 if self.current_hours[machine_no] != current_hour:
-                    # Save current hour count to last hour
                     self.last_hour_counts[machine_no] = self.current_hour_counts[machine_no]
-                    # Reset current hour count to 0
                     old_count = self.current_hour_counts[machine_no]
                     self.current_hour_counts[machine_no] = 0
                     self.current_hours[machine_no] = current_hour
@@ -1591,20 +1828,25 @@ class Plant2ExactRequirementState:
             else:
                 self.current_hours[machine_no] = current_hour
 
-            # ✅ FIX 4: Shift change pe hi state reset (not hour change)
             if machine_no in self.current_shifts:
                 old_shift = self.current_shifts[machine_no]
                 if old_shift != current_shift:
                     print(f"🔄 M{machine_no}: Shift changed {old_shift}→{current_shift}")
-
                     new_shift_key = (machine_no, current_shift)
                     self.shift_cumulative[new_shift_key] = 0
-
-                    # Reset ON-since and first count (shift level only)
                     self.reset_shift_state(machine_no)
 
             self.current_shifts[machine_no] = current_shift
             self.current_hour_counts[machine_no] += count_increment
+            
+            idle_status = self.idle_tracker.get_idle_status(machine_no, now_ist)
+            live_idle_str = idle_status.get('live_idle_time', '0m')
+            live_idle_mins = int(live_idle_str.replace('m', ''))
+
+            if live_idle_mins > 0:
+                # ✅ Count aya hai matlab machine ON ho chuki hai
+                self.save_resolved_downtime_to_db(machine_no, now_ist, current_shift, live_idle_mins, "ONLINE", is_hour_change=False)
+
             self.idle_tracker.mark_count(machine_no, now_ist)
 
             self._insert_realtime_count(
@@ -1653,7 +1895,6 @@ class Plant2ExactRequirementState:
 
             clean_idle_time = int(idle_time) if isinstance(idle_time, (int, float)) else 0
 
-            # ✅ ULTIMATE FIX 5: Convert to IST string for database
             if timestamp.tzinfo is not None:
                 ist_timestamp = timestamp.astimezone(IST)
             else:
@@ -1677,8 +1918,6 @@ class Plant2ExactRequirementState:
                     clean_shut_height,
                     shift
                 ))
-
-            print(f"✅ M{machine_no}: {timestamp_str} | cnt={count_increment}, cumul={new_cumulative}, idle={clean_idle_time}m")
 
         except Exception as e:
             print(f"❌ Insert error M{machine_no}: {e}")
@@ -1725,7 +1964,6 @@ class Plant2ExactRequirementState:
 
             clean_idle_time = int(idle_time) if isinstance(idle_time, (int, float)) else 0
 
-            # ✅ ULTIMATE FIX 6: Convert to IST string for database
             if timestamp.tzinfo is not None:
                 ist_timestamp = timestamp.astimezone(IST)
             else:
@@ -1853,7 +2091,7 @@ class Plant2ExactRequirementState:
                 if result and result[0] is not None:
                    last_hour_count_db = int(result[0])
         except Exception as e:
-            print(f"❌ M{machine_no}: Last hour count error - {e}")
+            pass
 
         cumulative_from_db = 0
         try:
@@ -1868,7 +2106,7 @@ class Plant2ExactRequirementState:
                 if result and result[0] is not None:
                     cumulative_from_db = int(result[0])
         except Exception as e:
-            print(f"⚠️ Error fetching cumulative M{machine_no}: {e}")
+            pass
 
         live_cumulative = cumulative_from_db
 
@@ -1877,7 +2115,6 @@ class Plant2ExactRequirementState:
         idle_status = self.idle_tracker.get_idle_status(machine_no, now_ist)
         hourly_idle_total = idle_status['hourly_idle_total']
 
-        # ✅ SHIFT TOTAL IDLE from Plant2_hourly_idle table
         total_shift_idle = self.get_shift_idle_from_hourly_table(
             machine_no, shift_start, current_shift, now_ist
         )
@@ -1923,11 +2160,11 @@ class Plant2ExactRequirementState:
             'data_source': status_info['data_source'],
             'on_since': on_since_str,
             'first_count_at': first_count_str,
-            'time_to_first_count': time_to_first_count
+            'time_to_first_count': time_to_first_count,
+            'has_pending_reason': machine_no in self.pending_reasons
         }
 
     def force_hour_reset_all_machines(self):
-        """Not used anymore - hour reset is automatic"""
         pass
 
 
@@ -2121,7 +2358,6 @@ def save_hourly_idle_to_db(machine_no, timestamp, tool_id, shut_height, idle_tim
 
         clean_idle_time = int(idle_time) if isinstance(idle_time, (int, float)) else 60
 
-        # ✅ ULTIMATE FIX 7: Convert to IST string for database
         if timestamp.tzinfo is not None:
             ist_timestamp = timestamp.astimezone(IST)
         else:
@@ -2143,11 +2379,8 @@ def save_hourly_idle_to_db(machine_no, timestamp, tool_id, shut_height, idle_tim
                 shift
             ))
 
-        print(f"💾 IDLE M{machine_no}: {timestamp_str} | idle={clean_idle_time}m, shift={shift}")
-
     except Exception as e:
-        print(f"❌ Hourly idle DB error M{machine_no}: {e}")
-        traceback.print_exc()
+        pass
 
 
 def save_hourly_idle_time_to_db():
@@ -2162,9 +2395,6 @@ def save_hourly_idle_time_to_db():
         for machines_list in TOPIC_MACHINE_MAPPING.values():
             all_mapped_machines.update(machines_list)
 
-        print(f"✅ Tracking idle time for {len(all_mapped_machines)} machines")
-        print(f"✅ Machines: {sorted(all_mapped_machines)}\n")
-
         last_saved_hour = None
 
         while True:
@@ -2175,7 +2405,7 @@ def save_hourly_idle_time_to_db():
                 current_second = now_ist.second
                 current_hour = now_ist.hour
 
-                is_snapshot_time = (current_minute == 59 and current_second == 58)
+                is_snapshot_time = (current_minute == 59 and current_second >= 58)
 
                 if is_snapshot_time and last_saved_hour != current_hour:
                     print("\n" + "💾" * 50)
@@ -2205,6 +2435,21 @@ def save_hourly_idle_time_to_db():
                                 idle_time=idle_time,
                                 shift=shift
                             )
+                            
+                            live_idle_str = idle_status.get('live_idle_time', '0m')
+                            live_idle_mins = int(live_idle_str.replace('m', ''))
+
+                            machine_current_status = EXACT_REQUIREMENT_STATE.get_machine_status(machine_no)
+                            is_offline_now = not machine_current_status['machine_on']
+                            
+                            # ✅ Status depend karega ki abhi offline hai ya online
+                            machine_status_val = "OFFLINE" if is_offline_now else "ONLINE"
+
+                            if live_idle_mins > 0:
+                                EXACT_REQUIREMENT_STATE.save_resolved_downtime_to_db(
+                                    machine_no, now_ist, shift, live_idle_mins, machine_status_val, is_hour_change=True
+                                )
+
                             saved_count += 1
                         except Exception as e:
                             print(f"❌ M{machine_no} idle save error: {e}")
@@ -2218,6 +2463,143 @@ def save_hourly_idle_time_to_db():
                 time_module.sleep(5)
 
     thread = threading.Thread(target=idle_saver_worker, daemon=True)
+    thread.start()
+
+
+# ==============================================================
+# ✅ NAYA FUNCTION: AUTO IDLE NOTIFICATION SENDER
+# ==============================================================
+def auto_generate_idle_notification(machine_no, idle_mins):
+    """Ye function tab chalega jab machine 3 minute se idle hogi. Ye direct DB mein notification dalega."""
+    try:
+        target_group = Group.objects.filter(name='Supervisor').first()
+        if target_group:
+            users = target_group.user_set.all()
+            if users.exists():
+                message = f"Machine M-{machine_no:02d} is idle for {idle_mins} mins. Please fill the downtime reason!"
+                
+                notifications_to_create = [
+                    Notification(user=user, machine_no=str(machine_no), message=message)
+                    for user in users
+                ]
+                Notification.objects.bulk_create(notifications_to_create)
+                print(f"🔔 AUTO-ALERT: Notification created for M-{machine_no} (Idle {idle_mins}m)")
+    except Exception as e:
+        print(f"❌ Auto Alert Error M{machine_no}: {e}")
+# ==============================================================
+
+
+def start_machine_event_monitor():
+    """Ye background thread har 5 second me ON/OFF check karega"""
+    def monitor_worker():
+        import time as time_module
+        print("🔍 Plant 2 - Machine ON/OFF Event Monitor Started!")
+        machine_last_state = {} 
+        
+        # ✅ NAYA: Track karta hai ki kis machine ke liye alert bhej diya gaya hai
+        machine_alert_state = {}
+
+        all_mapped_machines = set()
+        for machines_list in TOPIC_MACHINE_MAPPING.values():
+            all_mapped_machines.update(machines_list)
+
+        while True:
+            try:
+                time_module.sleep(5) 
+                ist_tz = pytz.timezone('Asia/Kolkata')
+                now_ist = datetime.now(ist_tz)
+                
+                for machine_no in all_mapped_machines:
+                    status = EXACT_REQUIREMENT_STATE.get_machine_status(machine_no)
+                    is_currently_on = status['machine_on']
+                    
+                    # ==============================================================
+                    # ✅ NAYA LOGIC: CHECK AND SEND AUTO NOTIFICATIONS
+                    # ==============================================================
+                    idle_status = EXACT_REQUIREMENT_STATE.idle_tracker.get_idle_status(machine_no, now_ist)
+                    live_idle_str = idle_status.get('live_idle_time', '0m')
+                    live_idle_mins = int(live_idle_str.replace('m', ''))
+                    
+                    if live_idle_mins >= 3:
+                        if not machine_alert_state.get(machine_no, False):
+                            auto_generate_idle_notification(machine_no, live_idle_mins)
+                            machine_alert_state[machine_no] = True # Mark that alert is sent
+                            
+                    elif live_idle_mins == 0:
+                        machine_alert_state[machine_no] = False # Reset if machine is producing again
+                    # ==============================================================
+
+                    if machine_no not in machine_last_state:
+                        machine_last_state[machine_no] = is_currently_on
+                        continue
+                        
+                    was_on_before = machine_last_state[machine_no]
+                    
+                    # ✅ OFFLINE TO ONLINE: Machine mein wapas signal aaya
+                    if is_currently_on and not was_on_before:
+                        shift = EXACT_REQUIREMENT_STATE.get_shift_from_time(now_ist)
+                        
+                        # ✅ OFFLINE to ONLINE aane par RAM se pending reason hata do (Naya idle reason mangega)
+                        EXACT_REQUIREMENT_STATE.pending_reasons.pop(machine_no, None)
+                        
+                        # Pehle offline wala gap DB mein save karo
+                        idle_status = EXACT_REQUIREMENT_STATE.idle_tracker.get_idle_status(machine_no, now_ist)
+                        live_idle_str = idle_status.get('live_idle_time', '0m')
+                        live_idle_mins = int(live_idle_str.replace('m', ''))
+                        
+                        if live_idle_mins > 0:
+                            EXACT_REQUIREMENT_STATE.save_resolved_downtime_to_db(
+                                machine_no, now_ist, shift, live_idle_mins, "OFFLINE to ONLINE", is_hour_change=False
+                            )
+                        
+                        log_machine_event(
+                            plant_no=2,
+                            machine_no=machine_no,
+                            event_type="ON",
+                            timestamp=now_ist,
+                            shift=shift,
+                            details="Machine Power/Signal Restored"
+                        )
+                        machine_last_state[machine_no] = True
+                        
+                    # ✅ ONLINE TO OFFLINE: Machine ka signal toote hue 3 minute se zyada ho gaya
+                    elif not is_currently_on and was_on_before:
+                        exact_off_time_str = status['offline_since'] 
+                        
+                        if exact_off_time_str:
+                            today = now_ist.date()
+                            time_obj = datetime.strptime(exact_off_time_str, '%H:%M:%S').time()
+                            exact_off_time = IST.localize(datetime.combine(today, time_obj))
+                        else:
+                            exact_off_time = now_ist
+                            
+                        shift = EXACT_REQUIREMENT_STATE.get_shift_from_time(exact_off_time)
+                        
+                        # Machine offline ho gayi (3 min grace ke baad), abhi tak ka gap DB mein daalo
+                        idle_status = EXACT_REQUIREMENT_STATE.idle_tracker.get_idle_status(machine_no, now_ist)
+                        live_idle_str = idle_status.get('live_idle_time', '0m')
+                        live_idle_mins = int(live_idle_str.replace('m', ''))
+                        
+                        if live_idle_mins > 0:
+                            EXACT_REQUIREMENT_STATE.save_resolved_downtime_to_db(
+                                machine_no, now_ist, shift, live_idle_mins, "ONLINE to OFFLINE", is_hour_change=False
+                            )
+                        
+                        log_machine_event(
+                            plant_no=2,
+                            machine_no=machine_no,
+                            event_type="OFF",
+                            timestamp=exact_off_time,  
+                            shift=shift,
+                            details="Machine Offline (No signal for 3 mins)"
+                        )
+                        machine_last_state[machine_no] = False
+                        
+            except Exception as e:
+                print(f"❌ Event Monitor Error: {e}")
+                time_module.sleep(5)
+
+    thread = threading.Thread(target=monitor_worker, daemon=True)
     thread.start()
 
 
@@ -2286,6 +2668,8 @@ def start_plant2_mqtt():
 
     print_active_machines_summary()
     save_hourly_idle_time_to_db()
+    
+    start_machine_event_monitor()
 
     client.loop_start()
     print("✅ MQTT Loop Started (Plant 2)\n")

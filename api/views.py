@@ -14,18 +14,15 @@ from apps.mqtt.simple_plant2 import EXACT_REQUIREMENT_STATE
 from apps.data_storage.hourly_idle_tracker import HOURLY_IDLE_TRACKER
 from rest_framework.views import APIView
 from rest_framework import status
-from .serializers import InspectionReportSerializer
-from .models import InspectionReport
-from django.views.decorators.csrf import csrf_exempt  # ← ADD THIS LINE
+from django.views.decorators.csrf import csrf_exempt  
 from django.views.decorators.http import require_http_methods
-from .models import MachineChecksheetReport, MachineChecksheetObservation
-<<<<<<< HEAD
-from .models import TipChangeDressing
-from .serializers import TipChangeDressingSerializer
-=======
-import json
->>>>>>> 54a09df31eeba98c3751a8540263e9e580f37a9c
+
 import pytz
+import traceback
+from django.shortcuts import get_object_or_404
+
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+from rest_framework_simplejwt.views import TokenObtainPairView
 
 @api_view(['GET'])
 def get_dashboard_data(request):
@@ -826,16 +823,216 @@ def get_tool_info_from_tid_map(tool_id):
         print(f"❌ ERROR: {e}")
         return {}
 
+@api_view(['GET'])
+def get_machine_history(request):
+    """
+    🌟 ADVANCED STORY BUILDER API 🌟
+    Returns exact chronological nodes for the frontend 'Production Journey Timeline'.
+    ✅ STRICTLY relies on Database events (No fake 8:30 AM inference).
+    ✅ Pure Professional English strings.
+    """
+    try:
+        from django.db import connection
+        import pytz
+        from datetime import datetime, timedelta
+        
+        plant_no = int(request.GET.get('plant_no', 2))
+        machine_no = str(request.GET.get('machine_no', '')).strip()
+        date_str = request.GET.get('date', '').strip() 
+        
+        ist_tz = pytz.timezone('Asia/Kolkata')
+        if not date_str:
+            date_str = datetime.now(ist_tz).strftime('%Y-%m-%d')
+            
+        if not machine_no:
+            return Response({"success": False, "error": "machine_no is required"}, status=400)
 
+        target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+        now_ist = datetime.now(ist_tz)
+        
+        # Shift Boundaries
+        shift_a_start = ist_tz.localize(datetime.combine(target_date, datetime.strptime("08:30:00", "%H:%M:%S").time()))
+        shift_a_end = shift_a_start + timedelta(hours=12) # 20:30 (8:30 PM)
+        
+        start_str = shift_a_start.strftime('%Y-%m-%d %H:%M:%S')
+        end_str = shift_a_end.strftime('%Y-%m-%d %H:%M:%S')
+
+        events = []
+        
+        # 1️⃣ SHIFT START NODE (Reference point)
+        events.append({
+            "timestamp": shift_a_start.timestamp(),
+            "time_str": shift_a_start.strftime('%I:%M %p'),
+            "type": "SHIFT_START",
+            "title": "Shift Started",
+            "details": "Shift officially started at 08:30 AM",
+            "raw_time": start_str,
+            "shift": "A"
+        })
+
+        with connection.cursor() as cursor:
+            # 2️⃣ FETCH EXACT MACHINE EVENTS (ON, OFF, SHUT HEIGHT, TOOL CHANGE)
+            cursor.execute("""
+                SELECT event_type, timestamp, shift, details
+                FROM "Machine_Event_Logs"
+                WHERE plant_no = %s AND machine_no = %s 
+                  AND timestamp >= %s AND timestamp <= %s
+            """, [plant_no, machine_no, start_str, end_str])
+            
+            for row in cursor.fetchall():
+                evt_type = row[0]
+                ts_obj = row[1]
+                shift = row[2]
+                details = row[3]
+                
+                if ts_obj.tzinfo is None:
+                    ts_obj = ist_tz.localize(ts_obj)
+                else:
+                    ts_obj = ts_obj.astimezone(ist_tz)
+                
+                # Pure English Titles
+                title = evt_type
+                if evt_type == 'ON': title = "Machine Powered ON"
+                elif evt_type == 'OFF': title = "Machine Offline"
+                elif evt_type == 'SHUT_HEIGHT_CHANGE': title = "Shut Height Adjusted"
+                elif evt_type == 'TOOL_CHANGE': title = "Tool Changed"
+                
+                events.append({
+                    "timestamp": ts_obj.timestamp(),
+                    "time_str": ts_obj.strftime('%I:%M %p'),
+                    "type": evt_type,
+                    "title": title,
+                    "details": details,
+                    "raw_time": ts_obj.strftime('%Y-%m-%d %H:%M:%S'),
+                    "shift": shift
+                })
+
+            # 3️⃣ FETCH FIRST PRODUCTION COUNT
+            cursor.execute("""
+                SELECT MIN(timestamp) FROM Plant2_data
+                WHERE machine_no = %s AND count > 0 AND timestamp >= %s AND timestamp <= %s
+            """, [machine_no, start_str, end_str])
+            
+            first_count_ts = cursor.fetchone()[0]
+            
+            if first_count_ts:
+                if first_count_ts.tzinfo is None:
+                    first_count_ts = ist_tz.localize(first_count_ts)
+                else:
+                    first_count_ts = first_count_ts.astimezone(ist_tz)
+
+                events.append({
+                    "timestamp": first_count_ts.timestamp(),
+                    "time_str": first_count_ts.strftime('%I:%M %p'),
+                    "type": "FIRST_COUNT",
+                    "title": "First Production Count",
+                    "details": "Machine started producing parts",
+                    "raw_time": first_count_ts.strftime('%Y-%m-%d %H:%M:%S'),
+                    "shift": "A"
+                })
+
+            # 4️⃣ CALCULATE HOURLY PRODUCTION SUMMARIES
+            hour_boundaries = [shift_a_start]
+            for hr in range(9, 21): 
+                hour_boundaries.append(shift_a_start.replace(hour=hr, minute=0, second=0))
+            hour_boundaries.append(shift_a_end)
+            
+            for i in range(len(hour_boundaries)-1):
+                t1 = hour_boundaries[i]
+                t2 = hour_boundaries[i+1]
+                
+                if t2 > now_ist: # Skip future boundaries
+                    break
+                    
+                t1_str = t1.strftime('%Y-%m-%d %H:%M:%S')
+                t2_str = t2.strftime('%Y-%m-%d %H:%M:%S')
+                
+                cursor.execute("""
+                    SELECT COALESCE(SUM(count), 0) FROM Plant2_data
+                    WHERE machine_no = %s AND timestamp > %s AND timestamp <= %s
+                """, [machine_no, t1_str, t2_str])
+                
+                hr_count = cursor.fetchone()[0] or 0
+                
+                events.append({
+                    "timestamp": t2.timestamp() - 1,
+                    "time_str": t2.strftime('%I:%M %p'),
+                    "type": "HOUR_CHANGE",
+                    "title": f"Hourly Production Summary ({t2.strftime('%I %p')})",
+                    "details": f"Total production in this hour: {hr_count} pieces",
+                    "raw_time": t2_str,
+                    "shift": "A",
+                    "count": hr_count
+                })
+
+        # 5️⃣ ADD LUNCH TIME (12:15 PM - 12:45 PM)
+        lunch_start = ist_tz.localize(datetime.combine(target_date, datetime.strptime("12:15:00", "%H:%M:%S").time()))
+        lunch_end = ist_tz.localize(datetime.combine(target_date, datetime.strptime("12:45:00", "%H:%M:%S").time()))
+        
+        if now_ist >= lunch_start:
+            events.append({
+                "timestamp": lunch_start.timestamp(),
+                "time_str": lunch_start.strftime('%I:%M %p'),
+                "type": "LUNCH_START",
+                "title": "Lunch Break Started",
+                "details": "Machine tracking paused for lunch (12:15 PM)",
+                "raw_time": lunch_start.strftime('%Y-%m-%d %H:%M:%S'),
+                "shift": "A"
+            })
+        if now_ist >= lunch_end:
+            events.append({
+                "timestamp": lunch_end.timestamp(),
+                "time_str": lunch_end.strftime('%I:%M %p'),
+                "type": "LUNCH_END",
+                "title": "Lunch Break Ended",
+                "details": "Production Tracking Resumed (12:45 PM)",
+                "raw_time": lunch_end.strftime('%Y-%m-%d %H:%M:%S'),
+                "shift": "A"
+            })
+
+        # 6️⃣ SORT ALL EVENTS CHRONOLOGICALLY
+        events.sort(key=lambda x: x['timestamp'])
+
+        final_events = []
+        for e in events:
+            if e['timestamp'] <= now_ist.timestamp():
+                final_events.append({
+                    "type": e['type'],
+                    "time": e['time_str'],
+                    "title": e['title'],
+                    "details": e['details'],
+                    "timestamp": e['timestamp'],
+                    "raw_time": e['raw_time'],
+                    "shift": e['shift'],
+                    "count": e.get('count', 0)
+                })
+
+        return Response({
+            "success": True,
+            "plant_no": plant_no,
+            "machine_no": machine_no,
+            "date": date_str,
+            "total_events": len(final_events),
+            "events": final_events
+        })
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return Response({"success": False, "error": str(e)}, status=500)
+    
+  
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from django.views.decorators.cache import never_cache
 
 @never_cache
 @api_view(['GET'])
 def plant2_live(request):
     """
     Plant 2 - LIVE DASHBOARD DATA
-    
-    ✅ UPDATED: DB-based last_hour_count, cumulative_count, total_shift_idle_time
-    ✅ FIXED: STRICT_IDLE_POLICY replaced with idle_tracker
+    🌟 FINAL FIX: JSON Heartbeat Reset Bug Fixed. Continuous Idle Timer.
+    🌟 FIX 2: Shut Height logic improved to ensure UI visibility.
     """
     try:
         from apps.machines.machine_state import MACHINE_STATE
@@ -844,6 +1041,9 @@ def plant2_live(request):
             TOPIC_MACHINE_MAPPING,
             get_machine_group
         )
+        from django.db import connection
+        import pytz
+        from datetime import datetime, timedelta
         
         all_mapped_machines = set()
         for machines_list in TOPIC_MACHINE_MAPPING.values():
@@ -857,105 +1057,262 @@ def plant2_live(request):
         
         ist_tz = pytz.timezone('Asia/Kolkata')
         now_ist = datetime.now(ist_tz)
-        
+
+        # =====================================================================
+        # 🚀 STEP 1: BULK DB QUERIES
+        # =====================================================================
+        current_shift = PLANT2_EXACT_REQUIREMENT_STATE.get_shift_from_time(now_ist)
+        current_hour = now_ist.replace(minute=0, second=0, microsecond=0)
+        previous_hour_start = current_hour - timedelta(hours=1)
+        shift_start = PLANT2_EXACT_REQUIREMENT_STATE.get_shift_start_datetime(now_ist)
+
+        bulk_last_hour = {}
+        bulk_cumulative = {}
+        bulk_shift_idle = {}
+
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    SELECT machine_no, COALESCE(SUM(count), 0) FROM Plant2_data 
+                    WHERE timestamp >= %s AND timestamp < %s
+                    GROUP BY machine_no
+                """, [previous_hour_start, current_hour])
+                for row in cursor.fetchall():
+                    bulk_last_hour[str(row[0]).strip()] = int(row[1])
+
+                cursor.execute("""
+                    SELECT p1.machine_no, p1.cumulative_count
+                    FROM Plant2_data p1
+                    INNER JOIN (
+                        SELECT machine_no, MAX(timestamp) as max_ts
+                        FROM Plant2_data
+                        WHERE shift = %s AND timestamp >= %s
+                        GROUP BY machine_no
+                    ) p2 ON p1.machine_no = p2.machine_no AND p1.timestamp = p2.max_ts
+                """, [current_shift, shift_start])
+                for row in cursor.fetchall():
+                    bulk_cumulative[str(row[0]).strip()] = int(row[1])
+
+                cursor.execute("""
+                    SELECT machine_no, COALESCE(SUM(idle_time), 0)
+                    FROM "Plant2_hourly_idle"
+                    WHERE shift = %s AND timestamp >= %s AND timestamp < %s
+                    GROUP BY machine_no
+                """, [current_shift, shift_start, now_ist])
+                for row in cursor.fetchall():
+                    bulk_shift_idle[str(row[0]).strip()] = int(row[1])
+        except Exception as e:
+            print(f"❌ Bulk Data Query Error: {e}")
+
+        # =====================================================================
+        # 🚀 STEP 2: LOOP THROUGH MACHINES
+        # =====================================================================
+        collected_tools = set()
+        intermediate_machine_data = []
+
         for machine_no in all_mapped_machines:
             machine_data = None
-            
-            # Find existing machine data
             for m in live_machines:
                 if m['machine_no'] == machine_no and m.get('plant') == 2:
                     machine_data = m
                     break
             
             try:
-                # ✅ FIXED: Get idle status from idle_tracker
                 idle_status = PLANT2_EXACT_REQUIREMENT_STATE.idle_tracker.get_idle_status(machine_no, now_ist)
+                status_info = PLANT2_EXACT_REQUIREMENT_STATE.get_machine_status(machine_no)
                 
-                # ✅ UPDATED: Get complete machine data (DB-fetched values included)
-                exact_data = PLANT2_EXACT_REQUIREMENT_STATE.get_machine_data(machine_no)
-                
-                is_on = idle_status['on_since'] is not None
-                is_producing = idle_status['count_seconds_ago'] is not None and idle_status['count_seconds_ago'] <= 180
-                
-                if is_on and not machine_data:
-                    tool_id = exact_data.get('current_tool_id', 'N/A')
-                    shut_height = exact_data.get('current_shut_height', 0.0)
-                    
-                    machine_data = {
-                        'plant': 2,
-                        'machine_no': machine_no,
-                        'tool_id': tool_id,
-                        'count': 0,
-                        'shut_height': shut_height,
-                        'last_seen': 'JSON only',
-                        'status': idle_status['status'],
-                        'current_hour_count': 0,
-                        'last_hour_count': 0,
-                        'cumulative_count': 0,
-                        'shift': exact_data.get('shift', 'A'),
-                        'idle_time': idle_status['hourly_idle_total']
-                    }
-                
-                if machine_data:
-                    machine_data.update(exact_data)
-                    
-                    problem_detected = is_on and not is_producing and idle_status['is_idle']
-                    machine_data['problem_detected'] = problem_detected
-                    
-                    if problem_detected:
-                        problem_machines.append(machine_no)
-                    
-                    # ===== STRICT IDLE DATA =====
-                    current_shift = PLANT2_EXACT_REQUIREMENT_STATE.get_shift_from_time(now_ist)
-                    
-                    # Last activity time
-                    if idle_status['last_count_time']:
-                        machine_data['last_activity'] = idle_status['last_count_time'].strftime('%H:%M:%S')
+                m_str = str(machine_no)
+                db_last_hour = bulk_last_hour.get(m_str, 0)
+                db_cumulative = bulk_cumulative.get(m_str, 0)
+                db_shift_idle = bulk_shift_idle.get(m_str, 0)
+
+                total_shift_idle = db_shift_idle + idle_status['hourly_idle_total']
+
+                is_on = status_info['machine_on']
+                is_producing = status_info['is_producing']
+
+                # 🌟 FIX 1: OFFLINE TIME TRACKING (Uses both JSON + COUNT to know when machine died)
+                last_signal_time = None
+                if machine_no in PLANT2_EXACT_REQUIREMENT_STATE.last_count_time and machine_no in PLANT2_EXACT_REQUIREMENT_STATE.machine_json_status:
+                    last_signal_time = max(
+                        PLANT2_EXACT_REQUIREMENT_STATE.last_count_time[machine_no],
+                        PLANT2_EXACT_REQUIREMENT_STATE.machine_json_status[machine_no]['last_json_time']
+                    )
+                elif machine_no in PLANT2_EXACT_REQUIREMENT_STATE.last_count_time:
+                    last_signal_time = PLANT2_EXACT_REQUIREMENT_STATE.last_count_time[machine_no]
+                elif machine_no in PLANT2_EXACT_REQUIREMENT_STATE.machine_json_status:
+                    last_signal_time = PLANT2_EXACT_REQUIREMENT_STATE.machine_json_status[machine_no]['last_json_time']
+
+                # Ignore yesterday's signal
+                if last_signal_time and last_signal_time < shift_start:
+                    last_signal_time = None
+
+                offline_since_str = None
+                offline_duration_minutes = None
+
+                if not is_on: # Completely offline
+                    if last_signal_time:
+                        offline_since_obj = last_signal_time
                     else:
-                        machine_data['last_activity'] = 'Never'
+                        offline_since_obj = shift_start
                     
-                    # ✅ UPDATED: Counts from DATABASE (not memory)
-                    machine_data['last_hour_count'] = exact_data.get('last_hour_count', 0)  # FROM DB
-                    machine_data['cumulative_count'] = exact_data.get('cumulative_count', 0)  # FROM DB
-                    machine_data['total_shift_idle_time'] = exact_data.get('total_shift_idle_time', 0)  # FROM DB
+                    offline_since_str = offline_since_obj.strftime('%H:%M:%S')
+                    offline_duration_minutes = int((now_ist - offline_since_obj).total_seconds() / 60)
+
+                on_since_str = None
+                first_count_str = None
+                time_to_first_count = None
+
+                if is_on and machine_no in PLANT2_EXACT_REQUIREMENT_STATE.machine_on_since:
+                    on_since = PLANT2_EXACT_REQUIREMENT_STATE.machine_on_since[machine_no]
+                    if on_since >= shift_start:
+                        on_since_str = on_since.strftime('%H:%M:%S')
+                        if machine_no in PLANT2_EXACT_REQUIREMENT_STATE.first_count_time:
+                            first_count = PLANT2_EXACT_REQUIREMENT_STATE.first_count_time[machine_no]
+                            if first_count >= shift_start:
+                                first_count_str = first_count.strftime('%H:%M:%S')
+                                delay = (first_count - on_since).total_seconds()
+                                time_to_first_count = int(delay / 60)
+
+                # 🌟 FIX 2: IMPROVED SHUT HEIGHT FETCHING 🌟
+                segment_info = PLANT2_EXACT_REQUIREMENT_STATE.machine_segments.get(machine_no, {})
+                segment_shut_height = segment_info.get('shut_height')
+                
+                final_shut_height = 0.0
+                if segment_shut_height and str(segment_shut_height) not in ['No data', 'Failed', 'None', '0', '0.0', '']:
+                    try:
+                        final_shut_height = float(segment_shut_height)
+                    except:
+                        pass
+                elif status_info['shut_height'] and status_info['shut_height'] != "No data":
+                    try:
+                        final_shut_height = float(status_info['shut_height'])
+                    except:
+                        pass
+
+                exact_data = {
+                    'machine_no': machine_no,
+                    'current_hour_count': PLANT2_EXACT_REQUIREMENT_STATE.current_hour_counts.get(machine_no, 0),
+                    'last_hour_count': db_last_hour,
+                    'cumulative_count': db_cumulative,
+                    'idle_time': idle_status['hourly_idle_total'],
+                    'total_shift_idle_time': total_shift_idle,
+                    'shift': current_shift,
+                    'machine_on': is_on,
+                    'is_producing': is_producing,
+                    'has_count_data': status_info['has_count_data'],
+                    'has_json_data': status_info['has_json_data'],
+                    'count_seconds_ago': status_info['count_seconds_ago'],
+                    'json_seconds_ago': status_info['json_seconds_ago'],
+                    'current_tool_id': status_info['tool_id'],
                     
-                    # ✅ UPDATED: Add shut_height and first_count_time explicitly
-                    machine_data['shut_height'] = exact_data.get('current_shut_height', 0.0)
-                    machine_data['first_count_at'] = exact_data.get('first_count_at')
-                    machine_data['time_to_first_count'] = exact_data.get('time_to_first_count')
+                    # ✅ ULTIMATE FIX: Key ka naam 'shut_height' hona chahiye (Pehle 'current_shut_height' tha)
+                    'shut_height': final_shut_height, 
                     
-                    # Apply strict idle policy fields
-                    machine_data.update({
-                        # Strict policy fields
-                        'live_idle_time': idle_status['live_idle_time'],
-                        'accumulated_idle_time': idle_status['accumulated_idle_time'],
-                        'hourly_idle_total': idle_status['hourly_idle_total'],
-                        'idle_time': idle_status['hourly_idle_total'],
-                        'is_idle': idle_status['is_idle'],
-                        'idle_type': idle_status['idle_type'],
-                        'status': idle_status['status'],
-                        'data_source': idle_status['data_source'],
-                        
-                        # Diagnostic fields
-                        'on_since': idle_status['on_since'].strftime('%H:%M:%S') if idle_status['on_since'] else None,
-                        'count_seconds_ago': idle_status['count_seconds_ago'],
-                        'json_seconds_ago': idle_status['json_seconds_ago'],
-                        
-                        # Machine state
-                        'machine_on': is_on,
-                        'is_producing': is_producing
-                    })
+                    'data_source': status_info['data_source'],
+                    'on_since': on_since_str,
+                    'first_count_at': first_count_str,
+                    'time_to_first_count': time_to_first_count,
+                    'offline_since': offline_since_str,
+                    'offline_duration_minutes': offline_duration_minutes
+                }
+                
+                tool_id = exact_data.get('current_tool_id', 'N/A')
+                
+                m_data = machine_data or {
+                    'plant': 2,
+                    'machine_no': machine_no,
+                    'tool_id': tool_id if is_on else f"PLANT2_M{machine_no:02d}",
+                    'count': 0,
+                    'shut_height': final_shut_height, 
+                    'last_seen': 'JSON only' if is_on else 'Not active',
+                    'status': 'OFFLINE' if not is_on else idle_status['status'],
+                    'current_hour_count': 0,
+                    'last_hour_count': 0,
+                    'cumulative_count': 0,
+                    'shift': exact_data.get('shift', 'A'),
+                    'idle_time': idle_status['hourly_idle_total']
+                }
+                
+                m_data.update(exact_data)
+                
+                problem_detected = is_on and not is_producing and idle_status['is_idle']
+                m_data['problem_detected'] = problem_detected
+                if problem_detected:
+                    problem_machines.append(machine_no)
+                
+                # 🌟 MASTER FIX 3: IDLE TIMER FIX 🌟
+                last_count_obj = PLANT2_EXACT_REQUIREMENT_STATE.last_count_time.get(machine_no)
+                if last_count_obj and last_count_obj >= shift_start:
+                    m_data['last_activity'] = last_count_obj.strftime('%H:%M:%S')
+                else:
+                    m_data['last_activity'] = 'Never'
+                
+                m_data.update({
+                    'live_idle_time': idle_status['live_idle_time'],
+                    'accumulated_idle_time': idle_status['accumulated_idle_time'],
+                    'hourly_idle_total': idle_status['hourly_idle_total'],
+                    'idle_time': idle_status['hourly_idle_total'],
+                    'is_idle': idle_status['is_idle'],
+                    'idle_type': idle_status['idle_type']
+                })
+                
+                tool_id_for_bulk = m_data.get('tool_id', '')
+                if tool_id_for_bulk and tool_id_for_bulk != 'N/A' and not tool_id_for_bulk.startswith('PLANT2_M'):
+                    collected_tools.add(tool_id_for_bulk[:24])
+
+                intermediate_machine_data.append({'has_data': True, 'data': m_data, 'machine_no': machine_no, 'idle_status': idle_status})
                     
             except Exception as e:
                 print(f"⚠️ M{machine_no} error: {e}")
-                import traceback
-                traceback.print_exc()
-                if not machine_data:
-                    exact_data = {}
-            
-            if machine_data:
+                intermediate_machine_data.append({'has_data': False, 'data': None, 'machine_no': machine_no, 'idle_status': None})
+
+        # =====================================================================
+        # 🚀 STEP 3: BULK TOOL FETCH
+        # =====================================================================
+        bulk_tool_info = {}
+        if collected_tools:
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'tid_map'")
+                    columns = [row[0] for row in cursor.fetchall()]
+                    epc_column = next((col for col in columns if col.upper() == 'EPC'), None)
+                    
+                    if epc_column:
+                        format_strings = ','.join(['%s'] * len(collected_tools))
+                        query = f'SELECT * FROM public.tid_map WHERE "{epc_column}" IN ({format_strings})'
+                        cursor.execute(query, tuple(collected_tools))
+                        
+                        for result in cursor.fetchall():
+                            row_dict = dict(zip(columns, result))
+                            def get_value(search_key):
+                                for col_name, col_value in row_dict.items():
+                                    if col_name.upper() == search_key.upper(): return col_value if col_value else 'N/A'
+                                return 'N/A'
+                                
+                            epc = get_value('EPC')
+                            bulk_tool_info[epc] = {
+                                'customer': get_value('CUSTOMER'),
+                                'model': get_value('MODEL'),
+                                'part_name': get_value('PART_NAME'),
+                                'tool_name': get_value('TOOL_NAME'),
+                                'epc': epc,
+                                'part_number': get_value('PART_NUMBER'),
+                                'tpm': int(get_value('TPM')) if get_value('TPM') != 'N/A' else 0
+                            }
+            except Exception as e:
+                print(f"❌ Bulk Tool Fetch Error: {e}")
+
+        # =====================================================================
+        # 🚀 STEP 4: FINAL ASSEMBLY
+        # =====================================================================
+        for item in intermediate_machine_data:
+            machine_no = item['machine_no']
+            if item['has_data']:
+                machine_data = item['data']
                 tool_id = machine_data.get('tool_id', '')
-                tool_info = get_tool_info_from_tid_map(tool_id)
+                clean_tool_id = tool_id[:24] if tool_id else ''
+                tool_info = bulk_tool_info.get(clean_tool_id, {})
                 
                 machine_data.update({
                     'machine_group': get_machine_group(machine_no),
@@ -965,53 +1322,10 @@ def plant2_live(request):
                     'tool_name': tool_info.get('tool_name', 'N/A'),
                     'tool_part_number': tool_info.get('part_number', 'N/A'),
                     'tool_tpm': tool_info.get('tpm', 0),
-                    'tool_epc': tool_info.get('epc', 'N/A')
+                    'tool_epc': tool_info.get('epc', 'N/A'),
+                    'plant': 2
                 })
-                
-                machine_data['plant'] = 2
                 enhanced_machines.append(machine_data)
-                
-            else:
-                # ✅ FIXED: Default machine data (offline) - use idle_tracker
-                idle_status = PLANT2_EXACT_REQUIREMENT_STATE.idle_tracker.get_idle_status(machine_no, now_ist)
-                
-                enhanced_machines.append({
-                    "plant": 2,
-                    "machine_no": machine_no,
-                    "machine_group": get_machine_group(machine_no),
-                    "tool_id": f"PLANT2_M{machine_no:02d}",
-                    "count": 0,
-                    "shut_height": 0.0,
-                    "first_count_at": None,
-                    "time_to_first_count": None,
-                    "last_seen": "Not active",
-                    "status": idle_status['status'],
-                    "current_hour_count": 0,
-                    "last_hour_count": 0,
-                    "cumulative_count": 0,
-                    "total_shift_idle_time": 0,  # ✅ NEW FIELD
-                    "shift": "A",
-                    "is_idle": idle_status['is_idle'],
-                    "idle_type": idle_status['idle_type'],
-                    "live_idle_time": idle_status['live_idle_time'],
-                    "accumulated_idle_time": idle_status['accumulated_idle_time'],
-                    "hourly_idle_total": idle_status['hourly_idle_total'],
-                    "idle_time": idle_status['hourly_idle_total'],
-                    "last_activity": "Never",
-                    'tool_customer': 'N/A',
-                    'tool_model': 'N/A',
-                    'tool_part_name': 'N/A',
-                    'tool_name': 'N/A',
-                    'tool_part_number': 'N/A',
-                    'tool_tpm': 0,
-                    'tool_epc': 'N/A',
-                    'machine_on': False,
-                    'is_producing': False,
-                    'problem_detected': False,
-                    'on_since': None,
-                    'on_duration_minutes': None,
-                    'data_source': idle_status['data_source']
-                })
         
         enhanced_machines.sort(key=lambda x: x['machine_no'])
         
@@ -1019,18 +1333,15 @@ def plant2_live(request):
         producing_machines = [m for m in enhanced_machines if m.get('is_producing')]
         
         groups_summary = {}
-        for group in ['J1', 'J2', 'J3', 'J4', 'J5']:
+        for group in ['J1', 'J2', 'J3', 'J4', 'J5', 'J6', 'J7', 'J8', 'J9']:
             group_machines = [m for m in enhanced_machines if m.get('machine_group') == group]
-            group_on = [m for m in group_machines if m.get('machine_on')]
-            group_producing = [m for m in group_machines if m.get('is_producing')]
-            group_problems = [m for m in group_machines if m.get('problem_detected')]
-            
-            groups_summary[group] = {
-                'total': len(group_machines),
-                'on': len(group_on),
-                'producing': len(group_producing),
-                'problems': len(group_problems)
-            }
+            if group_machines:
+                groups_summary[group] = {
+                    'total': len(group_machines),
+                    'on': len([m for m in group_machines if m.get('machine_on')]),
+                    'producing': len([m for m in group_machines if m.get('is_producing')]),
+                    'problems': len([m for m in group_machines if m.get('problem_detected')])
+                }
         
         response = Response({
             "success": True,
@@ -1041,35 +1352,216 @@ def plant2_live(request):
             "problem_machines": problem_machines,
             "groups_summary": groups_summary,
             "machines": enhanced_machines,
-            "plant": 2,
-            "message": f"Plant 2 - ON:{len(on_machines)} | Producing:{len(producing_machines)} | Problems:{len(problem_machines)}"
+            "plant": 2
         })
-        
         response['Cache-Control'] = 'no-cache, no-store, must-revalidate, max-age=0'
-        response['Pragma'] = 'no-cache'
-        response['Expires'] = '0'
-        
         return response
         
     except Exception as e:
-        print(f"❌ API ERROR: {e}")
         import traceback
         traceback.print_exc()
-        
-        error_response = Response({
-            "success": False,
-            "error": str(e),
-            "machines": [],
-            "plant": 2
-        }, status=500)
-        
-        error_response['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-        error_response['Pragma'] = 'no-cache'
-        error_response['Expires'] = '0'
-        
-        return error_response
+        return Response({"success": False, "error": str(e), "machines": [], "plant": 2}, status=500)
 
-    
+
+
+@api_view(['GET'])
+def get_machine_history(request):
+    """
+    🌟 ADVANCED STORY BUILDER API 🌟
+    Returns exact chronological nodes for the frontend 'Production Journey Timeline'.
+    ✅ STRICTLY relies on Database events (No fake 8:30 AM inference).
+    ✅ Pure Professional English strings.
+    """
+    try:
+        from django.db import connection
+        import pytz
+        from datetime import datetime, timedelta
+        
+        plant_no = int(request.GET.get('plant_no', 2))
+        machine_no = str(request.GET.get('machine_no', '')).strip()
+        date_str = request.GET.get('date', '').strip() 
+        
+        ist_tz = pytz.timezone('Asia/Kolkata')
+        if not date_str:
+            date_str = datetime.now(ist_tz).strftime('%Y-%m-%d')
+            
+        if not machine_no:
+            return Response({"success": False, "error": "machine_no is required"}, status=400)
+
+        target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+        now_ist = datetime.now(ist_tz)
+        
+        # Shift Boundaries
+        shift_a_start = ist_tz.localize(datetime.combine(target_date, datetime.strptime("08:30:00", "%H:%M:%S").time()))
+        shift_a_end = shift_a_start + timedelta(hours=12) # 20:30 (8:30 PM)
+        
+        start_str = shift_a_start.strftime('%Y-%m-%d %H:%M:%S')
+        end_str = shift_a_end.strftime('%Y-%m-%d %H:%M:%S')
+
+        events = []
+        
+        # 1️⃣ SHIFT START NODE (Reference point)
+        events.append({
+            "timestamp": shift_a_start.timestamp(),
+            "time_str": shift_a_start.strftime('%I:%M %p'),
+            "type": "SHIFT_START",
+            "title": "Shift Started",
+            "details": "Shift officially started at 08:30 AM",
+            "raw_time": start_str,
+            "shift": "A"
+        })
+
+        with connection.cursor() as cursor:
+            # 2️⃣ FETCH EXACT MACHINE EVENTS (ON, OFF, SHUT HEIGHT, TOOL CHANGE)
+            cursor.execute("""
+                SELECT event_type, timestamp, shift, details
+                FROM "Machine_Event_Logs"
+                WHERE plant_no = %s AND machine_no = %s 
+                  AND timestamp >= %s AND timestamp <= %s
+            """, [plant_no, machine_no, start_str, end_str])
+            
+            for row in cursor.fetchall():
+                evt_type = row[0]
+                ts_obj = row[1]
+                shift = row[2]
+                details = row[3]
+                
+                if ts_obj.tzinfo is None:
+                    ts_obj = ist_tz.localize(ts_obj)
+                else:
+                    ts_obj = ts_obj.astimezone(ist_tz)
+                
+                # Pure English Titles
+                title = evt_type
+                if evt_type == 'ON': title = "Machine Powered ON"
+                elif evt_type == 'OFF': title = "Machine Offline"
+                elif evt_type == 'SHUT_HEIGHT_CHANGE': title = "Shut Height Adjusted"
+                elif evt_type == 'TOOL_CHANGE': title = "Tool Changed"
+                
+                events.append({
+                    "timestamp": ts_obj.timestamp(),
+                    "time_str": ts_obj.strftime('%I:%M %p'),
+                    "type": evt_type,
+                    "title": title,
+                    "details": details,
+                    "raw_time": ts_obj.strftime('%Y-%m-%d %H:%M:%S'),
+                    "shift": shift
+                })
+
+            # 3️⃣ FETCH FIRST PRODUCTION COUNT
+            cursor.execute("""
+                SELECT MIN(timestamp) FROM Plant2_data
+                WHERE machine_no = %s AND count > 0 AND timestamp >= %s AND timestamp <= %s
+            """, [machine_no, start_str, end_str])
+            
+            first_count_ts = cursor.fetchone()[0]
+            
+            if first_count_ts:
+                if first_count_ts.tzinfo is None:
+                    first_count_ts = ist_tz.localize(first_count_ts)
+                else:
+                    first_count_ts = first_count_ts.astimezone(ist_tz)
+
+                events.append({
+                    "timestamp": first_count_ts.timestamp(),
+                    "time_str": first_count_ts.strftime('%I:%M %p'),
+                    "type": "FIRST_COUNT",
+                    "title": "First Production Count",
+                    "details": "Machine started producing parts",
+                    "raw_time": first_count_ts.strftime('%Y-%m-%d %H:%M:%S'),
+                    "shift": "A"
+                })
+
+            # 4️⃣ CALCULATE HOURLY PRODUCTION SUMMARIES
+            hour_boundaries = [shift_a_start]
+            for hr in range(9, 21): 
+                hour_boundaries.append(shift_a_start.replace(hour=hr, minute=0, second=0))
+            hour_boundaries.append(shift_a_end)
+            
+            for i in range(len(hour_boundaries)-1):
+                t1 = hour_boundaries[i]
+                t2 = hour_boundaries[i+1]
+                
+                if t2 > now_ist: # Skip future boundaries
+                    break
+                    
+                t1_str = t1.strftime('%Y-%m-%d %H:%M:%S')
+                t2_str = t2.strftime('%Y-%m-%d %H:%M:%S')
+                
+                cursor.execute("""
+                    SELECT COALESCE(SUM(count), 0) FROM Plant2_data
+                    WHERE machine_no = %s AND timestamp > %s AND timestamp <= %s
+                """, [machine_no, t1_str, t2_str])
+                
+                hr_count = cursor.fetchone()[0] or 0
+                
+                events.append({
+                    "timestamp": t2.timestamp() - 1,
+                    "time_str": t2.strftime('%I:%M %p'),
+                    "type": "HOUR_CHANGE",
+                    "title": f"Hourly Production Summary ({t2.strftime('%I %p')})",
+                    "details": f"Total production in this hour: {hr_count} pieces",
+                    "raw_time": t2_str,
+                    "shift": "A",
+                    "count": hr_count
+                })
+
+        # 5️⃣ ADD LUNCH TIME (12:15 PM - 12:45 PM)
+        lunch_start = ist_tz.localize(datetime.combine(target_date, datetime.strptime("12:15:00", "%H:%M:%S").time()))
+        lunch_end = ist_tz.localize(datetime.combine(target_date, datetime.strptime("12:45:00", "%H:%M:%S").time()))
+        
+        if now_ist >= lunch_start:
+            events.append({
+                "timestamp": lunch_start.timestamp(),
+                "time_str": lunch_start.strftime('%I:%M %p'),
+                "type": "LUNCH_START",
+                "title": "Lunch Break Started",
+                "details": "Machine tracking paused for lunch (12:15 PM)",
+                "raw_time": lunch_start.strftime('%Y-%m-%d %H:%M:%S'),
+                "shift": "A"
+            })
+        if now_ist >= lunch_end:
+            events.append({
+                "timestamp": lunch_end.timestamp(),
+                "time_str": lunch_end.strftime('%I:%M %p'),
+                "type": "LUNCH_END",
+                "title": "Lunch Break Ended",
+                "details": "Production Tracking Resumed (12:45 PM)",
+                "raw_time": lunch_end.strftime('%Y-%m-%d %H:%M:%S'),
+                "shift": "A"
+            })
+
+        # 6️⃣ SORT ALL EVENTS CHRONOLOGICALLY
+        events.sort(key=lambda x: x['timestamp'])
+
+        final_events = []
+        for e in events:
+            if e['timestamp'] <= now_ist.timestamp():
+                final_events.append({
+                    "type": e['type'],
+                    "time": e['time_str'],
+                    "title": e['title'],
+                    "details": e['details'],
+                    "timestamp": e['timestamp'],
+                    "raw_time": e['raw_time'],
+                    "shift": e['shift'],
+                    "count": e.get('count', 0)
+                })
+
+        return Response({
+            "success": True,
+            "plant_no": plant_no,
+            "machine_no": machine_no,
+            "date": date_str,
+            "total_events": len(final_events),
+            "events": final_events
+        })
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return Response({"success": False, "error": str(e)}, status=500)
+
 @never_cache
 @api_view(['POST'])
 def save_hourly_snapshot(request):
@@ -1174,6 +1666,8 @@ def save_hourly_snapshot(request):
             "success": False,
             "error": str(e)
         }, status=500)
+
+
 
 
 @never_cache
@@ -1547,37 +2041,33 @@ def production_line_status_data(request):
         selected_shift = request.GET.get('shift', '')
         
         print(f"📋 Enhanced Production Line Status:")
-        print(f"   Machine:")
         print(f"   Date: {selected_date}")
         print(f"   Plant: {selected_plant}")
         print(f"   Shift: {selected_shift}")
         
-        # Machine count based on plant
+        # Machine count based on plant — FIXED
         if selected_plant == 'plant1_data':
             total_machines = 57
             plant_name = "Manufacturing Plant 1"
         elif selected_plant == 'plant2_data':
-            total_machines = 26
+            total_machines = 49  # FIXED: 26 → 49
             plant_name = "Manufacturing Plant 2"
         else:
-            total_machines = 50
+            total_machines = 57
             plant_name = "Default Plant"
         
         production_lines = []
         
         with connection.cursor() as cursor:
-            # Get machines with data
+            # FIXED: cumulative_count hataya, sirf SUM(count) use kiya
+            # FIXED: real idle_time SUM add kiya efficiency ke liye
             machine_query = f"""
                 SELECT 
                     machine_no,
                     COUNT(*) as total_entries,
-                    MAX(CASE WHEN cumulative_count IS NOT NULL THEN cumulative_count ELSE 0 END) as max_cumulative,
-                    SUM(CASE WHEN count IS NOT NULL THEN count ELSE 0 END) as sum_count,
+                    SUM(CASE WHEN count IS NOT NULL THEN count ELSE 0 END) as total_production,
+                    SUM(CASE WHEN idle_time IS NOT NULL THEN idle_time ELSE 0 END) as total_idle_minutes,
                     MAX(timestamp) as last_update,
-                    AVG(CASE 
-                        WHEN idle_time = 0 OR idle_time IS NULL THEN 85 
-                        ELSE 50 
-                    END) as efficiency,
                     STRING_AGG(DISTINCT shift, ', ') as shifts
                 FROM {selected_plant}
                 WHERE DATE(timestamp) = %s
@@ -1596,15 +2086,19 @@ def production_line_status_data(request):
             
             # Create machine data dictionary
             machine_dict = {}
-            for machine_no, entries, max_cumulative, sum_count, last_update, efficiency, shifts in results:
-                # Smart production calculation
-                production = max(max_cumulative or 0, sum_count or 0)
+            for machine_no, entries, total_production, total_idle_minutes, last_update, shifts in results:
+                
+                # FIXED: real efficiency from actual idle_time
+                idle_mins = total_idle_minutes or 0
+                efficiency = round(((480 - idle_mins) / 480) * 100, 1)
+                efficiency = max(0, min(100, efficiency))  # 0-100 ke beech rakho
                 
                 machine_dict[str(machine_no)] = {
                     'entries': entries,
-                    'production': production,
-                    'last_update': last_update,
+                    'production': total_production or 0,
+                    'total_idle_minutes': idle_mins,
                     'efficiency': efficiency,
+                    'last_update': last_update,
                     'shifts': shifts
                 }
             
@@ -1619,8 +2113,9 @@ def production_line_status_data(request):
                     last_update = data['last_update']
                     shifts = data['shifts']
                     entries = data['entries']
+                    idle_mins = data['total_idle_minutes']
                     
-                    # Determine status
+                    # Status determine karo real efficiency se
                     if production > 0:
                         if efficiency > 80:
                             status = 'Running'
@@ -1650,10 +2145,12 @@ def production_line_status_data(request):
                             last_update_str = f"{hours_ago}h {minutes_ago % 60}m ago"
                     else:
                         last_update_str = "No data"
+                
                 else:
                     # No data for this machine
                     production = 0
                     efficiency = 0
+                    idle_mins = 0
                     status = 'Offline'
                     status_color = 'secondary'
                     last_update_str = "No data"
@@ -1667,20 +2164,21 @@ def production_line_status_data(request):
                     'status_color': status_color,
                     'efficiency': round(efficiency, 1),
                     'production_count': int(production),
+                    'idle_minutes': int(idle_mins),
                     'total_entries': entries,
                     'last_update': last_update_str,
                     'shifts_worked': shifts,
                     'plant_section': f"{plant_name}"
                 })
         
-        # Calculate comprehensive summary
+        # Summary calculate karo
         total_production = sum(m['production_count'] for m in production_lines)
         running_machines = len([m for m in production_lines if m['status'] == 'Running'])
         slow_machines = len([m for m in production_lines if m['status'] == 'Slow Operation'])
         idle_machines = len([m for m in production_lines if m['status'] == 'Idle'])
         offline_machines = len([m for m in production_lines if m['status'] == 'Offline'])
+        low_machines = len([m for m in production_lines if m['status'] == 'Low Performance'])
         
-        # Performance metrics
         overall_efficiency = sum(m['efficiency'] for m in production_lines) / total_machines if total_machines > 0 else 0
         active_machines = running_machines + slow_machines
         
@@ -1698,6 +2196,7 @@ def production_line_status_data(request):
             'machine_status_breakdown': {
                 'running': running_machines,
                 'slow_operation': slow_machines,
+                'low_performance': low_machines,
                 'idle': idle_machines,
                 'offline': offline_machines,
                 'active_total': active_machines,
@@ -1712,10 +2211,10 @@ def production_line_status_data(request):
         })
         
     except Exception as e:
-        print(f"❌ Enhanced Production Line Status API error: {e}")
+        print(f"❌ Production Line Status API error: {e}")
         return Response({
             'success': False,
-            'error': 'Sorry, technical problem occurred. We can solve this as soon as possible.',
+            'error': 'Sorry, technical problem occurred.',
             'suggestion': 'Please try again or contact technical support.',
             'technical_details': str(e) if request.GET.get('debug') == 'true' else None
         }, status=500)
@@ -1818,7 +2317,7 @@ def get_machines_by_plant(request):
         plant = request.GET.get('plant', 'plant_2')
         
         if plant == 'plant_1':
-            machines = list(range(1, 57))  # 1 to 56
+            machines = list(range(1, 58))  # 1 to 56
             plant_name = 'Plant 1'
         elif plant == 'plant_2':
             machines = list(range(1, 21)) + list(range(41, 47))  # 1-20, 41-46
@@ -2124,378 +2623,451 @@ def plant2_hourly_idle_summary(request):
         
 
 
-
-
-
-
-from django.http import JsonResponse
-from django.utils import timezone
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
-
-# Import All Relevant Models and Serializer
-from .models import InspectionReport, L1_PartInfoMaster, L2_ProcessReportMaster, L3_ParameterDetailMaster
-from .serializers import InspectionReportSerializer
-
-
-# ==================================================
-# 🟢 1. DROPDOWN API (Connects to L1 and L2 Models)
-# ==================================================
-class MasterDropdownView(APIView):
-    def get(self, request):
-        filter_type = request.query_params.get('filter') 
+class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
+    def validate(self, attrs):
+        # Pehle default validation run karo (ID/Password check)
+        data = super().validate(attrs)
         
-        if filter_type == 'customer':
-            data = L1_PartInfoMaster.objects.values_list('customer_name', flat=True).distinct()
-            return Response(list(data))
-            
-        elif filter_type == 'part':
-            cust = request.query_params.get('cust')
-            data = L1_PartInfoMaster.objects.filter(customer_name=cust).values_list('part_name', flat=True).distinct()
-            return Response(list(data))
-
-        elif filter_type == 'operation':
-            cust = request.query_params.get('cust')
-            part = request.query_params.get('part')
-            ops = L2_ProcessReportMaster.objects.filter(
-                part_info__customer_name=cust, 
-                part_info__part_name=part
-            ).values_list('report_name', flat=True).distinct()
-            return Response(list(ops))
-        
-        return Response([])
-
-
-# ==================================================
-# 🟢 2. AUTO-FILL PARAMETERS API (Connects to L3 Model)
-# ==================================================
-class MasterParametersView(APIView):
-    def get(self, request):
-        cust = request.query_params.get('customer')
-        part = request.query_params.get('part')
-        op_name = request.query_params.get('operation')
-        
-        if not all([cust, part, op_name]):
-            return Response({"error": "Missing filters"}, status=400)
-
-        process = L2_ProcessReportMaster.objects.filter(
-            part_info__customer_name=cust,
-            part_info__part_name=part,
-            report_name=op_name
-        ).first()
-
-        if not process: 
-            return Response({"error": "Process Not Found in Master Data"}, status=404)
-
-        params = L3_ParameterDetailMaster.objects.filter(process_report=process).order_by('id')
-        
-        product_list = []
-        process_list = []
-        prod_sr = 1
-        proc_sr = 11
-
-        for p in params:
-            raw_spec = p.specification or ""
-            final_spec = raw_spec
-            final_tol = "-"
-
-            if "±" in raw_spec:
-                parts = raw_spec.split("±", 1)
-                final_spec = parts[0].strip()          
-                final_tol = "± " + parts[1].strip()    
-                
-            elif "+" in raw_spec:
-                parts = raw_spec.split("+", 1)
-                final_spec = parts[0].strip()
-                final_tol = "+" + parts[1].strip()
-
-            item_data = {
-                "item": p.parameter_name,
-                "spec": final_spec,
-                "tol": final_tol,
-                "instr": p.instrument,
-                "category": p.category
-            }
-
-            if p.category == 'PRODUCT':
-                item_data['sr_no'] = prod_sr
-                product_list.append(item_data)
-                prod_sr += 1
-            else:
-                item_data['sr_no'] = proc_sr
-                process_list.append(item_data)
-                proc_sr += 1
-
-        return Response({
-            "productItems": product_list,
-            "processItems": process_list,
-            "part_number": process.part_info.part_no, 
-            "model_name": process.part_info.model_name
-        })
-
-
-# ==================================================
-# 🟢 3. SAVE INSPECTION REPORT API (Fixed for your Model)
-# ==================================================
-class SaveInspectionReportView(APIView):
-    def post(self, request):
-        try:
-            data = request.data
-            master = data.get('master_data', {})
-            logs = data.get('logs', [])
-            
-            date_val = master.get('date') or timezone.now().date()
-            cust = master.get('customer', 'Unknown')
-            part = master.get('part_name', 'Unknown')
-            op = master.get('operation', 'Unknown')
-            part_no = master.get('part_number', 'N/A')
-            plant = master.get('plant_location', 'PLANT 1')
-
-            # Get the latest operator and machine from the currently active log
-            current_operator = logs[-1].get('operator', 'Unknown') if logs else 'Unknown'
-            current_machine = logs[-1].get('machine', 'N/A') if logs else 'N/A'
-
-            # 🔥 SMART LOGIC: Check if report exists for today
-            report, created = InspectionReport.objects.get_or_create(
-                customer_account=cust,
-                part_name=part,
-                operation=op,
-                inspection_date=date_val,
-                defaults={
-                    'part_number': part_no,
-                    'plant_location': plant,
-                    'operator_name': current_operator, # Required by your model
-                    'machine_number': current_machine, # Required by your model
-                    'inspection_data': {}
-                }
-            )
-
-            # Update top level info if it changed
-            report.operator_name = current_operator
-            report.machine_number = current_machine
-
-            # 🔥 THE MAGIC: Save ALL stages (Setup, 4Hr, Last) cleanly into JSONField
-            report.inspection_data = {
-                "parameters": data.get('parameters', []),
-                "logs": logs
-            }
-            
-            # Save to Database
-            report.save()
-
-            if created:
-                msg = "✅ New Report Created Successfully!"
-            else:
-                msg = "✅ Report Updated Successfully! (New Stage Added)"
-
-            return Response({"message": msg, "report_id": report.id}, status=status.HTTP_200_OK)
-
-        except Exception as e:
-            print("Django Error: ", str(e)) 
-            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-# ==================================================
-# 🟢 4. FETCH PREVIOUS REPORT API
-# ==================================================
-class GetInspectionReportView(APIView):
-    def get(self, request):
-        customer = request.query_params.get('customer', None)
-        part_name = request.query_params.get('part_name', None)
-        operation = request.query_params.get('operation', None)
-        date = request.query_params.get('date', None)
-
-        filters = {}
-        if customer: filters['customer_account__icontains'] = customer
-        if part_name: filters['part_name__icontains'] = part_name
-        if operation: filters['operation__icontains'] = operation
-        if date: filters['inspection_date'] = date
-
-        reports = InspectionReport.objects.filter(**filters).order_by('-id')
-
-        if reports.exists():
-             latest_report = reports.first() 
-             serializer = InspectionReportSerializer(latest_report)
-             return Response(serializer.data, status=status.HTTP_200_OK)
+        # Ab check karo ki user kisi group mein hai ya nahi
+        if self.user.groups.exists():
+            data['role'] = self.user.groups.first().name
         else:
-             return Response({"message": "No report found for given filters"}, status=status.HTTP_404_NOT_FOUND)
-         
-         
-# ==================================================
-# 🟢 5. SAVE DAILY MACHINE CHECK SHEET (POKA-YOKE)
-# ==================================================
-class SaveMachineChecksheetView(APIView):
-    @transaction.atomic  # 
+            data['role'] = 'Default_User'
+            
+        data['username'] = self.user.username
+        return data
+
+class CustomLoginView(TokenObtainPairView):
+    serializer_class = CustomTokenObtainPairSerializer
+
+
+class SaveMachineBreakdownSummaryView(APIView):
+    @transaction.atomic
     def post(self, request):
         try:
-            data = request.data
+            raw_data = request.data
             
-            # 1. Main Report Create Karo (Parent Table)
-            report = MachineChecksheetReport.objects.create(
-                date=data.get('date', timezone.now().date()),
-                plant_name=data.get('plant_name', 'Plant 1'),
-                machine_no=data.get('machine_no', ''),
-                checked_by_maintenance=data.get('checked_by_maintenance', ''),
-                verified_by_production=data.get('verified_by_production', '')
-            )
+            mapped_data = {
+                'date': parse_date(raw_data.get('date')),
+                'machine_type_no': raw_data.get('machineTypeNo', ''),
+                'details': {
+                    'problem_description': raw_data.get('problemDescription', ''),
+                    'time_period_maintenance': raw_data.get('timePeriodMaintenance', ''),
+                    'status_after_period': raw_data.get('statusAfterPeriod', ''),
+                    'updated_in_4m': raw_data.get('updatedIn4m', ''),
+                    'sign': raw_data.get('sign', ''),
+                    'remarks': raw_data.get('remarks', '')
+                }
+            }
 
-            # 2. Check Parameters (Poka-Yoke details) Extract Karo (Child Table)
-            check_points_data = data.get('check_points', [])
-            observations = []
-            
-            # Loop chala kar saare points ko list mein daalo
-            for index, item in enumerate(check_points_data):
-                observations.append(
-                    MachineChecksheetObservation(
-                        report=report,
-                        s_no=item.get('s_no', index + 1), # Agar frontend se s_no nahi aaya toh loop ka number le lega
-                        poka_yoke_detail=item.get('poka_yoke_detail', ''),
-                        checking_method=item.get('checking_method', ''),
-                        reference_sop=item.get('reference_sop', ''),
-                        is_ok=item.get('is_ok', True),
-                        remarks=item.get('remarks', '')
-                    )
-                )
-            
-            # Bulk create: Ek hi baar mein saare parameters database mein save kar dega (Fast performance)
-            if observations:
-                MachineChecksheetObservation.objects.bulk_create(observations)
-
-            return Response({
-                "success": True, 
-                "message": "✅ Daily Checksheet Saved Successfully!", 
-                "report_id": report.id
-            }, status=status.HTTP_201_CREATED)
-
-        except Exception as e:
-            print("❌ Django Error (Checksheet Save): ", str(e))
-            import traceback
-            traceback.print_exc()
-            return Response({
-                "success": False, 
-                "error": str(e)
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-<<<<<<< HEAD
-            
-            
-            
-# ==================================================
-# 🟢 6. SAVE TIP CHANGE & DRESSING MONITORING API
-# ==================================================
-class SaveTipChangeView(APIView):
-    def post(self, request):
-        try:
-            # Request se data lekar serializer mein pass karna
-            serializer = TipChangeDressingSerializer(data=request.data)
-            
-            # Agar data valid hai (saari required fields aayi hain), toh save kardo
+            serializer = MachineBreakdownSerializer(data=mapped_data)
             if serializer.is_valid():
                 serializer.save()
-                return Response({
-                    "success": True,
-                    "message": "✅ Tip Change & Dressing data saved successfully!",
-                    "data": serializer.data
-                }, status=status.HTTP_201_CREATED)
+                return Response({"success": True, "message": "Machine Breakdown Saved!"}, status=status.HTTP_201_CREATED)
             
-            # Agar validation fail hoti hai (kuch missing hai)
-            return Response({
-                "success": False,
-                "error": "Validation failed",
-                "details": serializer.errors
-            }, status=status.HTTP_400_BAD_REQUEST)
-
+            return Response({"success": False, "error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
-            print("❌ Django Error (Tip Change Save): ", str(e))
-            import traceback
-            traceback.print_exc()
-            return Response({
-                "success": False,
-                "error": str(e)
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-            
-            
-            
-from django.http import JsonResponse
-from django.views.decorators.csrf import csrf_exempt
-import json
-from .models import PushSubscription
+            return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-@csrf_exempt
-def save_subscription(request):
-    if request.method == 'POST':
+
+class SaveToolBreakdownSummaryView(APIView):
+    @transaction.atomic
+    def post(self, request):
         try:
-            data = json.loads(request.body)
+            raw_data = request.data
             
-            endpoint = data.get('endpoint')
-            keys = data.get('keys', {})
-            auth = keys.get('auth')
-            p256dh = keys.get('p256dh')
+            mapped_data = {
+                'date': parse_date(raw_data.get('date')),
+                'tool_name': raw_data.get('toolName', ''),
+                'details': {
+                    'process_name': raw_data.get('processName', ''),
+                    'problem': raw_data.get('problem', ''),
+                    'action_taken': raw_data.get('actionTaken', ''),
+                    'total_time_taken': raw_data.get('totalTimeTaken', ''),
+                    'checked_by': raw_data.get('checkedBy', ''),
+                    'history_card_status': raw_data.get('historyCardStatus', ''),
+                    'updated_in_4m': raw_data.get('updatedIn4M', ''),
+                    'sign': raw_data.get('sign', ''),
+                    'remarks': raw_data.get('remarks', '')
+                }
+            }
 
-            if endpoint and auth and p256dh:
-                # Database mein save karna
-                PushSubscription.objects.get_or_create(
-                    endpoint=endpoint,
-                    defaults={'auth': auth, 'p256dh': p256dh}
-                )
-                return JsonResponse({'status': 'success', 'message': 'Subscribed!'}, status=200)
-        except Exception as e:
-            return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
+            serializer = ToolBreakdownSerializer(data=mapped_data)
+            if serializer.is_valid():
+                serializer.save()
+                return Response({"success": True, "message": "Tool Breakdown Saved!"}, status=status.HTTP_201_CREATED)
             
-    return JsonResponse({'status': 'error', 'message': 'Invalid request'}, status=400)
-=======
+            return Response({"success": False, "error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         
+
+# 1. View for MACHINE Critical Spare
+class SaveMachineCriticalSpareView(APIView):
+    @transaction.atomic
+    def post(self, request):
+        try:
+            raw_data = request.data
+            
+            mapped_data = {
+                'date': parse_date(raw_data.get('date', raw_data.get('currentDate'))),
+                'spare_description': raw_data.get('spareDescription', ''),
+                'model_description': raw_data.get('modelDescription', ''),
+                'box_location': raw_data.get('boxLocation', 'STORE ROOM'),
+                'prepared_by': raw_data.get('preparedBy', ''),
+                'approved_by': raw_data.get('approvedBy', ''),
+                'spare_details': {
+                    'spare_type': raw_data.get('spareType', 'REPLACEMENT'),
+                    'uom': raw_data.get('uom', ''),
+                    'opening_stock': raw_data.get('openingStock', ''),
+                    'minimum_level': raw_data.get('minimumLevel', ''),
+                    'maximum_level': raw_data.get('maximumLevel', ''),
+                    'reorder_level': raw_data.get('reorderLevel', ''),
+                    'lead_time': raw_data.get('leadTime', ''),
+                    'closing_stock': raw_data.get('closingStock', ''),
+                    'pr_status': raw_data.get('prStatus', '')
+                }
+            }
+
+            serializer = MachineCriticalSpareSerializer(data=mapped_data)
+            if serializer.is_valid():
+                serializer.save()
+                return Response({"success": True, "message": "Machine Critical Spare Saved!"}, status=status.HTTP_201_CREATED)
+            
+            return Response({"success": False, "error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# 2. View for TOOL Critical Spare
+class SaveToolCriticalSpareView(APIView):
+    @transaction.atomic
+    def post(self, request):
+        try:
+            raw_data = request.dat
+            
+            mapped_data = {
+                'date': parse_date(raw_data.get('date')),
+                'spare_description': raw_data.get('spareDescription', ''),
+                'model_description': raw_data.get('modelDescription', ''),
+                'box_location': raw_data.get('boxLocation', 'STORE ROOM'),
+                'spare_details': {
+                    'spare_type': raw_data.get('spareType', 'REPLACEMENT'),
+                    'uom': raw_data.get('uom', ''),
+                    'opening_stock': raw_data.get('openingStock', ''),
+                    'minimum_level': raw_data.get('minimumLevel', ''),
+                    'lead_time': raw_data.get('leadTime', '')
+                }
+            }
+
+            serializer = ToolCriticalSpareSerializer(data=mapped_data)
+            if serializer.is_valid():
+                serializer.save()
+                return Response({"success": True, "message": "Tool Critical Spare Saved!"}, status=status.HTTP_201_CREATED)
+            
+            return Response({"success": False, "error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+
+
+
+# Helper function table name validate karne ke liye
+def get_plant_table(plant_param):
+    if plant_param == 'plant2':
+        return 'plant2_data', 49
+    return 'plant1_data', 57
+
 @never_cache
 @api_view(['GET'])
-def get_today_pokayoke_data(request):
-    """Simple version - No observations/check_points"""
+def plant_wise_total(request):
     try:
-        plant_name = request.GET.get('plant_name')
-        date_str = request.GET.get('date')
-
-        if not plant_name:
-            return Response({'success': False, 'error': 'plant_name is required'}, status=400)
-
-        # Safe date handling
-        if date_str:
-            try:
-                filter_date = datetime.strptime(date_str, '%Y-%m-%d').date()
-            except ValueError:
-                filter_date = datetime.now().date()
-        else:
-            filter_date = datetime.now().date()
-
-        # Get only main report data (no related observations)
-        queryset = MachineChecksheetReport.objects.filter(
-            plant_name=plant_name,
-            date=filter_date
-        ).order_by('-created_at')
-
-        data_list = []
-        for report in queryset:
-            data_list.append({
-                'id': report.id,
-                'date': str(report.date),
-                'plant_name': report.plant_name,
-                'machine_no': report.machine_no,
-                'checked_by_maintenance': report.checked_by_maintenance or 'Not provided',
-                'verified_by_production': report.verified_by_production or 'Not provided',
-            })
-
+        # Dono plants ka ek basic total bhejte hain
         return Response({
             'success': True,
-            'count': len(data_list),
-            'data': data_list,
-            'plant_name': plant_name,
-            'date': str(filter_date)
+            'plant1': {'status': 'Active', 'total_machines': 57},
+            'plant2': {'status': 'Active', 'total_machines': 49}
         })
+    except Exception as e:
+        return Response({'success': False, 'error': str(e)}, status=500)
+
+@never_cache
+@api_view(['GET'])
+def date_range(request):
+    plant = request.GET.get('plant', 'plant1')
+    table_name, _ = get_plant_table(plant)
+    
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(f"SELECT MIN(DATE(timestamp)), MAX(DATE(timestamp)) FROM {table_name}")
+            row = cursor.fetchone()
+            
+        return Response({
+            'success': True,
+            'first_date': row[0] if row[0] else '2024-01-01',
+            'last_date': row[1] if row[1] else datetime.now().strftime('%Y-%m-%d')
+        })
+    except Exception as e:
+        return Response({'success': False, 'error': str(e)}, status=500)
+
+@never_cache
+@api_view(['GET'])
+def realtime_dashboard(request):
+    # Ye wahi data dega jo aapka original function aaj ka nikalta hai, par summary format me
+    plant = request.GET.get('plant', 'plant1')
+    table_name, total_machines = get_plant_table(plant)
+    today = datetime.now().strftime('%Y-%m-%d')
+    
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(f"""
+                SELECT COUNT(DISTINCT machine_no), SUM(count)
+                FROM {table_name} 
+                WHERE DATE(timestamp) = %s
+            """, [today])
+            row = cursor.fetchone()
+            
+        return Response({
+            'success': True,
+            'summary': {
+                'active_machines': row[0] or 0,
+                'total_machines': total_machines,
+                'total_production': row[1] or 0,
+                'date': today
+            }
+        })
+    except Exception as e:
+        return Response({'success': False, 'error': str(e)}, status=500)
+
+@never_cache
+@api_view(['GET'])
+def monthly_summary(request):
+    plant = request.GET.get('plant', 'plant1')
+    month = int(request.GET.get('month', datetime.now().month))
+    year = int(request.GET.get('year', datetime.now().year))
+    
+    table_name, _ = get_plant_table(plant)
+    days_in_month = calendar.monthrange(year, month)[1]
+    
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(f"""
+                SELECT 
+                    EXTRACT(DAY FROM timestamp) as day,
+                    SUM(count) as total_prod,
+                    SUM(idle_time) as total_idle
+                FROM {table_name}
+                WHERE EXTRACT(MONTH FROM timestamp) = %s AND EXTRACT(YEAR FROM timestamp) = %s
+                GROUP BY EXTRACT(DAY FROM timestamp)
+                ORDER BY day
+            """, [month, year])
+            results = cursor.fetchall()
+
+        # Data map banate hain taaki daily chart me gap na aaye
+        db_data = {int(row[0]): {'prod': row[1] or 0, 'idle': row[2] or 0} for row in results}
+        
+        daily_breakdown = []
+        total_prod = 0
+        total_idle_mins = 0
+        days_with_data = 0
+        
+        for day in range(1, days_in_month + 1):
+            if day in db_data:
+                prod = db_data[day]['prod']
+                idle = db_data[day]['idle']
+                has_data = True
+                days_with_data += 1
+                total_prod += prod
+                total_idle_mins += idle
+            else:
+                prod = 0
+                idle = 0
+                has_data = False
+                
+            daily_breakdown.append({
+                'day': day,
+                'production': prod,
+                'idle_minutes': idle,
+                'has_data': has_data
+            })
+            
+        return Response({
+            'month_name': calendar.month_name[month],
+            'summary': {
+                'total_production': total_prod,
+                'total_idle_hours': round(total_idle_mins / 60, 1),
+                'days_with_data': days_with_data,
+                'days_in_month': days_in_month,
+                'coverage': round((days_with_data / days_in_month) * 100, 1) if days_in_month > 0 else 0
+            },
+            'daily_breakdown': daily_breakdown
+        })
+    except Exception as e:
+        return Response({'success': False, 'error': str(e)}, status=500)
+
+@never_cache
+@api_view(['GET'])
+def machine_wise(request):
+    plant = request.GET.get('plant', 'plant1')
+    month = int(request.GET.get('month', datetime.now().month))
+    year = int(request.GET.get('year', datetime.now().year))
+    table_name, total_machines = get_plant_table(plant)
+    
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(f"""
+                SELECT machine_no, SUM(count), SUM(idle_time)
+                FROM {table_name}
+                WHERE EXTRACT(MONTH FROM timestamp) = %s AND EXTRACT(YEAR FROM timestamp) = %s
+                GROUP BY machine_no
+            """, [month, year])
+            results = cursor.fetchall()
+            
+        machine_data = []
+        for row in results:
+            machine_data.append({
+                'machine_no': row[0],
+                'production': row[1] or 0,
+                'idle_minutes': row[2] or 0
+            })
+            
+        return Response({'success': True, 'data': machine_data})
+    except Exception as e:
+        return Response({'success': False, 'error': str(e)}, status=500)
+import calendar
+@never_cache
+@api_view(['GET'])
+def machine_analysis(request):
+    # Jab user frontend pe kisi specific machine (e.g., "01") par click karega toh ye chalega
+    plant = request.GET.get('plant', 'plant1')
+    machine_no = request.GET.get('machine_no')
+    month = int(request.GET.get('month', datetime.now().month))
+    year = int(request.GET.get('year', datetime.now().year))
+    
+    table_name, _ = get_plant_table(plant)
+    days_in_month = calendar.monthrange(year, month)[1]
+    
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(f"""
+                SELECT 
+                    EXTRACT(DAY FROM timestamp) as day,
+                    SUM(count) as total_prod,
+                    SUM(idle_time) as total_idle
+                FROM {table_name}
+                WHERE machine_no = %s AND EXTRACT(MONTH FROM timestamp) = %s AND EXTRACT(YEAR FROM timestamp) = %s
+                GROUP BY EXTRACT(DAY FROM timestamp)
+                ORDER BY day
+            """, [machine_no, month, year])
+            results = cursor.fetchall()
+
+        db_data = {int(row[0]): {'prod': row[1] or 0, 'idle': row[2] or 0} for row in results}
+        
+        daily_breakdown = []
+        total_prod = 0
+        total_idle_mins = 0
+        active_days = 0
+        
+        for day in range(1, days_in_month + 1):
+            if day in db_data:
+                prod = db_data[day]['prod']
+                idle = db_data[day]['idle']
+                has_data = True
+                if prod > 0 or idle > 0:
+                    active_days += 1
+                total_prod += prod
+                total_idle_mins += idle
+            else:
+                prod = 0
+                idle = 0
+                has_data = False
+                
+            daily_breakdown.append({
+                'day': day,
+                'production': prod,
+                'idle_minutes': idle,
+                'idle_hours': round(idle / 60, 2),
+                'has_data': has_data,
+                'status': 'Active' if has_data else 'Offline'
+            })
+            
+        return Response({
+            'machine_info': {
+                'machine_no': machine_no,
+                'machine_id': f"M-{str(machine_no).zfill(2)}",
+                'month_name': calendar.month_name[month],
+                'days_in_month': days_in_month
+            },
+            'production_summary': {
+                'total_production': total_prod,
+                'average_daily': round(total_prod / active_days, 1) if active_days > 0 else 0
+            },
+            'idle_summary': {
+                'total_idle_hours': round(total_idle_mins / 60, 1),
+                'total_idle_minutes': total_idle_mins
+            },
+            'machine_status': {
+                'active_days': active_days,
+                'inactive_days': days_in_month - active_days,
+                'days_without_data': days_in_month - len(db_data),
+                'active_percentage': round((active_days / days_in_month) * 100, 1),
+                'status': 'Operational' if active_days > 0 else 'Offline'
+            },
+            'daily_breakdown': daily_breakdown
+        })
+    except Exception as e:
+        return Response({'success': False, 'error': str(e)}, status=500)
+
+
+
+
+
+@api_view(['POST'])
+def log_idle_reason(request):
+    """
+    Frontend se downtime reason receive karta hai aur 
+    usse RAM buffer (Pending State) mein save karta hai.
+    """
+    try:
+        # ✅ FIX: Import ko function ke ANDAR daal diya taaki Circular Import error na aaye
+        from apps.mqtt.simple_plant2 import EXACT_REQUIREMENT_STATE
+
+        data = request.data
+        
+        machine_no = data.get('machine_no')
+        plant_no = data.get('plant_no')
+        category = data.get('category')
+        reason = data.get('reason')
+        remarks = data.get('remarks', '')
+
+        # Basic validation
+        if not machine_no or not category or not reason:
+            return Response({
+                'success': False, 
+                'error': 'Missing required fields (machine_no, category, reason)'
+            }, status=400)
+
+        machine_no = int(machine_no)
+
+        if int(plant_no) == 2:
+            # Agar abhi bhi None hoga, toh ye code bata dega
+            if EXACT_REQUIREMENT_STATE is None:
+                return Response({'success': False, 'error': 'EXACT_REQUIREMENT_STATE is None!'}, status=500)
+
+            EXACT_REQUIREMENT_STATE.set_pending_reason(
+                machine_no=machine_no,
+                category=category,
+                reason=reason,
+                remarks=remarks
+            )
+            return Response({
+                'success': True, 
+                'message': f'Reason buffered successfully for Machine {machine_no}'
+            })
+        else:
+            return Response({'success': False, 'error': 'Invalid Plant Number'}, status=400)
 
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return Response({
-            'success': False,
-            'error': str(e),
-            'data': []
-        }, status=500)
->>>>>>> 54a09df31eeba98c3751a8540263e9e580f37a9c
+        print(f"❌ API Error in log_idle_reason: {e}")
+        return Response({'success': False, 'error': str(e)}, status=500)
+    
