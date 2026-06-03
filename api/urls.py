@@ -1,11 +1,36 @@
 # backend/api/urls.py
-from django.urls import path
+from django.urls import path, include  # 🔥 NAYA: yahan 'include' add kiya hai
 from . import views
-from .views import SaveInspectionReportView, GetInspectionReportView, MasterDropdownView, MasterParametersView
-from .views import SaveMachineChecksheetView,SaveTipChangeView
+# from .views import MasterDropdownView, MasterParametersView
+from .views import log_idle_reason
+
+from .views import (
+
+     plant_wise_total,
+    date_range,
+    realtime_dashboard,
+    monthly_summary,
+    machine_wise,
+    machine_analysis
+)
+
+from .views import get_machine_history
+from api.views import CustomLoginView
+from django.contrib import admin
+
 
 urlpatterns = [
     # Dashboard APIs
+    path('admin/', admin.site.urls),
+    
+    path('login/', CustomLoginView.as_view(), name='api_login'),
+    
+    # 👇 NAYA NOTIFICATION MODULE YAHAN ADD KIYA HAI 👇
+    path('', include('apps.notifications.urls')),
+    path('', include('apps.production_reports.urls')),
+    path('', include('apps.qa_reports.urls')),
+    path('', include ('apps.maintenance_reports.urls')),
+
    
     path('dashboard/', views.get_dashboard_data, name='get_dashboard_data'),
     path('available-dates/', views.get_available_dates, name='get_available_dates'),
@@ -15,7 +40,7 @@ urlpatterns = [
     path('operators/', views.get_operators_by_plant, name='get_operators'),
     path('operators/add/', views.add_operator, name='add_operator'),
     path('machines/list/', views.get_machines_by_plant, name='get_machines'),
-    path('assignment/save/', views.save_operator_assignment, name='save_operator_assignment'),
+    path('assignment/save/', views.save_operator_assignment, name='save+_operator_assignment'),
     path('assignments/list/', views.get_operator_assignments, name='get_operator_assignments'),
     
     # Old Assignment APIs (Keep existing)
@@ -28,12 +53,21 @@ urlpatterns = [
     path('production-line-status/', views.production_line_status_data, name='production_line_status_data'),
     path('test-direct-query/', views.test_direct_query, name='test_direct_query'),
     
+    # New React Dashboard Analytics APIs
+    path('plant-wise-total/', plant_wise_total, name='plant_wise_total'),
+    path('monthly-summary/', monthly_summary, name='monthly_summary'),
+    path('machine-wise/', machine_wise, name='machine_wise'),
+    path('date-range/', date_range, name='date_range'),
+    path('realtime-dashboard/', realtime_dashboard, name='realtime_dashboard'),
+    path('machine-analysis/', machine_analysis, name='machine_analysis'),
+    
     # Live Machine APIs
     path('live-machines/', views.live_machines, name='live_machines'),
     path('count52-live/', views.count52_live, name='count52_live'),
     path('plant2-raw/', views.plant2_raw, name='plant2_raw'),
     path('plant2-live/', views.plant2_live, name='plant2_live'),
     path('plant1-live/', views.plant1_live, name='plant1_live'),
+    path('machine-history/', get_machine_history, name='machine_history'),
     
     # Data Saving
     path('save-hourly-snapshot/', views.save_hourly_snapshot, name='save_hourly_snapshot'),
@@ -43,21 +77,4 @@ urlpatterns = [
     path('plant2/hourly-idle/', views.plant2_hourly_idle, name='plant2-hourly-idle'),
     path('plant2/hourly-idle/summary/', views.plant2_hourly_idle_summary, name='plant2-hourly-idle-summary'),
     
-    path('save-inspection-report/', SaveInspectionReportView.as_view(), name='save_inspection_report'),
-    path('get-inspection-report/', GetInspectionReportView.as_view(), name='get_inspection_report'),
-
-    # --- Master Data (Auto-fill & Dropdowns) ---
-    path('master-dropdown/', MasterDropdownView.as_view(), name='master_dropdown'),
-    path('master-parameters/', MasterParametersView.as_view(), name='master_parameters'),
-    path('save-checksheet/', SaveMachineChecksheetView.as_view(), name='save_checksheet'),
-<<<<<<< HEAD
-    path('save-tip-data/', SaveTipChangeView.as_view(), name='save-tip-data'),
-    path('api/save-subscription/', views.save_subscription, name='save_subscription'),
-
-=======
-#path('save-checksheet/', SaveMachineChecksheetView.as_view(), name='save_checksheet'),
-    path('get_today_pokayoke_data/', views.get_today_pokayoke_data, name='get_today_pokayoke_data'),
-  #  path('get-machines-with-data/', views.get_machines_with_data, name='get_machines_with_data'),
->>>>>>> 54a09df31eeba98c3751a8540263e9e580f37a9c
 ]
-
