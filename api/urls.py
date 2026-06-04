@@ -50,14 +50,8 @@ urlpatterns = [
     path('master-dropdown/', MasterDropdownView.as_view(), name='master_dropdown'),
     path('master-parameters/', MasterParametersView.as_view(), name='master_parameters'),
     path('save-checksheet/', SaveMachineChecksheetView.as_view(), name='save_checksheet'),
-<<<<<<< HEAD
     path('save-tip-data/', SaveTipChangeView.as_view(), name='save-tip-data'),
     path('api/save-subscription/', views.save_subscription, name='save_subscription'),
 
-=======
-#path('save-checksheet/', SaveMachineChecksheetView.as_view(), name='save_checksheet'),
-    path('get_today_pokayoke_data/', views.get_today_pokayoke_data, name='get_today_pokayoke_data'),
-  #  path('get-machines-with-data/', views.get_machines_with_data, name='get_machines_with_data'),
->>>>>>> 54a09df31eeba98c3751a8540263e9e580f37a9c
 ]
 
