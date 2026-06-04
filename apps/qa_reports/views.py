@@ -1,0 +1,1210 @@
+import json
+from datetime import datetime
+
+from django.db import connection, transaction
+from django.shortcuts import get_object_or_404
+from django.http import JsonResponse
+from django.utils import timezone
+
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from rest_framework.decorators import api_view
+import pytz
+
+# ==============================================================================
+# IMPORTS FROM MAIN API APP
+# ==============================================================================
+from api.models import (
+    ReportTrackHistory, RedBinAnalysisReport, RedBinAttendance, ScrapNoteEntry, 
+    DeviationApproval, GoodReceiptEntry, InspectionReport, ProcessAuditChecksheet, 
+    CoherenceChecklist, LayoutInspection, ProductAuditPlan, CustomerComplaint, 
+    CustomerSatisfaction, WarrantyClaim, MinutesOfMeeting, ReworkEntry,
+    L1_PartInfoMaster, L2_ProcessReportMaster, L3_ParameterDetailMaster
+)
+
+from api.serializers import (
+    InspectionReportSerializer, ProcessAuditChecksheetSerializer, CoherenceChecklistSerializer,
+    LayoutInspectionSerializer, ProductAuditPlanSerializer, CustomerComplaintSerializer,
+    CustomerSatisfactionSerializer, WarrantyClaimSerializer, MinutesOfMeetingSerializer
+)
+
+# ==============================================================================
+# HELPER FUNCTIONS & BASE CLASSES
+# ==============================================================================
+def clean_val(val, default=None):
+    return val if val != '' and val is not None else default
+
+def parse_date(date_str):
+    if not date_str:
+        return None
+    if '.' in date_str:
+        try:
+            return datetime.strptime(date_str, "%d.%m.%Y").strftime("%Y-%m-%d")
+        except ValueError:
+            return None
+    return date_str
+
+class TrackedAPIView(APIView):
+    report_name = "General Report"
+
+    def finalize_response(self, request, response, *args, **kwargs):
+        if response.status_code in [200, 201] and request.method in ['POST', 'PATCH', 'PUT']:
+            try:
+                username = 'Unknown'
+                department = 'Unknown'
+                
+                # 🚀 SMART TRICK: Django ke token (request.user) se direct details nikalna
+                if request.user and request.user.is_authenticated:
+                    username = request.user.username
+                    
+                    if request.user.groups.exists():
+                        department = request.user.groups.first().name
+                    else:
+                        department = 'Default_User'
+                else:
+                    # Fallback: Agar kabhi token na ho, toh request body me dhoondho
+                    if hasattr(request, 'data') and isinstance(request.data, dict):
+                        username = request.data.get('username', 'Unknown')
+                        department = request.data.get('department', 'Unknown')
+
+                ReportTrackHistory.objects.create(
+                    username=username,
+                    department=department,
+                    report_name=self.report_name
+                )
+            except Exception as e:
+                print("⚠️ Tracking Error:", e)
+                
+        return super().finalize_response(request, response, *args, **kwargs)
+    
+# ==================================================
+# 🟢 1. DROPDOWN API (Connects to L1 and L2 Models)
+# ==================================================
+class MasterDropdownView(APIView):
+    def get(self, request):
+        filter_type = request.query_params.get('filter') 
+        
+        if filter_type == 'customer':
+            data = L1_PartInfoMaster.objects.values_list('customer_name', flat=True).distinct()
+            return Response(list(data))
+        
+        elif filter_type == 'all_parts':
+            # Seedha saare parts return karega bina customer filter ke
+            data = L1_PartInfoMaster.objects.values_list('part_name','part_no').distinct()
+            return Response(list(data))
+            
+        elif filter_type == 'operations_by_part':
+            part = request.query_params.get('part')
+            ops = L2_ProcessReportMaster.objects.filter(
+                part_info__part_name=part
+            ).values_list('report_name', flat=True).distinct()
+            return Response(list(ops))
+                
+        elif filter_type == 'part':
+            cust = request.query_params.get('cust')
+            data = L1_PartInfoMaster.objects.filter(customer_name=cust).values_list('part_name', flat=True).distinct()
+            return Response(list(data))
+
+        elif filter_type == 'operation':
+            cust = request.query_params.get('cust')
+            part = request.query_params.get('part')
+            ops = L2_ProcessReportMaster.objects.filter(
+                part_info__customer_name=cust, 
+                part_info__part_name=part
+            ).values_list('report_name', flat=True).distinct()
+            return Response(list(ops))
+        
+        elif filter_type == 'part_no':
+            part = request.query_params.get('part')
+            # Fetch related part numbers for the selected part description
+            data = L1_PartInfoMaster.objects.filter(part_name=part).values_list('part_no', flat=True).distinct()
+            return Response(list(data))
+        
+        elif filter_type == 'model_by_part':
+            part = request.query_params.get('part')
+            data = L1_PartInfoMaster.objects.filter(part_name=part).values_list('model_name', flat=True).distinct()
+            return Response(list(data))
+
+        elif filter_type == 'method':
+            data = L3_ParameterDetailMaster.objects.values_list('instrument', flat=True).distinct()
+            clean_data = sorted(list(set([str(x).strip() for x in data if x and str(x).strip()])))
+            return Response(clean_data)
+            
+        elif filter_type == 'parameter':
+            data = L3_ParameterDetailMaster.objects.values_list('parameter_name', flat=True).distinct()
+            clean_data = sorted(list(set([str(x).strip() for x in data if x and str(x).strip()])))
+            return Response(clean_data)
+            
+        elif filter_type == 'spec':
+            try:
+                data = L3_ParameterDetailMaster.objects.values_list('specification', flat=True).distinct()
+                clean_data = sorted(list(set([str(x).strip() for x in data if x and str(x).strip()])))
+                return Response(clean_data)
+            except Exception as e:
+                print(f"❌ Error fetching specification: {e}")
+                return Response([])
+
+
+# ==================================================
+# 🟢 2. AUTO-FILL PARAMETERS API (Connects to L3 Model)
+# ==================================================
+class MasterParametersView(APIView):
+    def get(self, request):
+        cust = request.query_params.get('customer')
+        part = request.query_params.get('part')
+        op_name = request.query_params.get('operation')
+        
+        if not all([cust, part, op_name]):
+            return Response({"error": "Missing filters"}, status=400)
+
+        process = L2_ProcessReportMaster.objects.filter(
+            part_info__customer_name=cust,
+            part_info__part_name=part,
+            report_name=op_name
+        ).first()
+
+        if not process: 
+            return Response({"error": "Process Not Found in Master Data"}, status=404)
+
+        params = L3_ParameterDetailMaster.objects.filter(process_report=process).order_by('id')
+        
+        product_list = []
+        process_list = []
+        prod_sr = 1
+        proc_sr = 11
+
+        for p in params:
+            raw_spec = p.specification or ""
+            final_spec = raw_spec
+            final_tol = "-"
+
+            if "±" in raw_spec:
+                parts = raw_spec.split("±", 1)
+                final_spec = parts[0].strip()          
+                final_tol = "± " + parts[1].strip()    
+                
+            elif "+" in raw_spec:
+                parts = raw_spec.split("+", 1)
+                final_spec = parts[0].strip()
+                final_tol = "+" + parts[1].strip()
+
+            item_data = {
+                "item": p.parameter_name,
+                "spec": final_spec,
+                "tol": final_tol,
+                "instr": p.instrument,
+                "category": p.category
+            }
+
+            if p.category == 'PRODUCT':
+                item_data['sr_no'] = prod_sr
+                product_list.append(item_data)
+                prod_sr += 1
+            else:
+                item_data['sr_no'] = proc_sr
+                process_list.append(item_data)
+                proc_sr += 1
+
+        return Response({
+            "productItems": product_list,
+            "processItems": process_list,
+            "part_number": process.part_info.part_no, 
+            "model_name": process.part_info.model_name
+        })
+
+
+# =========================================================
+# 📝 QA HUB SAVE APIs
+# =========================================================
+
+class SaveRedBinAnalysisView(APIView):
+    @transaction.atomic
+    def post(self, request):
+        try:
+            data = request.data
+            items = data.get('items', []) if 'items' in data else [data]
+            
+            def format_date(d):
+                if not d: return None
+                try:
+                    return datetime.strptime(d, "%d-%m-%Y").strftime("%Y-%m-%d")
+                except ValueError:
+                    return d 
+            
+            # 👇 1. Seedha server/system ka local time uthao
+            current_time = datetime.now()
+            
+            # 👇 2. Exact AM/PM format banao 
+            formatted_time = current_time.strftime("%Y-%m-%d %I:%M %p").lower()
+            # Result exactly yahi aayega: "2026-06-01 04:25 pm"
+            
+            entries_to_create = []
+            for row in items:
+                entries_to_create.append(
+                    RedBinAnalysisReport(
+                        entry_date=format_date(row.get('entry_date')) or current_time.date(),
+                        part_name_model=row.get('part_name_model', '') or row.get('part_name', ''),
+                        operation=row.get('operation', ''),
+                        total_rej_qty=int(row.get('total_rej_qty') or 0),
+                        defect_detail=row.get('defect_detail', ''),
+                        root_cause_reason=row.get('root_cause_reason', ''),
+                        action_taken=row.get('action_taken', ''),
+                        responsible_person=row.get('responsible_person', ''),
+                        target_date=format_date(row.get('target_date')),          
+                        completion_date=format_date(row.get('completion_date')),  
+                        
+                        # 👇 3. Yahan formatted string pass ki
+                        created_time=formatted_time 
+                    )
+                )
+                
+            if entries_to_create:
+                RedBinAnalysisReport.objects.bulk_create(entries_to_create)
+                
+            return Response({"success": True, "message": "✅ Saved EXACTLY as AM/PM!"}, status=status.HTTP_201_CREATED)
+        except Exception as e:
+            return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+class SaveRedBinAttendanceView(APIView):
+    @transaction.atomic
+    def post(self, request):
+        try:
+            data = request.data
+            if not isinstance(data, list):
+                return Response({"success": False, "error": "Expected an array of attendance records"}, status=status.HTTP_400_BAD_REQUEST)
+            
+            entries_to_create = []
+            for item in data:
+                entries_to_create.append(
+                    RedBinAttendance(
+                        date=item.get('date'),
+                        month=item.get('month'),
+                        year=int(item.get('year')),
+                        employee_name=item.get('employee_name', ''),
+                        designation=item.get('designation', ''),
+                        status=item.get('status', '') 
+                    )
+                )
+                
+            if entries_to_create:
+                RedBinAttendance.objects.bulk_create(entries_to_create)
+                
+            return Response({"success": True, "message": "✅ Attendance Saved!"}, status=status.HTTP_201_CREATED)
+            
+        except Exception as e:
+            return Response({"success": False, "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class SaveScrapNoteView(APIView):
+    @transaction.atomic
+    def post(self, request):
+        try:
+            data = request.data
+            items = data.get('items', []) if 'items' in data else [data]
+            
+            entries_to_create = []
+            for row in items:
+                entries_to_create.append(
+                    ScrapNoteEntry(
+                        entry_date=row.get('entry_date'),
+                        part_name=row.get('part_name', ''),
+                        part_no=row.get('part_no', ''),
+                        defect_detail=row.get('defect_detail', ''),
+                        quantity=int(row.get('quantity') or 0),
+                        remarks=row.get('remarks', '')
+                    )
+                )
+                
+            if entries_to_create:
+                ScrapNoteEntry.objects.bulk_create(entries_to_create)
+                
+            return Response({"success": True, "message": "✅ Scrap Note Saved!"}, status=status.HTTP_201_CREATED)
+        except Exception as e:
+            return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class SaveDeviationApprovalView(APIView):
+    @transaction.atomic
+    def post(self, request):
+        try:
+            data = request.data
+            items = data.get('items', []) if 'items' in data else [data]
+
+            entries_to_create = []
+            for row in items:
+                entries_to_create.append(
+                    DeviationApproval(
+                        tool_name_no=row.get('tool_name_no', ''),
+                        location=row.get('location', ''),
+                        problem=row.get('problem', ''),
+                        reason_for_deviation=row.get('reason_for_deviation', ''),
+                        date=row.get('date'),
+                        duration=row.get('duration', ''),
+                        prod_incharge=row.get('prod_incharge', ''),
+                        qa_incharge=row.get('qa_incharge', ''),
+                        remarks=row.get('remarks', '')
+                    )
+                )
+            
+            if entries_to_create:
+                DeviationApproval.objects.bulk_create(entries_to_create)
+                return Response({"success": True, "message": "✅ Deviation Approval Data Saved!"}, status=status.HTTP_201_CREATED)
+            
+            return Response({"success": False, "error": "No data provided"}, status=status.HTTP_400_BAD_REQUEST)
+
+        except Exception as e:
+            return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class SaveGoodReceiptView(APIView):
+    @transaction.atomic
+    def post(self, request):
+        try:
+            data = request.data
+            GoodReceiptEntry.objects.create(
+                requested_by=data.get('requestedBy', ''),
+                item_name=data.get('itemName', ''),
+                specification=data.get('specification', ''),
+                department=data.get('department', ''),
+                qty=data.get('qty', ''),
+                remark=data.get('remark', ''),
+                received_by=data.get('receivedBy', ''),
+                received_date=data.get('receivedDate')
+            )
+            return Response({"success": True, "message": "✅ Material Requisition Slip Saved!"}, status=status.HTTP_201_CREATED)
+        except Exception as e:
+            return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class SaveInspectionReportView(APIView):
+    def post(self, request):
+        try:
+            data = request.data
+            master = data.get('master_data', {})
+            logs = data.get('logs', [])
+            
+            date_val = master.get('date') or timezone.now().date()
+            cust = master.get('customer', 'Unknown')
+            part = master.get('part_name', 'Unknown')
+            op = master.get('operation', 'Unknown')
+            part_no = master.get('part_number', 'N/A')
+            plant = master.get('plant_location', 'PLANT 1')
+
+            current_operator = logs[-1].get('operator', 'Unknown') if logs else 'Unknown'
+            current_machine = logs[-1].get('machine', 'N/A') if logs else 'N/A'
+
+            report, created = InspectionReport.objects.get_or_create(
+                customer_account=cust, part_name=part, operation=op, inspection_date=date_val,
+                defaults={
+                    'part_number': part_no, 'plant_location': plant,
+                    'operator_name': current_operator, 'machine_number': current_machine,
+                    'inspection_data': {}
+                }
+            )
+
+            report.operator_name = current_operator
+            report.machine_number = current_machine
+            report.inspection_data = {"parameters": data.get('parameters', []), "logs": logs}
+            report.save()
+
+            msg = "✅ New Report Created Successfully!" if created else "✅ Report Updated Successfully! (New Stage Added)"
+            return Response({"message": msg, "report_id": report.id}, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            print("Django Error: ", str(e)) 
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class GetInspectionReportView(APIView):
+    def get(self, request):
+        customer = request.query_params.get('customer', None)
+        part_name = request.query_params.get('part_name', None)
+        operation = request.query_params.get('operation', None)
+        date = request.query_params.get('date', None)
+
+        filters = {}
+        if customer: filters['customer_account__icontains'] = customer
+        if part_name: filters['part_name__icontains'] = part_name
+        if operation: filters['operation__icontains'] = operation
+        if date: filters['inspection_date'] = date
+
+        reports = InspectionReport.objects.filter(**filters).order_by('-id')
+
+        if reports.exists():
+             serializer = InspectionReportSerializer(reports.first())
+             return Response(serializer.data, status=status.HTTP_200_OK)
+        else:
+             return Response({"message": "No report found for given filters"}, status=status.HTTP_404_NOT_FOUND)
+
+
+class SaveProcessAuditView(APIView):
+    @transaction.atomic
+    def post(self, request):
+        try:
+            raw_data = request.data
+            mapped_data = {
+                'part_name_no': f"{raw_data.get('part_name', '')} - {raw_data.get('part_no', '')}",
+                'machine_model': raw_data.get('model_name', ''),
+                'date': clean_val(raw_data.get('audit_date')),
+                'auditor': raw_data.get('auditor_name', ''),
+                'auditee': raw_data.get('auditee_name', ''),
+                'audit_details': raw_data.get('audit_details', [])
+            }
+
+            serializer = ProcessAuditChecksheetSerializer(data=mapped_data)
+            
+            if serializer.is_valid():
+                serializer.save()
+                return Response({"success": True, "message": "Process Audit Saved Successfully!"}, status=status.HTTP_201_CREATED)
+            else:
+                print("Serializer Validation Error:", serializer.errors)
+                return Response({"success": False, "error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+                
+        except Exception as e:
+            print("Server Exception:", str(e))
+            return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class SaveCoherenceChecklistView(APIView):
+    @transaction.atomic
+    def post(self, request):
+        try:
+            raw_data = request.data
+            mapped_data = {
+                'part_name': raw_data.get('partName', ''),
+                'part_no': raw_data.get('partNo', ''),
+                'date': clean_val(raw_data.get('date')),
+                'model_name': raw_data.get('model', ''),
+                'prepared_by': raw_data.get('preparedBy', ''),
+                'verified_by': raw_data.get('verifiedBy', ''),
+                'operations': raw_data.get('operations', [])
+            }
+            serializer = CoherenceChecklistSerializer(data=mapped_data)
+            if serializer.is_valid():
+                serializer.save()
+                return Response({"success": True, "message": "Coherence Checklist Saved!"}, status=status.HTTP_201_CREATED)
+            return Response({"success": False, "error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({"success": False, "error": "Internal Server Error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class SaveLayoutInspectionView(APIView):
+    @transaction.atomic
+    def post(self, request):
+        try:
+            raw_data = request.data
+            mapped_data = {
+                'part_name': raw_data.get('partName', ''),
+                'part_no': raw_data.get('partNo', ''),
+                'model_name': raw_data.get('model', ''),
+                'customer_name': raw_data.get('customer', ''),
+                'date': clean_val(raw_data.get('date')),
+                'sample_size': str(raw_data.get('sampleSize', '')),
+                'prepared_by': raw_data.get('preparedBy', ''),
+                'verified_by': raw_data.get('verifiedBy', ''),
+                'inspections': raw_data.get('inspections', [])
+            }
+            serializer = LayoutInspectionSerializer(data=mapped_data)
+            if serializer.is_valid():
+                serializer.save()
+                return Response({"success": True, "message": "Layout Inspection Saved!"}, status=status.HTTP_201_CREATED)
+            return Response({"success": False, "error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({"success": False, "error": "Internal Server Error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class SaveProductAuditPlanView(APIView):
+    @transaction.atomic
+    def post(self, request):
+        try:
+            raw_data = request.data
+            mapped_data = {
+                'doc_no': raw_data.get('doc_no', ''),
+                'rev_no': raw_data.get('rev_no', ''),
+                'date': clean_val(raw_data.get('date')),
+                'plan_year': raw_data.get('plan_year', ''),
+                'prepared_by': raw_data.get('prepared_by', ''), 
+                'approved_by': raw_data.get('approved_by', ''),
+                'audit_rows': raw_data.get('rows', [])
+            }
+            
+            serializer = ProductAuditPlanSerializer(data=mapped_data)
+            if serializer.is_valid():
+                serializer.save()
+                return Response({"success": True, "message": "Product Audit Plan Saved!"}, status=status.HTTP_201_CREATED)
+            
+            print("Serializer Errors:", serializer.errors)
+            return Response({"success": False, "error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+            
+        except Exception as e:
+            print("Exception in SaveProductAuditPlanView:", str(e))
+            return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class SaveCustomerComplaintView(APIView):
+    @transaction.atomic
+    def post(self, request):
+        try:
+            raw_data = request.data
+            mapped_data = {
+                'date': clean_val(raw_data.get('date')),
+                'part_details': raw_data.get('part_details', ''),          
+                'model_name': raw_data.get('model_name', ''),              
+                'customer_name': raw_data.get('customer_name', ''),        
+                'problem_description': raw_data.get('problem_description', ''), 
+                'counter_measure': raw_data.get('counter_measure', ''),    
+                'target_date': clean_val(raw_data.get('target_date')),      
+                'horizontal_action': raw_data.get('horizontal_action', ''),
+                'status': raw_data.get('status', 'OPEN')
+            }
+            
+            serializer = CustomerComplaintSerializer(data=mapped_data)
+            if serializer.is_valid():
+                serializer.save()
+                return Response({"success": True, "message": "Customer Complaint Saved!"}, status=status.HTTP_201_CREATED)
+            
+            return Response({"success": False, "error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+        
+        except Exception as e:
+            return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class SaveCustomerSatisfactionView(APIView):
+    @transaction.atomic
+    def post(self, request):
+        try:
+            raw_data = request.data
+            mapped_data = {
+                'customer_name': raw_data.get('customerName', ''),
+                'month_year': raw_data.get('monthYear', ''),
+                'performance_indicators': {
+                    'line_complaints': raw_data.get('lineComplaints', ''),
+                    'warranty_complaints': raw_data.get('warrantyComplaints', ''),
+                    'premium_freight_incidents': raw_data.get('premiumFreightIncidents', ''),
+                    'line_stoppage_quality': raw_data.get('lineStoppageQuality', ''),
+                    'line_stoppage_supply': raw_data.get('lineStoppageSupply', ''),
+                    'premium_fight_incident': raw_data.get('premiumFightIncident', ''),
+                    'schedule_vs_dispatch': raw_data.get('scheduleVsDispatch', ''),
+                    'customer_audit_score': raw_data.get('customerAuditScore', '')
+                }
+            }
+
+            serializer = CustomerSatisfactionSerializer(data=mapped_data)
+            if serializer.is_valid():
+                serializer.save()
+                return Response({"success": True, "message": "Customer Satisfaction Saved!"}, status=status.HTTP_201_CREATED)
+            
+            return Response({"success": False, "error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class SaveWarrantyClaimView(APIView):
+    @transaction.atomic
+    def post(self, request):
+        try:
+            raw_data = request.data
+            mapped_data = {
+                'date': raw_data.get('date') or None,
+                'customer_name': raw_data.get('customerName', ''),
+                'part_details': raw_data.get('partDetails', ''),
+                'claim_qty': raw_data.get('claimQty', ''),
+                'warranty_defect': raw_data.get('warrantyDefect', ''),
+                'decision': raw_data.get('decision', 'PENDING'),
+                'rejection_root_cause': raw_data.get('rejectionRootCause', ''),
+                'disposal_action': raw_data.get('disposalAction', ''),
+                'capa_analysis': raw_data.get('capaAnalysis', '')
+            }
+
+            serializer = WarrantyClaimSerializer(data=mapped_data)
+            if serializer.is_valid():
+                serializer.save()
+                return Response({"success": True, "message": "Warranty Claim Saved!"}, status=status.HTTP_201_CREATED)
+            
+            return Response({"success": False, "error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class SaveMinutesOfMeetingView(APIView):
+    @transaction.atomic
+    def post(self, request):
+        try:
+            raw_data = request.data
+            mapped_data = {
+                'date': raw_data.get('date') or None,
+                'time': raw_data.get('time') or None,
+                'subject': raw_data.get('subject', ''),
+                'aot_members': raw_data.get('aotMembers', ''),
+                'supplier_members': raw_data.get('supplierMembers', ''),
+                'discussions': [
+                    {
+                        'sr_no': 1, 
+                        'part_name_no': raw_data.get('partDetails', ''),
+                        'defects_problem_details': raw_data.get('problemDetails', ''),
+                        'action_plan': raw_data.get('actionPlan', ''),
+                        'responsibility': raw_data.get('responsibility', ''),
+                        'target_date': raw_data.get('targetDate', ''),
+                        'follow_up_comments': raw_data.get('followUpComment', ''),
+                        'status_remark': raw_data.get('statusRemark', '')
+                    }
+                ]
+            }
+
+            serializer = MinutesOfMeetingSerializer(data=mapped_data)
+            if serializer.is_valid():
+                serializer.save()
+                return Response({"success": True, "message": "MOM Saved Successfully!"}, status=status.HTTP_201_CREATED)
+            
+            return Response({"success": False, "error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+# ==============================================================================
+# 📊 QA DATA FETCH API (View Reports)
+# ==============================================================================
+
+@api_view(['GET'])
+def qa_data_view(request, form_key):
+
+    # ── 🔥 NAYA MASTER HELPER FUNCTION (Sabhi APIs ko Filter Karne Ke Liye) ──
+    def apply_date_filter(queryset, date_field):
+        start_date = request.GET.get('start_date')
+        end_date = request.GET.get('end_date')
+
+        # Agar 'all' pass kiya hai toh pura DB data return kar do
+        if start_date == 'all':
+            return queryset
+
+        # Default Behavior: Agar filter se kuch na bhejein toh sirf Aaj (Today) ka data aayega
+        if not start_date and not end_date:
+            ist_tz = pytz.timezone('Asia/Kolkata')
+            from django.utils.timezone import now
+            today_str = now().astimezone(ist_tz).strftime("%Y-%m-%d")
+            if date_field == 'created_at':
+                return queryset.filter(**{f"{date_field}__date": today_str})
+            return queryset.filter(**{f"{date_field}": today_str})
+
+        # Custom Filters: Last 2 days, Specific Date wagerah
+        if start_date and end_date:
+            if date_field == 'created_at':
+                return queryset.filter(**{f"{date_field}__date__range": [start_date, end_date]})
+            return queryset.filter(**{f"{date_field}__range": [start_date, end_date]})
+        elif start_date:
+            if date_field == 'created_at':
+                return queryset.filter(**{f"{date_field}__date__gte": start_date})
+            return queryset.filter(**{f"{date_field}__gte": start_date})
+        elif end_date:
+            if date_field == 'created_at':
+                return queryset.filter(**{f"{date_field}__date__lte": end_date})
+            return queryset.filter(**{f"{date_field}__lte": end_date})
+            
+        return queryset
+
+    # ── Helper: AM/PM aur Comma wala Time Generator ──
+    def format_to_ampm(raw_time):
+        if not raw_time:
+            return '—'
+        try:
+            if hasattr(raw_time, 'strftime'):
+                ist_tz = pytz.timezone('Asia/Kolkata')
+                from django.utils.timezone import localtime
+                local_dt = localtime(raw_time, ist_tz) if getattr(raw_time, 'tzinfo', None) else raw_time
+                return local_dt.strftime("%Y-%m-%d , %I:%M %p").lower()
+            else:
+                time_str = str(raw_time)
+                if '+' in time_str:
+                    time_str = time_str.split('+')[0].strip() 
+                dt_obj = datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
+                return dt_obj.strftime("%Y-%m-%d , %I:%M %p").lower()
+        except Exception:
+            return str(raw_time)
+
+
+    # ── Helper: raw SQL table se data fetch karna ──────────────
+    def fetch_from_table(table_name, source_tag=None):
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(f"SELECT * FROM {table_name} ORDER BY id DESC")
+                cols = [col[0] for col in cursor.description]
+                rows = []
+                for row in cursor.fetchall():
+                    record = dict(zip(cols, row))
+                    for k, v in record.items():
+                        if hasattr(v, 'strftime'):
+                            record[k] = str(v)
+                    if source_tag:
+                        record['_source'] = source_tag
+                    rows.append(record)
+                return rows
+        except Exception as e:
+            print(f"⚠️ {table_name} error: {e}")
+            return []
+
+    # ── 2. INSPECTION (FPIR) ───────────────────────────────────
+    if form_key == 'inspection-view':
+        all_data = []
+        report_id = request.GET.get('id', None) 
+        start_date = request.GET.get('start_date')
+        end_date = request.GET.get('end_date')
+
+        try:
+            with connection.cursor() as cursor:
+                if report_id:
+                    cursor.execute("""
+                        SELECT 
+                            id, customer_account, part_name, operation,
+                            part_number, plant_location, inspection_date,
+                            operator_name, machine_number, inspection_data
+                        FROM inspection_reports
+                        WHERE id = %s
+                    """, [report_id])
+                else:
+                    query = """
+                        SELECT 
+                            id, customer_account, part_name, operation,
+                            part_number, plant_location, inspection_date,
+                            operator_name, machine_number, inspection_data
+                        FROM inspection_reports
+                    """
+                    params = []
+                    
+                    # 🔥 SQL Filtering for Inspection view
+                    if start_date != 'all':
+                        if not start_date and not end_date:
+                            ist_tz = pytz.timezone('Asia/Kolkata')
+                            from django.utils.timezone import now
+                            today_str = now().astimezone(ist_tz).strftime("%Y-%m-%d")
+                            query += " WHERE inspection_date = %s"
+                            params.append(today_str)
+                        elif start_date and end_date:
+                            query += " WHERE inspection_date BETWEEN %s AND %s"
+                            params.extend([start_date, end_date])
+                        elif start_date:
+                            query += " WHERE inspection_date >= %s"
+                            params.append(start_date)
+                        elif end_date:
+                            query += " WHERE inspection_date <= %s"
+                            params.append(end_date)
+                            
+                    query += " ORDER BY id DESC"
+                    cursor.execute(query, params)
+
+                cols = [col[0] for col in cursor.description]
+
+                for row in cursor.fetchall():
+                    rec = dict(zip(cols, row))
+                    for k, v in rec.items():
+                        if hasattr(v, 'strftime'):
+                            rec[k] = str(v)
+
+                    raw_insp_data = rec.get('inspection_data')
+                    
+                    if isinstance(raw_insp_data, str):
+                        try:
+                            insp_data = json.loads(raw_insp_data)
+                        except json.JSONDecodeError:
+                            insp_data = {} 
+                    else:
+                        insp_data = raw_insp_data or {}
+
+                    logs       = insp_data.get('logs', [])
+                    parameters = insp_data.get('parameters', [])
+
+                    param_map = { str(p.get('sr', p.get('sr_no', ''))): p for p in parameters }
+
+                    for log in logs:
+                        readings = log.get('readings', {})
+                        if not readings:
+                            continue
+
+                        for sr_key, vals in readings.items():
+                            param = param_map.get(str(sr_key), {})
+                            all_data.append({
+                                'Customer':      rec.get('customer_account', '—'),
+                                'Part Name':     rec.get('part_name', '—'),
+                                'Operation':     rec.get('operation', '—'),
+                                'Part Number':   rec.get('part_number', '—'),
+                                'Plant':         log.get('plant', rec.get('plant_location', '—')),
+                                'Insp. Date':    log.get('date', rec.get('inspection_date', '—')),
+                                'Operator':      log.get('operator', rec.get('operator_name', '—')) or '—',
+                                'Machine No':    log.get('machine', rec.get('machine_number', '—')) or '—',
+                                'Parameter':     param.get('item', '—'),
+                                'Category':      param.get('category', '—'),
+                                'Specification': param.get('spec', '—'),
+                                'Tolerance':     param.get('tol', '—'),
+                                'Instrument':    param.get('instr', '—'),
+                                'Stage':         log.get('displayStage', log.get('baseStage', '—')),
+                                'Val 1':         vals.get('val1', '—'),
+                                'Val 2':         vals.get('val2', '—'),
+                            })
+
+        except Exception as e:
+            print(f"⚠️ inspection-view error: {e}")
+            return JsonResponse({'data': [], 'error': str(e)}, status=500)
+
+        return JsonResponse({'data': all_data})
+
+    # ── 3. RED BIN ANALYSIS ────────────────────────────────────
+    elif form_key == 'redbin-view':
+        try:
+            # 🔥 Master Filter Lagaya entry_date par
+            base_query = RedBinAnalysisReport.objects.all()
+            reports = apply_date_filter(base_query, 'entry_date').order_by('-entry_date', '-created_time')
+            data = []
+            
+            for report in reports:
+                # Format kiya wahi Comma aur AM/PM k sath
+                raw_time = getattr(report, 'created_time', getattr(report, 'created_at', None)) 
+                
+                data.append({
+                    'Date': str(report.entry_date), 
+                    'Created Time': format_to_ampm(raw_time), 
+                    'Part Name & Model': report.part_name_model,
+                    'Operation': report.operation,
+                    'Total Rejected Qty': report.total_rej_qty,
+                    'Defect Detail': report.defect_detail,
+                    'Root Cause': report.root_cause_reason,
+                    'Action Taken': report.action_taken,
+                    'Responsible Person': report.responsible_person,
+                    'Target Date': str(report.target_date),
+                    'Completion Date': str(report.completion_date) if report.completion_date else 'Pending',
+                })
+            return JsonResponse({'data': data})
+        except Exception as e:
+            print("View Error:", str(e))
+            return JsonResponse({'data': [], 'error': str(e)}, status=500)
+
+    # ── 4. RED BIN ATTENDANCE ──────────────────────────────────
+    elif form_key == 'redbin-attendance-view':
+        try:
+            # 🔥 Master Filter Lagaya date par
+            reports = apply_date_filter(RedBinAttendance.objects.all(), 'date').order_by('-date', '-created_at')
+            data = []
+            
+            status_map = {'P': 'Present', 'A': 'Absent', '': 'Unmarked'}
+            
+            for report in reports:
+                data.append({
+                    'Date': str(report.date),
+                    'Month': report.month,
+                    'Year': report.year,
+                    'Employee Name': report.employee_name,
+                    'Designation': report.designation,
+                    'Status': status_map.get(report.status, report.status),
+                })
+            return JsonResponse({'data': data})
+        except Exception as e:
+            return JsonResponse({'data': [], 'error': str(e)}, status=500)
+
+    # ── 5. SCRAP NOTE ──────────────────────────────────────────
+    elif form_key == 'scrap-note-view':
+        try:
+            reports = apply_date_filter(ScrapNoteEntry.objects.all(), 'entry_date').order_by('-entry_date', '-created_at')
+            data = []
+            for report in reports:
+                data.append({
+                    'Date': str(report.entry_date),
+                    'Part Name': report.part_name,
+                    'Part No': report.part_no,
+                    'Defect Detail': report.defect_detail,
+                    'Quantity': report.quantity,
+                    'Remarks': report.remarks or '—',
+                })
+            return JsonResponse({'data': data})
+        except Exception as e:
+            return JsonResponse({'data': [], 'error': str(e)}, status=500)
+
+    # ── 6. REWORK REPORT ───────────────────────────────────────
+    elif form_key == 'rework-view':
+        try:
+            reports = apply_date_filter(ReworkEntry.objects.all(), 'date').order_by('-date', '-created_at')
+            data = []
+            for r in reports:
+                details = r.dynamic_details or {}
+                status_val = details.get('status', '')
+                observations = details.get('observations', [])
+                
+                if status_val == 'ok':
+                    final_status = ' OK'
+                elif status_val == 'notok':
+                    final_status = 'NOT OK'
+                else:
+                    final_status = '—'
+
+                row_data = {
+                    'Date': str(r.date),
+                    'Part Name': r.part_name,
+                    'Part No': r.part_no,
+                    'Spec': r.spec,
+                    'Non Conformance': r.non_conformance,
+                    'Rework Qty': r.rework_qty,
+                    'Status': final_status,
+                    'Inspected By': r.inspected_by or '—',
+                    'Remark': r.remark or '—'
+                }
+                
+                for i, val in enumerate(observations):
+                    row_data[f'Obs {i+1}'] = val if val else '—'
+                    
+                data.append(row_data)
+                
+            return JsonResponse({'data': data})
+        except Exception as e:
+            return JsonResponse({'data': [], 'error': str(e)}, status=500)
+
+    # ── 7. DEVIATION APPROVAL ──────────────────────────────────
+    elif form_key == 'deviation-view':
+        try:
+            reports = apply_date_filter(DeviationApproval.objects.all(), 'date').order_by('-date', '-created_at')
+            data = []
+            for report in reports:
+                data.append({
+                    'Date': str(report.date),
+                    'Tool Name/No.': report.tool_name_no or '—',
+                    'Location': report.location or '—',
+                    'Problem': report.problem or '—',
+                    'Reason for Deviation': report.reason_for_deviation or '—',
+                    'Duration': report.duration or '—',
+                    'Prod Incharge': report.prod_incharge or '—',
+                    'QA Incharge': report.qa_incharge or '—',
+                    'Remarks': report.remarks or '—'
+                })
+            return JsonResponse({'data': data})
+        except Exception as e:
+            return JsonResponse({'data': [], 'error': str(e)}, status=500)
+
+    # ── 8. GOOD RECEIPT ENTRY (NEW) ────────────────────────────
+    elif form_key == 'good-receipt':
+        try:
+            reports = apply_date_filter(GoodReceiptEntry.objects.all(), 'received_date').order_by('-received_date', '-created_at')
+            data = []
+            for report in reports:
+                data.append({
+                    'Date': str(report.received_date),
+                    'Requested By': report.requested_by,
+                    'Item Name': report.item_name,
+                    'Department': report.department,
+                    'Quantity': report.qty,
+                    'Specification': report.specification or '—',
+                    'Received By': report.received_by,
+                    'Remark': report.remark or '—'
+                })
+            return JsonResponse({'data': data})
+        except Exception as e:
+            return JsonResponse({'data': [], 'error': str(e)}, status=500)
+
+    # ── 9. PROCESS AUDIT CHECKSHEET ────────────────────────────
+    elif form_key == 'process-audit-view':
+        try:
+            reports = apply_date_filter(ProcessAuditChecksheet.objects.all(), 'date').order_by('-date', '-created_at')
+            data = []
+            for report in reports:
+                base_info = {
+                    'Date': str(report.date) if report.date else '—',
+                    'Part Name & No': report.part_name_no or '—',
+                    'Machine Model': report.machine_model or '—',
+                    'Auditor': report.auditor or '—',
+                    'Auditee': report.auditee or '—',
+                }
+                
+                audit_details = report.audit_details or []
+                if not audit_details:
+                    data.append({**base_info, 'Detail': 'No details found'})
+                else:
+                    for detail in audit_details:
+                        row = base_info.copy()
+                        if isinstance(detail, dict):
+                            for k, v in detail.items():
+                                row[k.capitalize()] = v
+                        else:
+                            row['Detail'] = str(detail)
+                        data.append(row)
+            return JsonResponse({'data': data})
+        except Exception as e:
+            return JsonResponse({'data': [], 'error': str(e)}, status=500)
+
+    # ── 10. COHERENCE CHECKLIST ─────────────────────────────────
+    elif form_key == 'coherence-view':
+        try:
+            reports = apply_date_filter(CoherenceChecklist.objects.all(), 'date').order_by('-date', '-created_at')
+            data = []
+            for report in reports:
+                base_info = {
+                    'Date': str(report.date) if report.date else '—',
+                    'Part Name': report.part_name or '—',
+                    'Part No': report.part_no or '—',
+                    'Model Name': report.model_name or '—',
+                    'Prepared By': report.prepared_by or '—',
+                    'Verified By': report.verified_by or '—',
+                }
+                
+                operations = report.operations or []
+                if not operations:
+                    data.append({**base_info, 'Operation Detail': 'No operations added'})
+                else:
+                    for op in operations:
+                        row = base_info.copy()
+                        if isinstance(op, dict):
+                            for k, v in op.items():
+                                row[f"Op {k.capitalize()}"] = v
+                        data.append(row)
+            return JsonResponse({'data': data})
+        except Exception as e:
+            return JsonResponse({'data': [], 'error': str(e)}, status=500)
+
+    # ── 11. LAYOUT INSPECTION ───────────────────────────────────
+    elif form_key == 'layout-inspection-view':
+        try:
+            reports = apply_date_filter(LayoutInspection.objects.all(), 'date').order_by('-date', '-created_at')
+            data = []
+            for report in reports:
+                base_info = {
+                    'Date': str(report.date) if report.date else '—',
+                    'Customer Name': report.customer_name or '—',
+                    'Part Name': report.part_name or '—',
+                    'Part No': report.part_no or '—',
+                    'Model Name': report.model_name or '—',
+                    'Sample Size': report.sample_size or '—',
+                    'Prepared By': report.prepared_by or '—',
+                    'Verified By': report.verified_by or '—',
+                }
+                
+                inspections = report.inspections or []
+                if not inspections:
+                    data.append({**base_info, 'Inspection Detail': 'No inspections added'})
+                else:
+                    for insp in inspections:
+                        row = base_info.copy()
+                        if isinstance(insp, dict):
+                            for k, v in insp.items():
+                                row[k.capitalize()] = v
+                        data.append(row)
+            return JsonResponse({'data': data})
+        except Exception as e:
+            return JsonResponse({'data': [], 'error': str(e)}, status=500)
+
+    # ── 12. PRODUCT AUDIT PLAN ──────────────────────────────────
+    elif form_key == 'product-audit-plan-view':
+        try:
+            reports = apply_date_filter(ProductAuditPlan.objects.all(), 'date').order_by('-date', '-created_at')
+            data = []
+            for report in reports:
+                base_info = {
+                    'Date': str(report.date) if report.date else '—',
+                    'Doc No': report.doc_no or '—',
+                    'Rev No': report.rev_no or '—',
+                    'Plan Year': report.plan_year or '—',
+                    'Prepared By': report.prepared_by or '—',
+                    'Approved By': report.approved_by or '—',
+                }
+                
+                audit_rows = report.audit_rows or []
+                if not audit_rows:
+                    data.append({**base_info, 'Audit Schedule': 'No schedules added'})
+                else:
+                    for a_row in audit_rows:
+                        row = base_info.copy()
+                        if isinstance(a_row, dict):
+                            for k, v in a_row.items():
+                                row[k.capitalize()] = v
+                        data.append(row)
+            return JsonResponse({'data': data})
+        except Exception as e:
+            return JsonResponse({'data': [], 'error': str(e)}, status=500)
+
+    # ── 13. CUSTOMER COMPLAINT ──────────────────────────────────
+    elif form_key == 'customer-complaint-view':
+        try:
+            reports = apply_date_filter(CustomerComplaint.objects.all(), 'date').order_by('-date', '-created_at')
+            data = []
+            for report in reports:
+                data.append({
+                    'Date': str(report.date) if report.date else '—',
+                    'Customer Name': report.customer_name or '—',
+                    'Part Details': report.part_details or '—',
+                    'Model Name': report.model_name or '—',
+                    'Problem Description': report.problem_description or '—',
+                    'Counter Measure': report.counter_measure or '—',
+                    'Target Date': str(report.target_date) if report.target_date else '—',
+                    'Horizontal Action': report.horizontal_action or '—',
+                    'Status': report.status or '—',
+                })
+            return JsonResponse({'data': data})
+        except Exception as e:
+            return JsonResponse({'data': [], 'error': str(e)}, status=500)
+
+    # ── 14. CUSTOMER SATISFACTION ───────────────────────────────
+    elif form_key == 'customer-satisfaction-view':
+        try:
+            # Customer satisfaction generally uses 'created_at' since it captures 'month_year' textually
+            reports = apply_date_filter(CustomerSatisfaction.objects.all(), 'created_at').order_by('-created_at')
+            data = []
+            for report in reports:
+                row = {
+                    'Customer Name': report.customer_name or '—',
+                    'Month Year': report.month_year or '—',
+                }
+                
+                indicators = report.performance_indicators or {}
+                if isinstance(indicators, dict):
+                    for k, v in indicators.items():
+                        row[k.replace('_', ' ').title()] = v
+                        
+                data.append(row)
+            return JsonResponse({'data': data})
+        except Exception as e:
+            return JsonResponse({'data': [], 'error': str(e)}, status=500)
+
+    # ── 15. WARRANTY CLAIM ──────────────────────────────────────
+    elif form_key == 'warranty-claim-view':
+        try:
+            reports = apply_date_filter(WarrantyClaim.objects.all(), 'date').order_by('-date', '-created_at')
+            data = []
+            for report in reports:
+                data.append({
+                    'Date': str(report.date) if report.date else '—',
+                    'Customer Name': report.customer_name or '—',
+                    'Part Details': report.part_details or '—',
+                    'Claim Qty': report.claim_qty or '—',
+                    'Warranty Defect': report.warranty_defect or '—',
+                    'Decision': report.decision or '—',
+                    'Rejection Root Cause': report.rejection_root_cause or '—',
+                    'Disposal Action': report.disposal_action or '—',
+                    'CAPA Analysis': report.capa_analysis or '—',
+                })
+            return JsonResponse({'data': data})
+        except Exception as e:
+            return JsonResponse({'data': [], 'error': str(e)}, status=500)
+
+    # ── 16. MINUTES OF MEETING (MOM) ────────────────────────────
+    elif form_key == 'mom-view':
+        try:
+            reports = apply_date_filter(MinutesOfMeeting.objects.all(), 'date').order_by('-date', '-created_at')
+            data = []
+            for report in reports:
+                base_info = {
+                    'Date': str(report.date) if report.date else '—',
+                    'Time': str(report.time) if report.time else '—',
+                    'Subject': report.subject or '—',
+                    'AOT Members': report.aot_members or '—',
+                    'Supplier Members': report.supplier_members or '—',
+                }
+                
+                discussions = report.discussions or []
+                if not discussions:
+                    data.append({**base_info, 'Discussion': 'No discussions added'})
+                else:
+                    for disc in discussions:
+                        row = base_info.copy()
+                        if isinstance(disc, dict):
+                            for k, v in disc.items():
+                                row[k.capitalize()] = v
+                        data.append(row)
+            return JsonResponse({'data': data})
+        except Exception as e:
+            return JsonResponse({'data': [], 'error': str(e)}, status=500)
+
+    # Agar koi aur form_key aati hai toh default error
+    return JsonResponse({'data': [], 'error': 'Form type not supported'}, status=400)

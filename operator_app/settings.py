@@ -1,12 +1,12 @@
-
-
-
 """
 Django settings for operator_app project.
 """
 
 from pathlib import Path
 import os
+from datetime import timedelta  # 🔥 NAYA CODE: Token expiry time set karne ke liye
+
+
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -23,11 +23,7 @@ DEBUG = "True"  # TEMP: Render par error diagnose karne ke liye
 # Hosts via env (local + cloud) - 🔥 UPDATED FOR ALL LOCAL IPs (.34 and .35)
 ALLOWED_HOSTS = os.getenv(
     "ALLOWED_HOSTS",
-<<<<<<< HEAD
     "localhost,127.0.0.1,192.168.0.34,0.0.0.0,.ngrok-free.dev,unsickerly-unbeclouded-cherish.ngrsok-free.dev"
-=======
-    "*,localhost,127.0.0.1,192.168.0.34,0.0.0.0,.ngrok-free.dev,unsickerly-unbeclouded-cherish.ngrok-free.dev"
->>>>>>> 54a09df31eeba98c3751a8540263e9e580f37a9c
 ).split(",")
 
 # Application definition
@@ -41,6 +37,7 @@ INSTALLED_APPS = [
     'corsheaders',
     'operator_app.apps.OperatorAppConfig',
     'rest_framework',
+    'rest_framework_simplejwt',  # 🔥 NAYA CODE: JWT App add kiya hai
     'api',
 ]
 
@@ -77,11 +74,14 @@ CORS_ALLOW_CREDENTIALS = True
 
 # CSRF Trusted - 🔥 ADDED BOTH .34 AND .35 IPs TO PREVENT BLOCKS
 CSRF_TRUSTED_ORIGINS = [
+    'http://localhost',          # 🔥 NAYA ADD KIYA: Android Capacitor default origin
+    'https://localhost',         # 🔥 NAYA ADD KIYA: Android Capacitor secure origin
     'http://localhost:3000',
     'http://localhost:3001',
     'http://192.168.0.34:3000',
     'http://192.168.0.34:3001',
     'http://192.168.0.34:8000',
+    "capacitor://localhost",
     'https://unsickerly-unbeclouded-cherish.ngrok-free.dev',
     'https://atom-dashboard-ui.vercel.app',
     'https://atom-dashboard-99yh8cbss-atomones-projects.vercel.app',
@@ -96,6 +96,11 @@ REST_FRAMEWORK = {
     'DEFAULT_PARSER_CLASSES': (
         'rest_framework.parsers.JSONParser',
     ),
+    'DEFAULT_AUTHENTICATION_CLASSES': (
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+    ),
+    # 👇 BAS YE EK LINE ADD KAR DO: Ye har API se +05:30 aur T hata dega!
+    'DATETIME_FORMAT': '%Y-%m-%d %H:%M:%S',
 }
 
 ROOT_URLCONF = 'operator_app.urls'
@@ -124,11 +129,7 @@ DATABASES = {
         'NAME': os.getenv('DB_NAME', 'Atomone'),
         'USER': os.getenv('DB_USER', 'postgres'),
         'PASSWORD': os.getenv('DB_PASSWORD', 'atomone'),
-<<<<<<< HEAD
         'HOST': os.getenv('DB_HOST', '192.168.0.35'),  
-=======
-        'HOST': os.getenv('DB_HOST', '192.168.0.35'),
->>>>>>> 54a09df31eeba98c3751a8540263e9e580f37a9c
         'PORT': os.getenv('DB_PORT', '5432'),
         'OPTIONS': {
             'options': '-c default_transaction_isolation=serializable -c timezone=Asia/Kolkata'
@@ -160,18 +161,13 @@ ALERT_EMAIL_RECIPIENTS = []
 LANGUAGE_CODE = 'en-us'
 TIME_ZONE = 'Asia/Kolkata'
 USE_I18N = True
-USE_TZ = False
+USE_TZ = True
 
 # Static files
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / "staticfiles"
 
 # Default primary key field type
-<<<<<<< HEAD
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-
-
-=======
-DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
->>>>>>> 54a09df31eeba98c3751a8540263e9e580f37a9c
+#py manage.py runserver 0.0.0.0:8000
