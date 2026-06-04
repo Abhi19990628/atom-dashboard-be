@@ -2640,3 +2640,304 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
 class CustomLoginView(TokenObtainPairView):
     serializer_class = CustomTokenObtainPairSerializer
 
+
+
+# Helper function table name validate karne ke liye
+def get_plant_table(plant_param):
+    if plant_param == 'plant2':
+        return 'plant2_data', 49
+    return 'plant1_data', 57
+
+@never_cache
+@api_view(['GET'])
+def plant_wise_total(request):
+    try:
+        # Dono plants ka ek basic total bhejte hain
+        return Response({
+            'success': True,
+            'plant1': {'status': 'Active', 'total_machines': 57},
+            'plant2': {'status': 'Active', 'total_machines': 49}
+        })
+    except Exception as e:
+        return Response({'success': False, 'error': str(e)}, status=500)
+
+@never_cache
+@api_view(['GET'])
+def date_range(request):
+    plant = request.GET.get('plant', 'plant1')
+    table_name, _ = get_plant_table(plant)
+    
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(f"SELECT MIN(DATE(timestamp)), MAX(DATE(timestamp)) FROM {table_name}")
+            row = cursor.fetchone()
+            
+        return Response({
+            'success': True,
+            'first_date': row[0] if row[0] else '2024-01-01',
+            'last_date': row[1] if row[1] else datetime.now().strftime('%Y-%m-%d')
+        })
+    except Exception as e:
+        return Response({'success': False, 'error': str(e)}, status=500)
+
+@never_cache
+@api_view(['GET'])
+def realtime_dashboard(request):
+    # Ye wahi data dega jo aapka original function aaj ka nikalta hai, par summary format me
+    plant = request.GET.get('plant', 'plant1')
+    table_name, total_machines = get_plant_table(plant)
+    today = datetime.now().strftime('%Y-%m-%d')
+    
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(f"""
+                SELECT COUNT(DISTINCT machine_no), SUM(count)
+                FROM {table_name} 
+                WHERE DATE(timestamp) = %s
+            """, [today])
+            row = cursor.fetchone()
+            
+        return Response({
+            'success': True,
+            'summary': {
+                'active_machines': row[0] or 0,
+                'total_machines': total_machines,
+                'total_production': row[1] or 0,
+                'date': today
+            }
+        })
+    except Exception as e:
+        return Response({'success': False, 'error': str(e)}, status=500)
+
+@never_cache
+@api_view(['GET'])
+def monthly_summary(request):
+    plant = request.GET.get('plant', 'plant1')
+    month = int(request.GET.get('month', datetime.now().month))
+    year = int(request.GET.get('year', datetime.now().year))
+    
+    table_name, _ = get_plant_table(plant)
+    days_in_month = calendar.monthrange(year, month)[1]
+    
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(f"""
+                SELECT 
+                    EXTRACT(DAY FROM timestamp) as day,
+                    SUM(count) as total_prod,
+                    SUM(idle_time) as total_idle
+                FROM {table_name}
+                WHERE EXTRACT(MONTH FROM timestamp) = %s AND EXTRACT(YEAR FROM timestamp) = %s
+                GROUP BY EXTRACT(DAY FROM timestamp)
+                ORDER BY day
+            """, [month, year])
+            results = cursor.fetchall()
+
+        # Data map banate hain taaki daily chart me gap na aaye
+        db_data = {int(row[0]): {'prod': row[1] or 0, 'idle': row[2] or 0} for row in results}
+        
+        daily_breakdown = []
+        total_prod = 0
+        total_idle_mins = 0
+        days_with_data = 0
+        
+        for day in range(1, days_in_month + 1):
+            if day in db_data:
+                prod = db_data[day]['prod']
+                idle = db_data[day]['idle']
+                has_data = True
+                days_with_data += 1
+                total_prod += prod
+                total_idle_mins += idle
+            else:
+                prod = 0
+                idle = 0
+                has_data = False
+                
+            daily_breakdown.append({
+                'day': day,
+                'production': prod,
+                'idle_minutes': idle,
+                'has_data': has_data
+            })
+            
+        return Response({
+            'month_name': calendar.month_name[month],
+            'summary': {
+                'total_production': total_prod,
+                'total_idle_hours': round(total_idle_mins / 60, 1),
+                'days_with_data': days_with_data,
+                'days_in_month': days_in_month,
+                'coverage': round((days_with_data / days_in_month) * 100, 1) if days_in_month > 0 else 0
+            },
+            'daily_breakdown': daily_breakdown
+        })
+    except Exception as e:
+        return Response({'success': False, 'error': str(e)}, status=500)
+
+@never_cache
+@api_view(['GET'])
+def machine_wise(request):
+    plant = request.GET.get('plant', 'plant1')
+    month = int(request.GET.get('month', datetime.now().month))
+    year = int(request.GET.get('year', datetime.now().year))
+    table_name, total_machines = get_plant_table(plant)
+    
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(f"""
+                SELECT machine_no, SUM(count), SUM(idle_time)
+                FROM {table_name}
+                WHERE EXTRACT(MONTH FROM timestamp) = %s AND EXTRACT(YEAR FROM timestamp) = %s
+                GROUP BY machine_no
+            """, [month, year])
+            results = cursor.fetchall()
+            
+        machine_data = []
+        for row in results:
+            machine_data.append({
+                'machine_no': row[0],
+                'production': row[1] or 0,
+                'idle_minutes': row[2] or 0
+            })
+            
+        return Response({'success': True, 'data': machine_data})
+    except Exception as e:
+        return Response({'success': False, 'error': str(e)}, status=500)
+import calendar
+@never_cache
+@api_view(['GET'])
+def machine_analysis(request):
+    # Jab user frontend pe kisi specific machine (e.g., "01") par click karega toh ye chalega
+    plant = request.GET.get('plant', 'plant1')
+    machine_no = request.GET.get('machine_no')
+    month = int(request.GET.get('month', datetime.now().month))
+    year = int(request.GET.get('year', datetime.now().year))
+    
+    table_name, _ = get_plant_table(plant)
+    days_in_month = calendar.monthrange(year, month)[1]
+    
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(f"""
+                SELECT 
+                    EXTRACT(DAY FROM timestamp) as day,
+                    SUM(count) as total_prod,
+                    SUM(idle_time) as total_idle
+                FROM {table_name}
+                WHERE machine_no = %s AND EXTRACT(MONTH FROM timestamp) = %s AND EXTRACT(YEAR FROM timestamp) = %s
+                GROUP BY EXTRACT(DAY FROM timestamp)
+                ORDER BY day
+            """, [machine_no, month, year])
+            results = cursor.fetchall()
+
+        db_data = {int(row[0]): {'prod': row[1] or 0, 'idle': row[2] or 0} for row in results}
+        
+        daily_breakdown = []
+        total_prod = 0
+        total_idle_mins = 0
+        active_days = 0
+        
+        for day in range(1, days_in_month + 1):
+            if day in db_data:
+                prod = db_data[day]['prod']
+                idle = db_data[day]['idle']
+                has_data = True
+                if prod > 0 or idle > 0:
+                    active_days += 1
+                total_prod += prod
+                total_idle_mins += idle
+            else:
+                prod = 0
+                idle = 0
+                has_data = False
+                
+            daily_breakdown.append({
+                'day': day,
+                'production': prod,
+                'idle_minutes': idle,
+                'idle_hours': round(idle / 60, 2),
+                'has_data': has_data,
+                'status': 'Active' if has_data else 'Offline'
+            })
+            
+        return Response({
+            'machine_info': {
+                'machine_no': machine_no,
+                'machine_id': f"M-{str(machine_no).zfill(2)}",
+                'month_name': calendar.month_name[month],
+                'days_in_month': days_in_month
+            },
+            'production_summary': {
+                'total_production': total_prod,
+                'average_daily': round(total_prod / active_days, 1) if active_days > 0 else 0
+            },
+            'idle_summary': {
+                'total_idle_hours': round(total_idle_mins / 60, 1),
+                'total_idle_minutes': total_idle_mins
+            },
+            'machine_status': {
+                'active_days': active_days,
+                'inactive_days': days_in_month - active_days,
+                'days_without_data': days_in_month - len(db_data),
+                'active_percentage': round((active_days / days_in_month) * 100, 1),
+                'status': 'Operational' if active_days > 0 else 'Offline'
+            },
+            'daily_breakdown': daily_breakdown
+        })
+    except Exception as e:
+        return Response({'success': False, 'error': str(e)}, status=500)
+
+
+
+
+
+@api_view(['POST'])
+def log_idle_reason(request):
+    """
+    Frontend se downtime reason receive karta hai aur 
+    usse RAM buffer (Pending State) mein save karta hai.
+    """
+    try:
+        # ✅ FIX: Import ko function ke ANDAR daal diya taaki Circular Import error na aaye
+        from apps.mqtt.simple_plant2 import EXACT_REQUIREMENT_STATE
+
+        data = request.data
+        
+        machine_no = data.get('machine_no')
+        plant_no = data.get('plant_no')
+        category = data.get('category')
+        reason = data.get('reason')
+        remarks = data.get('remarks', '')
+
+        # Basic validation
+        if not machine_no or not category or not reason:
+            return Response({
+                'success': False, 
+                'error': 'Missing required fields (machine_no, category, reason)'
+            }, status=400)
+
+        machine_no = int(machine_no)
+
+        if int(plant_no) == 2:
+            # Agar abhi bhi None hoga, toh ye code bata dega
+            if EXACT_REQUIREMENT_STATE is None:
+                return Response({'success': False, 'error': 'EXACT_REQUIREMENT_STATE is None!'}, status=500)
+
+            EXACT_REQUIREMENT_STATE.set_pending_reason(
+                machine_no=machine_no,
+                category=category,
+                reason=reason,
+                remarks=remarks
+            )
+            return Response({
+                'success': True, 
+                'message': f'Reason buffered successfully for Machine {machine_no}'
+            })
+        else:
+            return Response({'success': False, 'error': 'Invalid Plant Number'}, status=400)
+
+    except Exception as e:
+        print(f"❌ API Error in log_idle_reason: {e}")
+        return Response({'success': False, 'error': str(e)}, status=500)
+    
