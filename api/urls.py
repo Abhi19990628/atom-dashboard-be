@@ -76,6 +76,10 @@ urlpatterns = [
     
     path('plant2/hourly-idle/', views.plant2_hourly_idle, name='plant2-hourly-idle'),
     path('plant2/hourly-idle/summary/', views.plant2_hourly_idle_summary, name='plant2-hourly-idle-summary'),
+    path('bulk-insert-master-data/', views.bulk_insert_parts, name='bulk_insert_parts'),
+    
+    path('customers/', views.get_unique_customers, name='get_customers'),
+    path('parts/<str:customer_name>/', views.get_parts_by_customer, name='get_parts'),
     
 ]
 

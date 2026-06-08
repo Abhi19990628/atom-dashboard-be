@@ -21,12 +21,12 @@ from api.models import (
     TipChangeDressing, ReworkEntry, FiveSChecksheetReport, FiveSChecksheetObservation,
     DailyProductionPlan, FourMChangeInspection, FourMChangeRecord,
     MonthlyProductionPlan, OperatorObservanceChecklist, OperatorObservancePlan,
-    PMChecklistMHE, ProjectionWelderQual, SpotWelderQual, TigMigWelderQual, ProcessValidation
+    PMChecklistMHE, ProjectionWelderQual, SpotWelderQual, TigMigWelderQual, ProcessValidation,FourMDisplay,FourMSummary
 )
 
 from api.serializers import (
     TipChangeDressingSerializer, DailyProductionPlanSerializer,
-    FourMChangeInspectionSerializer, FourMChangeRecordSerializer
+    FourMChangeInspectionSerializer, FourMChangeRecordSerializer,FourMSummarySerializer
 )
 
 try:
@@ -274,7 +274,68 @@ class SaveFourMChangeRecordView(APIView):
             traceback.print_exc()
             return Response({"success": False, "error": "Server connection failed: " + str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)  
 
+class SaveFourMDisplayView(APIView):
+    @transaction.atomic
+    def post(self, request):
+        try:
+            data = request.data
+            entries = data.get('entries', [])
 
+            # Looping through the array from React and creating records manually
+            for entry in entries:
+                FourMDisplay.objects.create(
+                    s_no=entry.get('s_no'),
+                    machine_no=entry.get('machine_no', ''),
+                    operator_name=entry.get('operator_name', ''),
+                    man=entry.get('man', ''),
+                    machine=entry.get('machine', ''),
+                    material=entry.get('material', ''),
+                    method=entry.get('method', '')
+                )
+            
+            return Response({"success": True, "message": " 4M Display Board Saved!"}, status=status.HTTP_201_CREATED)
+        
+        except Exception as e:
+            print(f"4M Display Board Error: {str(e)}")
+            return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+class SaveFourMSummaryView(APIView):
+    @transaction.atomic
+    def post(self, request):
+        try:
+            data = request.data
+            prepared_by = data.get('prepared_by', '')
+            approved_by = data.get('approved_by', '')
+            entries = data.get('entries', [])
+
+            # Har row object me top-level prepared_by aur approved_by add kar rahe hain
+            for entry in entries:
+                entry['prepared_by'] = prepared_by
+                entry['approved_by'] = approved_by
+
+                # Agar blank date aa rahi hai (to avoid validation errors)
+                if not entry.get('date'):
+                    entry.pop('date', None)
+
+            # Bulk save using Serializer
+            serializer = FourMSummarySerializer(data=entries, many=True)
+            if serializer.is_valid():
+                serializer.save()
+                return Response(
+                    {"success": True, "message": "4M Summary Sheet Saved Successfully!"}, 
+                    status=status.HTTP_201_CREATED
+                )
+            else:
+                return Response(
+                    {"success": False, "error": serializer.errors}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        except Exception as e:
+            print(f"4M Summary Board Error: {str(e)}")
+            return Response(
+                {"success": False, "error": str(e)}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 # ==============================================================================
 # 📅 MONTHLY PRODUCTION APIs
 # ==============================================================================
@@ -531,8 +592,8 @@ def production_data_view(request, form_key):
                     'Operation': r.operation or '',
                     'Lot Qty': r.lot_qty if r.lot_qty is not None else '',
                     'OK Qty': r.ok_qty if r.ok_qty is not None else '',
-                    'Rej. Qty': r.rej_qty if r.rej_qty is not None else '',     
-                    'Parameter/Specs': r.parameter_specs or '',                 
+                    'Rej. Qty': r.rej_qty if r.rej_qty is not None else '',    
+                    'Parameter/Specs': r.parameter_specs or '',                
                     'Insp. By': r.inspected_by or '',
                 }
 
@@ -737,7 +798,7 @@ def production_data_view(request, form_key):
         except Exception as e:
             return JsonResponse({'data': [], 'error': str(e)}, status=500)
 
-   # ── 8. OPERATOR OBSERVANCE CHECKLIST ────────────────────────
+    # ── 8. OPERATOR OBSERVANCE CHECKLIST ────────────────────────
     elif form_key == 'operator-observance-checklist':
         try:
             reports = OperatorObservanceChecklist.objects.all().order_by('-created_at')
@@ -1052,7 +1113,52 @@ def production_data_view(request, form_key):
             return JsonResponse({'data': data})
         except Exception as e:
             return JsonResponse({'data': [], 'error': str(e)}, status=500)
-            
+
+    # ── 15. 4M DISPLAY BOARD ──────────────────────────────────────
+    elif form_key == 'four-m-display':
+        try:
+            records = FourMDisplay.objects.all().order_by('-created_at')
+            data = [{
+                'Machine No': r.machine_no or '',
+                'Operator Name': r.operator_name or '',
+                'Man': r.man or '',
+                'Machine': r.machine or '',
+                'Material': r.material or '',
+                'Method': r.method or '',
+                'Date Filled': str(r.date_filled) if r.date_filled else ''
+            } for r in records]
+            return JsonResponse({'data': data})
+        except Exception as e:
+            print("❌ Backend Error in four-m-display:", str(e))
+            return JsonResponse({'data': [], 'error': str(e)}, status=500)
+
+    # ── 16. 4M SUMMARY SHEET ──────────────────────────────────────
+    elif form_key == 'four-m-summary':
+        try:
+            records = FourMSummary.objects.all().order_by('-created_at')
+            data = [{
+                # 'S.No': r.s_no if r.s_no is not None else '',
+                'Date': str(r.date) if r.date else '',
+                'Customer': r.customer or '',
+                'Part Name & No': r.part_name_no or '',
+                'Type of Change': r.type_of_change or '',
+                'Change Detail': r.change_detail or '',
+                'Retro Total Qty': r.retro_total_qty if r.retro_total_qty is not None else '',
+                'Retro OK Qty': r.retro_ok_qty if r.retro_ok_qty is not None else '',
+                'Retro Rej. Qty': r.retro_rej_qty if r.retro_rej_qty is not None else '',
+                'Status After Final Insp.': r.status_after_final or '',
+                'Action for NG Material': r.action_for_ng or '',
+                'Sup. Signature': r.sup_signature or '',
+                'Sign Prod. Head': r.sign_prod_head or '',
+                'Sign QA Head': r.sign_qa_head or '',
+                'Remarks': r.remarks or '',
+                'Prepared By': r.prepared_by or '',
+                'Approved By': r.approved_by or '',
+            } for r in records]
+            return JsonResponse({'data': data})
+        except Exception as e:
+            print("❌ Backend Error in four-m-summary:", str(e))
+            return JsonResponse({'data': [], 'error': str(e)}, status=500)
+
     # Agar koi galat form_key aati hai
     return JsonResponse({'data': [], 'error': 'Production form type not supported'}, status=400)
-

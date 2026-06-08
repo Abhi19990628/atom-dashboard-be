@@ -2939,5 +2939,55 @@ def log_idle_reason(request):
 
     except Exception as e:
         print(f"❌ API Error in log_idle_reason: {e}")
-        return Response({'success': False, 'error': str(e)}, status=500)
-    
+
+
+import json
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from .models import PartMaster
+
+@csrf_exempt  # Testing ke liye CSRF disable kiya hai taaki Postman se request directly chali jaye
+def bulk_insert_parts(request):
+    if request.method == 'POST':
+        try:
+            # Body se JSON data nikalna
+            data = json.loads(request.body)
+            parts_to_create = []
+
+            for item in data:
+                parts_to_create.append(
+                    PartMaster(
+                        customer_name=item.get('customer_name'),
+                        part_name=item.get('part_name'),
+                        part_no=item.get('part_no'),
+                        part_model=item.get('model'), 
+                        inspection_data=item.get('inspection_data', [])
+                    )
+                )
+
+            # Bulk create: fast insertion ke liye
+            PartMaster.objects.bulk_create(parts_to_create)
+
+            return JsonResponse({'message': 'Master data successfully insert ho gaya bhai!'}, status=201)
+            
+        except Exception as e:
+            return JsonResponse({'error': str(e)}, status=400)
+            
+    return JsonResponse({'error': 'Only POST method is allowed'}, status=405)    
+
+from django.http import JsonResponse
+from .models import PartMaster
+
+# 1. Sirf unique Customers ki list laane ke liye
+def get_unique_customers(request):
+    # 'customer_name' ke basis pe unique list nikal rahe hain
+    customers = list(PartMaster.objects.values_list('customer_name', flat=True).distinct())
+    return JsonResponse({'customers': customers})
+
+# 2. Customer select hone par uske parts laane ke liye (UPDATED)
+def get_parts_by_customer(request, customer_name):
+    # 'part_model' add kiya hai taaki UI mein bracket mein model show ho sake
+    parts = list(PartMaster.objects.filter(customer_name=customer_name).values(
+        'id', 'part_name', 'part_no', 'part_model', 'inspection_data' 
+    ))
+    return JsonResponse({'parts': parts})

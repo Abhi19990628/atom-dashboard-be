@@ -27,6 +27,7 @@ from .models import (
     DailyPowerPressChecksheet,
     MachineHistoryCard,
     MachineBreakdownIntimation,
+    ToolBreakdownIntimation,
     ToolHistoryReport,
     ToolPreventiveMaintenance,
     GoodReceiptEntry,DailyProductionPlan,
@@ -38,7 +39,25 @@ from .models import (
     PMChecklistMHE,ProjectionWelderQual, SpotWelderQual, TigMigWelderQual, ProcessValidation,
     ProcessAuditChecksheet,CoherenceChecklist, LayoutInspection, ProductAuditPlan, CustomerComplaint,
     CustomerSatisfaction, WarrantyClaim, MinutesOfMeeting,
-    MachineBreakdown, ToolBreakdown, MachineCriticalSpare, ToolCriticalSpare
+    MachineBreakdown, ToolBreakdown, MachineCriticalSpare, ToolCriticalSpare,ToolBreakdownIntimation,
+    SpotWeldingMaintenance,
+    CompressorMaintenance,
+    LatheMachineMaintenance,
+    VerticalDrillMachineMaintenance,
+    SurfaceGrinderMaintenance,
+    TigWeldingMaintenance,
+    BaseGrinderMaintenance,
+    BeltGrinderMaintenance,
+    PipeCuttingMaintenance,
+    VibraMaintenance,
+    DipMoldingMaintenance,
+    ServoPressMaintenance,
+    MachinePreventiveMaintenance,
+    CNCMaintenanceReport,
+    VerticalMillingMachineCheckSheet,
+    ProjectionWeldingPMCheckSheet,
+    PowerPressPMCheckSheet,
+    HydraulicPMCheckSheet,FourMDisplay,FourMSummary, FixtureMaintenanceRecord
 )
 
 # ==========================================
@@ -257,6 +276,12 @@ class ToolPreventiveMaintenanceSerializer(serializers.ModelSerializer):
         model = ToolPreventiveMaintenance
         fields = '__all__'
 
+
+class ToolBreakdownIntimationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ToolBreakdownIntimation
+        fields = '__all__'
+
 class DailyProductionPlanSerializer(serializers.ModelSerializer):
     class Meta:
         model = DailyProductionPlan
@@ -274,8 +299,15 @@ class FourMChangeRecordSerializer(serializers.ModelSerializer):
         model = FourMChangeRecord
         fields = '__all__'
 
-
+class FourMDisplaySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = FourMDisplay
+        fields = '__all__'
         
+class FourMSummarySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = FourMSummary
+        fields = '__all__'       
 ###################################
 #
 #       Prodcution monthly 
@@ -400,3 +432,310 @@ class NotificationSerializer(serializers.ModelSerializer):
     class Meta:
         model = Notification
         fields = ['id', 'machine_no', 'message', 'is_read', 'created_at']
+        
+ ###################################
+#
+#   machine   Maintance  weekly
+###################################
+
+
+class SpotWeldingMaintenanceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SpotWeldingMaintenance
+        fields = '__all__'
+
+class CompressorMaintenanceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CompressorMaintenance
+        fields = '__all__'
+
+class LatheMachineMaintenanceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = LatheMachineMaintenance
+        fields = '__all__'
+
+class VerticalDrillMachineMaintenanceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = VerticalDrillMachineMaintenance
+        fields = '__all__'
+
+class SurfaceGrinderMaintenanceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SurfaceGrinderMaintenance
+        fields = '__all__'
+
+class TigWeldingMaintenanceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TigWeldingMaintenance
+        fields = '__all__'
+        
+class BaseGrinderMaintenanceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = BaseGrinderMaintenance
+        fields = '__all__'
+
+class BeltGrinderMaintenanceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = BeltGrinderMaintenance
+        fields = '__all__'
+
+class PipeCuttingMaintenanceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PipeCuttingMaintenance
+        fields = '__all__'
+
+class VibraMaintenanceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = VibraMaintenance
+        fields = '__all__'
+
+class DipMoldingMaintenanceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DipMoldingMaintenance
+        fields = '__all__'
+
+class ServoPressMaintenanceSerializer(serializers.ModelSerializer):
+    date = serializers.DateField(required=False, allow_null=True)
+    class Meta:
+        model = ServoPressMaintenance
+        fields = '__all__'
+class MachinePreventiveMaintenanceSerializer(serializers.ModelSerializer):
+    checklist = serializers.JSONField(source='checkpoints')
+
+    class Meta:
+        model = MachinePreventiveMaintenance
+        fields = [
+            'id',
+            'machine_name',
+            'machine_no',
+            'date',
+            'location',
+            'specification',
+            'maintenance_personnel',
+            'checklist',
+            'created_at',
+        ]
+        read_only_fields = ['id', 'created_at']
+
+    def validate_checklist(self, value):
+        if not isinstance(value, list) or not value:
+            raise serializers.ValidationError("checklist must be a non-empty list.")
+
+        required_fields = {
+            'sr_no',
+            'check_point',
+            'checking_method',
+            'before_maintenance',
+            'after_maintenance',
+            'remarks',
+        }
+
+        for index, item in enumerate(value, start=1):
+            if not isinstance(item, dict) or not required_fields.issubset(item):
+                raise serializers.ValidationError(
+                    f"Checklist row {index} must contain sr_no, check_point, checking_method, before_maintenance, after_maintenance and remarks."
+                )
+
+        return value
+class CNCMaintenanceReportSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CNCMaintenanceReport
+        fields = [
+            'id',
+            'machine_name',
+            'machine_no',
+            'date',
+            'location',
+            'specification',
+            'maintenance_personnel',
+            'checklist',
+            'created_at',
+        ]
+        read_only_fields = ['id', 'created_at']
+
+    def validate_checklist(self, value):
+        if not isinstance(value, list) or not value:
+            raise serializers.ValidationError("checklist must be a non-empty list.")
+
+        required_fields = {
+            'sr_no',
+            'check_point',
+            'checking_method',
+            'before_maintenance',
+            'after_maintenance',
+            'remarks',
+        }
+
+        for index, item in enumerate(value, start=1):
+            if not isinstance(item, dict) or not required_fields.issubset(item):
+                raise serializers.ValidationError(
+                    f"Checklist row {index} must contain sr_no, check_point, checking_method, before_maintenance, after_maintenance and remarks."
+                )
+
+        return value
+
+from rest_framework import serializers
+class VerticalMillingMachineCheckSheetSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = VerticalMillingMachineCheckSheet
+        fields = [
+            'id',
+            'machine_name',
+            'machine_no',
+            'date',
+            'location',
+            'specification',
+            'maintenance_personnel',
+            'checkpoints',
+            'prepared_by',
+            'checked_by',
+            'created_at',
+        ]
+        read_only_fields = ['id', 'created_at']
+
+    def validate_checkpoints(self, value):
+        if not isinstance(value, list) or not value:
+            raise serializers.ValidationError("checkpoints must be a non-empty list.")
+
+        required_fields = {
+            'sr_no',
+            'check_point',
+            'checking_parameter',
+            'method',
+            'before_maintenance',
+            'after_maintenance',
+            'remarks',
+        }
+
+        for index, item in enumerate(value, start=1):
+            if not isinstance(item, dict) or not required_fields.issubset(item):
+                raise serializers.ValidationError(
+                    f"Checkpoint row {index} must contain sr_no, check_point, checking_parameter, method, before_maintenance, after_maintenance and remarks."
+                )
+
+        return value
+class ProjectionWeldingPMCheckSheetSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProjectionWeldingPMCheckSheet
+        fields = [
+            'id',
+            'machine_name',
+            'machine_no',
+            'date',
+            'location',
+            'specification',
+            'maintenance_personnel',
+            'checkpoints',
+            'prepared_by',
+            'checked_by',
+            'created_at',
+        ]
+        read_only_fields = ['id', 'created_at']
+
+    def validate_checkpoints(self, value):
+        if not isinstance(value, list) or not value:
+            raise serializers.ValidationError("checkpoints must be a non-empty list.")
+
+        required_fields = {
+            'sr_no',
+            'check_point',
+            'checking_parameter',
+            'checking_method',
+            'before_maintenance',
+            'after_maintenance',
+            'spare_used_remarks',
+        }
+
+        for index, item in enumerate(value, start=1):
+            if not isinstance(item, dict) or not required_fields.issubset(item):
+                raise serializers.ValidationError(
+                    f"Checkpoint row {index} must contain sr_no, check_point, checking_parameter, checking_method, before_maintenance, after_maintenance and spare_used_remarks."
+                )
+
+        return value 
+class PowerPressPMCheckSheetSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PowerPressPMCheckSheet
+        fields = [
+            'id',
+            'machine_name',
+            'machine_no',
+            'date',
+            'location',
+            'specification',
+            'checkpoints',
+            'created_at',
+        ]
+        read_only_fields = ['id', 'created_at']
+
+    def validate_checkpoints(self, value):
+        if not isinstance(value, list) or not value:
+            raise serializers.ValidationError("checkpoints must be a non-empty list.")
+
+        required_fields = {
+            'sr_no',
+            'check_point',
+            'checking_method',
+            'checking_parameter',
+            'before_maintenance',
+            'after_maintenance',
+            'remarks',
+        }
+
+        for index, item in enumerate(value, start=1):
+            if not isinstance(item, dict) or not required_fields.issubset(item):
+                raise serializers.ValidationError(
+                    f"Checkpoint row {index} must contain sr_no, check_point, checking_method, checking_parameter, before_maintenance, after_maintenance and remarks."
+                )
+
+        return value       
+
+
+class HydraulicPMCheckSheetSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = HydraulicPMCheckSheet
+        fields = [
+            'id',
+            'machine_name',
+            'machine_no',
+            'date',
+            'location',
+            'specification',
+            'maintenance_personnel',
+            'checkpoints',
+            'prepared_by',
+            'checked_by',
+            'created_at',
+        ]
+        read_only_fields = ['id', 'created_at']
+
+    def validate_checkpoints(self, value):
+        if not isinstance(value, list) or not value:
+            raise serializers.ValidationError("checkpoints must be a non-empty list.")
+
+        # Fields perfectly matching your exact UI screenshot columns
+        required_fields = {
+            'sr_no',
+            'check_point',
+            'checking_parameter',
+            'checking_method',
+            'before_maintenance',
+            'after_maintenance',
+            'remarks',
+        }
+
+        for index, item in enumerate(value, start=1):
+            if not isinstance(item, dict) or not required_fields.issubset(item):
+                raise serializers.ValidationError(
+                    f"Checkpoint row {index} must contain sr_no, check_point, checking_parameter, checking_method, before_maintenance, after_maintenance, and remarks."
+                )
+
+        return value
+    
+    
+
+
+class FixtureMaintenanceRecordSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = FixtureMaintenanceRecord
+        fields = '__all__'
