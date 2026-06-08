@@ -701,6 +701,45 @@ class ToolPreventiveMaintenance(models.Model):
     def __str__(self):
         return f"{self.tool_name} - {self.date}"
     
+class ToolBreakdownIntimation(models.Model):
+    # Header / Document Details
+    doc_no = models.CharField(max_length=50, default='AOT-F-BD-01', blank=True, null=True)
+
+    # 1. Production Section (ब्रेकडाउन देने वाले की जानकारी)
+    reporter_name = models.CharField(max_length=255)
+    report_date = models.DateField(blank=True, null=True)
+    machine_name_no = models.CharField(max_length=255)
+    report_time = models.TimeField(blank=True, null=True)
+    breakdown_details = models.TextField()
+    prod_supervisor_name = models.CharField(max_length=255, blank=True, null=True)
+
+    # 2. Maintenance Deptt Details (रखरखाव विभाग की जानकारी)
+    maint_date = models.DateField(blank=True, null=True)
+    maint_time = models.TimeField(blank=True, null=True)
+    time_taken_to_rectify = models.CharField(max_length=100, blank=True, null=True) # CharField रखा है ताकि '2 Hours' जैसा टेक्स्ट भी सेव हो सके
+    men_engaged = models.IntegerField(blank=True, null=True)
+    action_taken_details = models.TextField(blank=True, null=True)
+    maint_incharge_name = models.CharField(max_length=255, blank=True, null=True)
+
+    # 3. Quality Verification (क्वालिटी द्वारा जाँच)
+    status = models.CharField(max_length=10, default='OK')  # OK or NG
+    qa_date = models.DateField(blank=True, null=True)
+    qa_time = models.TimeField(blank=True, null=True)
+    nc_verification = models.CharField(max_length=255, blank=True, null=True)
+    qa_incharge_name = models.CharField(max_length=255, blank=True, null=True)
+
+    # Extra Metadata
+    language = models.CharField(max_length=50, default='hindi')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = True
+        db_table = "tool_breakdown_slip"
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.machine_name_no} - {self.reporter_name} ({self.report_date})"
+    
 from datetime import date
 from django.db import models
 from datetime import date
@@ -1302,3 +1341,573 @@ class Notification(models.Model):
 
     def __str__(self):
         return f"Notification for {self.user.username} - {self.machine_no}"
+    
+    
+    
+    
+##############################################
+# machine maintenance weekly report model 
+##############################################
+
+
+class TigWeldingMaintenance(models.Model):
+    # Meta Data Fields
+    machine_name = models.CharField(max_length=100, blank=True, null=True)
+    date = models.DateField()
+    machine_no = models.CharField(max_length=50, blank=True, null=True)
+    location = models.CharField(max_length=100, blank=True, null=True)
+    maintenance_personnel = models.CharField(max_length=100, blank=True, null=True)
+    
+    # JSON Field for the 12 Checkpoints (tableData)
+    checkpoints = models.JSONField(default=list, help_text="Stores the checklist array")
+    
+    # Signatures
+    prepared_by = models.CharField(max_length=100)
+    checked_by = models.CharField(max_length=100, blank=True, null=True)
+    
+    # Auto Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = True
+        db_table = "tig_welding_maintenance" # Database table name
+
+    def __str__(self):
+        return f"{self.machine_name} - {self.machine_no} ({self.date})"   
+
+class SpotWeldingMaintenance(models.Model):
+    # Meta Data Fields
+    machine_name = models.CharField(max_length=100, default='SPOT WELDING M/C', blank=True, null=True)
+    date = models.DateField()
+    machine_no = models.CharField(max_length=50, blank=True, null=True)
+    location = models.CharField(max_length=100, blank=True, null=True)
+    specification = models.CharField(max_length=100, blank=True, null=True)
+    maintenance_personnel = models.CharField(max_length=100, blank=True, null=True)
+    
+    # JSON Field for the Checkpoints (tableData)
+    checkpoints = models.JSONField(default=list, help_text="Stores the checklist array")
+    
+    # Signatures
+    prepared_by = models.CharField(max_length=100)
+    checked_by = models.CharField(max_length=100, blank=True, null=True)
+    
+    # Auto Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = True
+        db_table = "spot_welding_maintenance"
+
+    def __str__(self):
+        return f"{self.machine_name} - {self.machine_no} ({self.date})"
+
+
+class CompressorMaintenance(models.Model):
+    # Meta Data Fields
+    machine_name = models.CharField(max_length=100, default='Compressor', blank=True, null=True)
+    date = models.DateField()
+    machine_no = models.CharField(max_length=50, blank=True, null=True)
+    location = models.CharField(max_length=100, blank=True, null=True)
+    specification = models.CharField(max_length=100, blank=True, null=True)
+    maintenance_personnel = models.CharField(max_length=100, blank=True, null=True)
+    
+    # JSON Field for the Checkpoints (tableData)
+    checkpoints = models.JSONField(default=list, help_text="Stores the checklist array")
+    
+    # Signatures
+    prepared_by = models.CharField(max_length=100, blank=True, null=True)
+    checked_by = models.CharField(max_length=100, blank=True, null=True)
+    
+    # Auto Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = True
+        db_table = "compressor_maintenance"
+
+    def __str__(self):
+        return f"{self.machine_name} - {self.machine_no} ({self.date})"
+
+
+class LatheMachineMaintenance(models.Model):
+    # Meta Data Fields
+    machine_name = models.CharField(max_length=100, default='LATHE MACHINE', blank=True, null=True)
+    date = models.DateField()
+    machine_no = models.CharField(max_length=50, blank=True, null=True)
+    location = models.CharField(max_length=100, blank=True, null=True)
+    specification = models.CharField(max_length=100, blank=True, null=True)
+    maintenance_personnel = models.CharField(max_length=100, blank=True, null=True)
+    
+    # JSON Field for the Checkpoints (tableData)
+    checkpoints = models.JSONField(default=list, help_text="Stores the checklist array")
+    
+    # Signatures
+    prepared_by = models.CharField(max_length=100)
+    checked_by = models.CharField(max_length=100, blank=True, null=True)
+    
+    # Auto Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = True
+        db_table = "lathe_machine_maintenance"
+
+    def __str__(self):
+        return f"{self.machine_name} - {self.machine_no} ({self.date})"
+
+
+class VerticalDrillMachineMaintenance(models.Model):
+    # Meta Data Fields
+    machine_name = models.CharField(max_length=100, default='VERTICAL DRILL MACHINE', blank=True, null=True)
+    date = models.DateField()
+    machine_no = models.CharField(max_length=50, blank=True, null=True)
+    location = models.CharField(max_length=100, blank=True, null=True)
+    specification = models.CharField(max_length=100, blank=True, null=True)
+    maintenance_personnel = models.CharField(max_length=100, blank=True, null=True)
+    
+    # JSON Field for the Checkpoints (tableData)
+    checkpoints = models.JSONField(default=list, help_text="Stores the checklist array")
+    
+    # Signatures
+    prepared_by = models.CharField(max_length=100)
+    checked_by = models.CharField(max_length=100, blank=True, null=True)
+    
+    # Auto Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = True
+        db_table = "vertical_drill_machine_maintenance"
+
+    def __str__(self):
+        return f"{self.machine_name} - {self.machine_no} ({self.date})"
+
+
+class SurfaceGrinderMaintenance(models.Model):
+    # Meta Data Fields
+    machine_name = models.CharField(max_length=100, default='SURFACE GRINDER', blank=True, null=True)
+    date = models.DateField()
+    machine_no = models.CharField(max_length=50, blank=True, null=True)
+    location = models.CharField(max_length=100, blank=True, null=True)
+    specification = models.CharField(max_length=100, blank=True, null=True)
+    maintenance_personnel = models.CharField(max_length=100, blank=True, null=True)
+    
+    # JSON Field for the Checkpoints (tableData)
+    checkpoints = models.JSONField(default=list, help_text="Stores the checklist array")
+    
+    # Signatures
+    prepared_by = models.CharField(max_length=100)
+    checked_by = models.CharField(max_length=100, blank=True, null=True)
+    
+    # Auto Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = True
+        db_table = "surface_grinder_maintenance"
+
+    def __str__(self):
+        return f"{self.machine_name} - {self.machine_no} ({self.date})"
+    
+class BaseGrinderMaintenance(models.Model):
+    # Meta Data Fields
+    machine_name = models.CharField(max_length=100, default='Base Grinder', blank=True, null=True)
+    date = models.DateField()
+    machine_no = models.CharField(max_length=50, blank=True, null=True)
+    location = models.CharField(max_length=100, blank=True, null=True)
+    specification = models.CharField(max_length=100, blank=True, null=True)
+    maintenance_personnel = models.CharField(max_length=100, blank=True, null=True)
+    
+    # JSON Field for the Checkpoints (tableData)
+    checkpoints = models.JSONField(default=list, help_text="Stores the checklist array")
+    
+    # Signatures
+    prepared_by = models.CharField(max_length=100, blank=True, null=True)
+    checked_by = models.CharField(max_length=100, blank=True, null=True)
+    
+    # Auto Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = True
+        db_table = "base_grinder_maintenance"
+
+    def __str__(self):
+        return f"{self.machine_name} - {self.machine_no} ({self.date})"
+
+
+class BeltGrinderMaintenance(models.Model):
+    # Meta Data Fields
+    machine_name = models.CharField(max_length=100, default='BELT GRINDER', blank=True, null=True)
+    date = models.DateField()
+    machine_no = models.CharField(max_length=50, blank=True, null=True)
+    location = models.CharField(max_length=100, blank=True, null=True)
+    specification = models.CharField(max_length=100, blank=True, null=True)
+    maintenance_personnel = models.CharField(max_length=100, blank=True, null=True)
+    
+    # JSON Field for the Checkpoints (tableData)
+    checkpoints = models.JSONField(default=list, help_text="Stores the checklist array")
+    
+    # Signatures
+    prepared_by = models.CharField(max_length=100, blank=True, null=True)
+    checked_by = models.CharField(max_length=100, blank=True, null=True)
+    
+    # Auto Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = True
+        db_table = "belt_grinder_maintenance"
+
+    def __str__(self):
+        return f"{self.machine_name} - {self.machine_no} ({self.date})"
+
+
+# class TappingMaintenance(models.Model):
+#     # Meta Data Fields
+#     machine_name = models.CharField(max_length=100, default='Tapping Machine', blank=True, null=True)
+#     date = models.DateField()
+#     machine_no = models.CharField(max_length=50, blank=True, null=True)
+#     location = models.CharField(max_length=100, blank=True, null=True)
+#     specification = models.CharField(max_length=100, blank=True, null=True)
+#     maintenance_personnel = models.CharField(max_length=100, blank=True, null=True)
+    
+#     # JSON Field for the Checkpoints (tableData)
+#     checkpoints = models.JSONField(default=list, help_text="Stores the checklist array")
+    
+#     # Signatures
+#     prepared_by = models.CharField(max_length=100, blank=True, null=True)
+#     checked_by = models.CharField(max_length=100, blank=True, null=True)
+    
+#     # Auto Timestamps
+#     created_at = models.DateTimeField(auto_now_add=True)
+
+#     class Meta:
+#         managed = True
+#         db_table = "tapping_maintenance"
+
+#     def __str__(self):
+#         return f"{self.machine_name} - {self.machine_no} ({self.date})"
+
+
+class PipeCuttingMaintenance(models.Model):
+    # Meta Data Fields
+    machine_name = models.CharField(max_length=100, default='Pipe Cutter', blank=True, null=True)
+    date = models.DateField()
+    machine_no = models.CharField(max_length=50, blank=True, null=True)
+    location = models.CharField(max_length=100, blank=True, null=True)
+    specification = models.CharField(max_length=100, blank=True, null=True)
+    maintenance_personnel = models.CharField(max_length=100, blank=True, null=True)
+    
+    # JSON Field for the Checkpoints (tableData)
+    checkpoints = models.JSONField(default=list, help_text="Stores the checklist array")
+    
+    # Signatures
+    prepared_by = models.CharField(max_length=100, blank=True, null=True)
+    checked_by = models.CharField(max_length=100, blank=True, null=True)
+    
+    # Auto Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = True
+        db_table = "pipe_cutting_maintenance"
+
+    def __str__(self):
+        return f"{self.machine_name} - {self.machine_no} ({self.date})"
+
+
+class VibraMaintenance(models.Model):
+    # Meta Data Fields
+    machine_name = models.CharField(max_length=100, default='Vibra', blank=True, null=True)
+    date = models.DateField()
+    machine_no = models.CharField(max_length=50, blank=True, null=True)
+    location = models.CharField(max_length=100, blank=True, null=True)
+    specification = models.CharField(max_length=100, blank=True, null=True)
+    maintenance_personnel = models.CharField(max_length=100, blank=True, null=True)
+    
+    # JSON Field for the Checkpoints (tableData)
+    checkpoints = models.JSONField(default=list, help_text="Stores the checklist array")
+    
+    # Signatures
+    prepared_by = models.CharField(max_length=100, blank=True, null=True)
+    checked_by = models.CharField(max_length=100, blank=True, null=True)
+    
+    # Auto Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = True
+        db_table = "vibra_maintenance"
+
+    def __str__(self):
+        return f"{self.machine_name} - {self.machine_no} ({self.date})"
+
+
+class DipMoldingMaintenance(models.Model):
+    # Meta Data Fields
+    machine_name = models.CharField(max_length=100, default='Dip Molding Machine', blank=True, null=True)
+    date = models.DateField()
+    machine_no = models.CharField(max_length=50, blank=True, null=True)
+    location = models.CharField(max_length=100, blank=True, null=True)
+    specification = models.CharField(max_length=100, blank=True, null=True)
+    maintenance_personnel = models.CharField(max_length=100, blank=True, null=True)
+    
+    # JSON Field for the Checkpoints (tableData)
+    checkpoints = models.JSONField(default=list, help_text="Stores the checklist array")
+    
+    # Signatures
+    prepared_by = models.CharField(max_length=100, blank=True, null=True)
+    checked_by = models.CharField(max_length=100, blank=True, null=True)
+    
+    # Auto Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = True
+        db_table = "dip_molding_maintenance"
+
+    def __str__(self):
+        return f"{self.machine_name} - {self.machine_no} ({self.date})"
+
+
+class ServoPressMaintenance(models.Model):
+    # Meta Data Fields
+    machine_name = models.CharField(max_length=100, default='Servo Press', blank=True, null=True)
+    date = models.DateField()
+    machine_no = models.CharField(max_length=50, blank=True, null=True)
+    location = models.CharField(max_length=100, blank=True, null=True)
+    specification = models.CharField(max_length=100, blank=True, null=True)
+    maintenance_personnel = models.CharField(max_length=100, blank=True, null=True)
+    
+    # JSON Field for the Checkpoints (tableData)
+    checkpoints = models.JSONField(default=list, help_text="Stores the checklist array")
+    
+    # Signatures
+    prepared_by = models.CharField(max_length=100, blank=True, null=True)
+    checked_by = models.CharField(max_length=100, blank=True, null=True)
+    
+    # Auto Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = True
+        db_table = "servo_press_maintenance"
+
+    def __str__(self):
+        return f"{self.machine_name} - {self.machine_no} ({self.date})"
+    
+class MachinePreventiveMaintenance(models.Model):
+    machine_name = models.CharField(max_length=150)
+    machine_no = models.CharField(max_length=50)
+    date = models.DateField()
+    location = models.CharField(max_length=150)
+    specification = models.CharField(max_length=255, blank=True, null=True)
+    maintenance_personnel = models.CharField(max_length=150)
+    checkpoints = models.JSONField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'machine_preventive_maintenance'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.machine_no} - {self.date}"
+    
+class CNCMaintenanceReport(models.Model):
+    machine_name = models.CharField(max_length=150)
+    machine_no = models.CharField(max_length=50)
+    date = models.DateField()
+    location = models.CharField(max_length=150)
+    specification = models.CharField(max_length=255, blank=True, null=True)
+    maintenance_personnel = models.CharField(max_length=150)
+    checklist = models.JSONField(default=list, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "cnc_maintenance_report"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.machine_name} - {self.machine_no} - {self.date}"
+
+class VerticalMillingMachineCheckSheet(models.Model):
+    machine_name = models.CharField(max_length=150, default="VERTICAL MILLING MACHINE")
+    machine_no = models.CharField(max_length=50)
+    date = models.DateField()
+    location = models.CharField(max_length=150)
+    specification = models.CharField(max_length=255, blank=True, null=True)
+    maintenance_personnel = models.CharField(max_length=150)
+    checkpoints = models.JSONField(default=list, blank=True)
+    prepared_by = models.CharField(max_length=150)
+    checked_by = models.CharField(max_length=150, blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "vertical_milling_machine_checksheet"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.machine_name} - {self.machine_no} - {self.date}"
+class ProjectionWeldingPMCheckSheet(models.Model):
+    machine_name = models.CharField(max_length=150, default="PROJECTION WELDING")
+    machine_no = models.CharField(max_length=50)
+    date = models.DateField()
+    location = models.CharField(max_length=150)
+    specification = models.CharField(max_length=255, blank=True, null=True)
+    maintenance_personnel = models.CharField(max_length=150)
+    checkpoints = models.JSONField(default=list, blank=True)
+    prepared_by = models.CharField(max_length=150)
+    checked_by = models.CharField(max_length=150, blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "projection_welding_pm_checksheet"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.machine_name} - {self.machine_no} - {self.date}"
+class PowerPressPMCheckSheet(models.Model):
+    machine_name = models.CharField(max_length=150, default="POWER PRESS")
+    machine_no = models.CharField(max_length=50)
+    date = models.DateField()
+    location = models.CharField(max_length=150)
+    specification = models.CharField(max_length=255, blank=True, null=True)
+    checkpoints = models.JSONField(default=list, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "power_press_pm_checksheet"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.machine_name} - {self.machine_no} - {self.date}"
+    
+class HydraulicPMCheckSheet(models.Model):
+    machine_name = models.CharField(max_length=150, default="HYDRAULIC MACHINE")
+    machine_no = models.CharField(max_length=50)
+    date = models.DateField()
+    location = models.CharField(max_length=150)
+    specification = models.CharField(max_length=255, blank=True, null=True)
+    maintenance_personnel = models.CharField(max_length=150)
+    
+    # Store all 7 checklist items inside this JSON structure
+    checkpoints = models.JSONField(default=list, blank=True)
+    
+    prepared_by = models.CharField(max_length=150)
+    checked_by = models.CharField(max_length=150)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "hydraulic_pm_checksheet"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.machine_name} - {self.machine_no} - {self.date}"
+
+
+class PartMaster(models.Model):
+    customer_name = models.CharField(max_length=255)
+    part_name = models.CharField(max_length=255)
+    part_no = models.CharField(max_length=255, null=True, blank=True)
+    # Python me 'model' keyword hota hai, isliye column ka naam 'part_model' rakha hai
+    part_model = models.CharField(max_length=255, null=True, blank=True) 
+    inspection_data = models.JSONField()
+
+    class Meta:
+        # Yahan aap apna custom table name set kar sakte hain
+        db_table = 'master_data_incoming_material_inspection'
+
+    def __str__(self):
+        return f"{self.customer_name} - {self.part_name}"
+    
+class FourMDisplay(models.Model):
+    # s_no can be helpful to keep track of the row order submitted from frontend
+    s_no = models.IntegerField(blank=True, null=True) 
+    machine_no = models.CharField(max_length=100, blank=True, null=True)
+    operator_name = models.CharField(max_length=100, blank=True, null=True)
+    
+    # 4M Details
+    man = models.CharField(max_length=255, blank=True, null=True)
+    machine = models.CharField(max_length=255, blank=True, null=True)
+    material = models.CharField(max_length=255, blank=True, null=True)
+    method = models.CharField(max_length=255, blank=True, null=True)
+    
+    # Tracking Dates (As requested)
+    date_filled = models.DateField(auto_now_add=True)      # Only the date (e.g., 2026-06-06)
+    created_at = models.DateTimeField(auto_now_add=True)   # Date AND exact time
+
+    class Meta:
+        db_table = 'four_m_display_board'
+
+    def __str__(self):
+        return f"{self.machine_no} - {self.operator_name} ({self.date_filled})"
+    
+class FourMSummary(models.Model):
+    # Header Info (Prepared & Approved By)
+    
+    
+    # Basic Row Details
+    s_no = models.IntegerField(blank=True, null=True)
+    date = models.DateField(blank=True, null=True)
+    part_name_no = models.CharField(max_length=255, blank=True, null=True)
+    type_of_change = models.CharField(max_length=255, blank=True, null=True)
+    change_detail = models.TextField(blank=True, null=True)
+    
+    # Retroactive Inspection Status
+    retro_total_qty = models.IntegerField(blank=True, null=True)
+    retro_ok_qty = models.IntegerField(blank=True, null=True)
+    retro_rej_qty = models.IntegerField(blank=True, null=True)
+    
+    # Actions, Customers & Signatures
+    status_after_final = models.CharField(max_length=255, blank=True, null=True)
+    action_for_ng = models.CharField(max_length=255, blank=True, null=True)
+    customer = models.CharField(max_length=255, blank=True, null=True)
+    sup_signature = models.CharField(max_length=255, blank=True, null=True)
+    sign_prod_head = models.CharField(max_length=255, blank=True, null=True)
+    sign_qa_head = models.CharField(max_length=255, blank=True, null=True)
+    remarks = models.TextField(blank=True, null=True)
+    # Header Info (Prepared & Approved By)
+    prepared_by = models.CharField(max_length=100, blank=True, null=True)
+    approved_by = models.CharField(max_length=100, blank=True, null=True)
+    # Tracking Dates
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'four_m_summary_sheet'
+
+    def __str__(self):
+        return f"{self.part_name_no} - {self.date}"
+    
+    
+class FixtureMaintenanceRecord(models.Model):
+    
+    # 1. Basic Top Level Fields
+    part_name = models.CharField(max_length=255, help_text="Assembly / Part Name")
+    part_no = models.CharField(max_length=100, blank=True, null=True, help_text="Part Number")
+    done_on_date = models.DateField()
+    fixture_no = models.CharField(max_length=100)
+    operation_name = models.CharField(max_length=255)
+
+    # 2. Checklist Data (JSON Format)
+     
+    checklist_data = models.JSONField(default=list, help_text="Stores the 8 checklist points data")
+
+    # 3. Technical Chart Data (JSON Format)
+    
+    pin_chart_data = models.JSONField(default=list, help_text="Stores 12 rows of Pin data")
+    bush_chart_data = models.JSONField(default=list, help_text="Stores 12 rows of Bush data")
+
+    # 4. Inspected By (Alag se)
+    inspected_by = models.CharField(max_length=255, help_text="Engineer Sign / Name")
+
+    # Audit Trail (Kab create hua)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.fixture_no} - {self.part_name} on {self.done_on_date}"
+
+    class Meta:
+        db_table = 'fixture_maintenance_records'
+        verbose_name = 'Fixture Maintenance Record'
+        verbose_name_plural = 'Fixture Maintenance Records'
