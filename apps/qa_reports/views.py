@@ -20,13 +20,13 @@ from api.models import (
     DeviationApproval, GoodReceiptEntry, InspectionReport, ProcessAuditChecksheet, 
     CoherenceChecklist, LayoutInspection, ProductAuditPlan, CustomerComplaint, 
     CustomerSatisfaction, WarrantyClaim, MinutesOfMeeting, ReworkEntry,
-    L1_PartInfoMaster, L2_ProcessReportMaster, L3_ParameterDetailMaster
+    L1_PartInfoMaster, L2_ProcessReportMaster, L3_ParameterDetailMaster,IncomingMaterialInspection
 )
 
 from api.serializers import (
     InspectionReportSerializer, ProcessAuditChecksheetSerializer, CoherenceChecklistSerializer,
     LayoutInspectionSerializer, ProductAuditPlanSerializer, CustomerComplaintSerializer,
-    CustomerSatisfactionSerializer, WarrantyClaimSerializer, MinutesOfMeetingSerializer
+    CustomerSatisfactionSerializer, WarrantyClaimSerializer, MinutesOfMeetingSerializer,IncomingMaterialInspectionSerializer
 )
 
 # ==============================================================================
@@ -660,7 +660,57 @@ class SaveMinutesOfMeetingView(APIView):
             return Response({"success": False, "error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+from datetime import datetime
 
+# ── Is function ko class ke UPAR yahan define karo ──
+def clean_date(val):
+    if not val:
+        return None
+    try:
+        # Frontend date DD-MM-YYYY ko YYYY-MM-DD me convert karta hai
+        return datetime.strptime(val, '%d-%m-%Y').strftime('%Y-%m-%d')
+    except ValueError:
+        return val      
+class SaveIncomingMaterialInspectionView(APIView):
+    @transaction.atomic
+    def post(self, request):
+        try:
+            raw_data = request.data
+            
+            # 🔥 LOGIC ADDED: Agar part_no khali string hai, to use None (NULL) bana do
+            raw_part_no = raw_data.get('part_no', '')
+            final_part_no = None if str(raw_part_no).strip() == '' else raw_part_no
+            
+            mapped_data = {
+                'supplier': raw_data.get('supplier', 'ATOMONE TECHNOLOGIES PVT.LTD'),
+                'customer': raw_data.get('customer', ''),
+                'part_name': raw_data.get('part_name', ''),
+                
+                # 🔥 Updated value mapped here
+                'part_no': final_part_no,          
+                
+                'date': raw_data.get('date'), # Assumes frontend is sending YYYY-MM-DD now
+                'grade': raw_data.get('grade', ''),
+                'mtc': raw_data.get('mtc', ''),
+                'ga_nga': raw_data.get('ga_nga', ''),
+                'coil_no': raw_data.get('coil_no', ''),
+                'invoice_no': raw_data.get('invoice_no', ''),
+                'qty': str(raw_data.get('qty', '')),
+                'inspection_data': raw_data.get('inspection_data', []), 
+                'prepared_by': raw_data.get('prepared_by', ''),
+                'checked_by': raw_data.get('checked_by', ''),
+                'approved_by': raw_data.get('approved_by', '')
+            }
+            
+            serializer = IncomingMaterialInspectionSerializer(data=mapped_data)
+            if serializer.is_valid():
+                serializer.save()
+                return Response({"success": True, "message": "Incoming Material Inspection Saved!"}, status=status.HTTP_201_CREATED)
+            
+            return Response({"success": False, "error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+        
+        except Exception as e:
+            return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 # ==============================================================================
 # 📊 QA DATA FETCH API (View Reports)
 # ==============================================================================
@@ -849,13 +899,11 @@ def qa_data_view(request, form_key):
     # ── 3. RED BIN ANALYSIS ────────────────────────────────────
     elif form_key == 'redbin-view':
         try:
-            # 🔥 Master Filter Lagaya entry_date par
             base_query = RedBinAnalysisReport.objects.all()
             reports = apply_date_filter(base_query, 'entry_date').order_by('-entry_date', '-created_time')
             data = []
             
             for report in reports:
-                # Format kiya wahi Comma aur AM/PM k sath
                 raw_time = getattr(report, 'created_time', getattr(report, 'created_at', None)) 
                 
                 data.append({
@@ -879,7 +927,6 @@ def qa_data_view(request, form_key):
     # ── 4. RED BIN ATTENDANCE ──────────────────────────────────
     elif form_key == 'redbin-attendance-view':
         try:
-            # 🔥 Master Filter Lagaya date par
             reports = apply_date_filter(RedBinAttendance.objects.all(), 'date').order_by('-date', '-created_at')
             data = []
             
@@ -1138,7 +1185,6 @@ def qa_data_view(request, form_key):
     # ── 14. CUSTOMER SATISFACTION ───────────────────────────────
     elif form_key == 'customer-satisfaction-view':
         try:
-            # Customer satisfaction generally uses 'created_at' since it captures 'month_year' textually
             reports = apply_date_filter(CustomerSatisfaction.objects.all(), 'created_at').order_by('-created_at')
             data = []
             for report in reports:
@@ -1202,6 +1248,52 @@ def qa_data_view(request, form_key):
                             for k, v in disc.items():
                                 row[k.capitalize()] = v
                         data.append(row)
+            return JsonResponse({'data': data})
+        except Exception as e:
+            return JsonResponse({'data': [], 'error': str(e)}, status=500)
+
+    # ── 17. INCOMING MATERIAL INSPECTION (NEW) ──────────────────
+    elif form_key == 'incoming-inspection-view':
+        try:
+            reports = apply_date_filter(IncomingMaterialInspection.objects.all(), 'date').order_by('-date', '-created_at')
+            data = []
+            for report in reports:
+                base_info = {
+                    'Date': str(report.date) if report.date else '—',
+                    'Supplier': report.supplier or '—',
+                    'Customer': report.customer or '—',
+                    'Part Name': report.part_name or '—',
+                    'Part No': report.part_no or '—',
+                    'Grade': report.grade or '—',
+                    'MTC': report.mtc or '—',
+                    'GA/NGA': report.ga_nga or '—',
+                    'Coil No': report.coil_no or '—',
+                    'Invoice No': report.invoice_no or '—',
+                    'QTY': report.qty or '—',
+                    'Prepared By': report.prepared_by or '—',
+                    'Checked By': report.checked_by or '—',
+                    'Approved By': report.approved_by or '—',
+                }
+
+                insp_rows = report.inspection_data or []
+                if not insp_rows:
+                    data.append({**base_info, 'Parameter': 'No parameters added'})
+                else:
+                    for i_row in insp_rows:
+                        row = base_info.copy()
+                        row['Parameter'] = i_row.get('parameter', '—')
+                        row['Specification'] = i_row.get('specification', '—')
+                        row['Insp Method'] = i_row.get('inspMethod', '—')
+                        
+                        # 5 Observations nikal kar set karna
+                        observations = i_row.get('observations', [])
+                        for i in range(5):
+                            val = observations[i] if i < len(observations) else ''
+                            row[f'Obs {i+1}'] = val if val else '—'
+                        
+                        row['Remark'] = i_row.get('remark', '—')
+                        data.append(row)
+                        
             return JsonResponse({'data': data})
         except Exception as e:
             return JsonResponse({'data': [], 'error': str(e)}, status=500)

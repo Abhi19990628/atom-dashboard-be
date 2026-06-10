@@ -57,7 +57,7 @@ from .models import (
     VerticalMillingMachineCheckSheet,
     ProjectionWeldingPMCheckSheet,
     PowerPressPMCheckSheet,
-    HydraulicPMCheckSheet,FourMDisplay,FourMSummary, FixtureMaintenanceRecord
+    HydraulicPMCheckSheet,FourMDisplay,FourMSummary, FixtureMaintenanceRecord,IncomingMaterialInspection
 )
 
 # ==========================================
@@ -738,4 +738,10 @@ class HydraulicPMCheckSheetSerializer(serializers.ModelSerializer):
 class FixtureMaintenanceRecordSerializer(serializers.ModelSerializer):
     class Meta:
         model = FixtureMaintenanceRecord
+        fields = '__all__'
+
+
+class IncomingMaterialInspectionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = IncomingMaterialInspection
         fields = '__all__'

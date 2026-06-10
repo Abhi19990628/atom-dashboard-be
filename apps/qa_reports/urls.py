@@ -7,6 +7,7 @@ urlpatterns = [
     path('master-parameters/', views.MasterParametersView.as_view(), name='master_parameters'),
 
     #  Daily Reports / Forms
+    path('incoming-material-inspection/save/', views.SaveIncomingMaterialInspectionView.as_view(), name='save-incoming-material-inspection'),
     path('redbin-analysis/save/', views.SaveRedBinAnalysisView.as_view(), name='save-redbin-analysis'),
     path('redbin-attendance/save/', views.SaveRedBinAttendanceView.as_view(), name='save-redbin-attendance'),
     path('scrap-note/save/', views.SaveScrapNoteView.as_view(), name='save-scrap-note'),

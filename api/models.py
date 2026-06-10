@@ -1911,3 +1911,42 @@ class FixtureMaintenanceRecord(models.Model):
         db_table = 'fixture_maintenance_records'
         verbose_name = 'Fixture Maintenance Record'
         verbose_name_plural = 'Fixture Maintenance Records'
+        
+class IncomingMaterialInspection(models.Model):
+    # --- Header Information ---
+    supplier = models.CharField(max_length=255, default="ATOMONE TECHNOLOGIES PVT.LTD")
+    customer = models.CharField(max_length=255)
+    part_name = models.CharField(max_length=255)
+    part_no = models.CharField(max_length=100, blank=True, null=True)
+    date = models.DateField(blank=True, null=True)
+    
+    # --- Material Details ---
+    grade = models.CharField(max_length=100, blank=True, null=True)
+    mtc = models.CharField(max_length=10, blank=True, null=True)     # Options: YES, NO, N/A
+    ga_nga = models.CharField(max_length=10, blank=True, null=True)  # Options: GA, NGA, N/A
+    coil_no = models.CharField(max_length=100, blank=True, null=True)
+    invoice_no = models.CharField(max_length=100, blank=True, null=True)
+    qty = models.CharField(max_length=50, blank=True, null=True)     # CharField in case of unit inclusion (e.g. '50 kgs')
+
+    # --- Inspection Parameters (Table Rows in JSON) ---
+    inspection_data = models.JSONField(
+        default=list, 
+        help_text="Stores array of objects containing parameter, specification, inspMethod, observations array, and remark"
+    )
+
+    # --- Authorization ---
+    prepared_by = models.CharField(max_length=100, blank=True, null=True)
+    checked_by = models.CharField(max_length=100, blank=True, null=True)
+    approved_by = models.CharField(max_length=100, blank=True, null=True)
+
+    # --- Timestamps ---
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        managed = True
+        db_table = "incoming_material_inspection_report"
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.supplier} | {self.part_name} ({self.part_no}) - {self.date}"

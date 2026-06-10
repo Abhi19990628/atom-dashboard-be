@@ -1,3 +1,181 @@
+# """
+# Django settings for operator_app project.
+# """
+
+# from pathlib import Path
+# import os
+# from datetime import timedelta  # 🔥 NAYA CODE: Token expiry time set karne ke liye
+
+
+
+# # Build paths inside the project like this: BASE_DIR / 'subdir'.
+# BASE_DIR = Path(__file__).resolve().parent.parent
+
+# # SECURITY WARNING: keep the secret key used in production secret!
+# SECRET_KEY = os.getenv(
+#     "SECRET_KEY",
+#     "django-insecure-b%$_56g$6is5&wvn=i%jxtugx40uu1+7^xnxw7m=j6h89_@^oc"
+# )
+
+# # SECURITY WARNING: don't run with debug turned on in production!
+# DEBUG = "True"  # TEMP: Render par error diagnose karne ke liye
+
+# # Hosts via env (local + cloud) - 🔥 UPDATED FOR ALL LOCAL IPs (.34 and .35)
+# ALLOWED_HOSTS = os.getenv(
+#     "ALLOWED_HOSTS",
+#     "localhost,127.0.0.1,192.168.0.34,0.0.0.0,.ngrok-free.dev,unsickerly-unbeclouded-cherish.ngrsok-free.dev"
+# ).split(",")
+
+# # Application definition
+# INSTALLED_APPS = [
+#     'django.contrib.admin',
+#     'django.contrib.auth',
+#     'django.contrib.contenttypes',
+#     'django.contrib.sessions',
+#     'django.contrib.messages',
+#     'django.contrib.staticfiles',
+#     'corsheaders',
+#     'operator_app.apps.OperatorAppConfig',
+#     'rest_framework',
+#     'rest_framework_simplejwt',  # 🔥 NAYA CODE: JWT App add kiya hai
+#     'api',
+# ]
+
+# MIDDLEWARE = [
+#     'corsheaders.middleware.CorsMiddleware',
+#     'django.middleware.security.SecurityMiddleware',
+#     'django.contrib.sessions.middleware.SessionMiddleware',
+#     'django.middleware.common.CommonMiddleware',
+#     'django.middleware.csrf.CsrfViewMiddleware',
+#     'django.contrib.auth.middleware.AuthenticationMiddleware',
+#     'django.contrib.messages.middleware.MessageMiddleware',
+#     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+# ]
+
+# # CORS
+# CORS_ALLOW_ALL_ORIGINS = True
+# CORS_ALLOW_HEADERS = [
+#     'accept',
+#     'accept-encoding',
+#     'authorization',
+#     'content-type',
+#     'dnt',
+#     'origin',
+#     'user-agent',
+#     'x-csrftoken',
+#     'x-requested-with',
+#     'cache-control',
+#     'pragma',
+#     'if-none-match',
+#     'if-modified-since',
+#     'ngrok-skip-browser-warning',
+# ]
+# CORS_ALLOW_CREDENTIALS = True
+
+# # CSRF Trusted - 🔥 ADDED BOTH .34 AND .35 IPs TO PREVENT BLOCKS
+# CSRF_TRUSTED_ORIGINS = [
+#     'http://localhost',          # 🔥 NAYA ADD KIYA: Android Capacitor default origin
+#     'https://localhost',         # 🔥 NAYA ADD KIYA: Android Capacitor secure origin
+#     'http://localhost:3000',
+#     'http://localhost:3001',
+#     'http://192.168.0.34:3000',
+#     'http://192.168.0.34:3001',
+#     'http://192.168.0.34:8000',
+#     "capacitor://localhost",
+#     'https://unsickerly-unbeclouded-cherish.ngrok-free.dev',
+#     'https://atom-dashboard-ui.vercel.app',
+#     'https://atom-dashboard-99yh8cbss-atomones-projects.vercel.app',
+#     'https://atom-dashboard-be.onrender.com',
+# ]
+
+# # REST Framework
+# REST_FRAMEWORK = {
+#     'DEFAULT_RENDERER_CLASSES': (
+#         'rest_framework.renderers.JSONRenderer',
+#     ),
+#     'DEFAULT_PARSER_CLASSES': (
+#         'rest_framework.parsers.JSONParser',
+#     ),
+#     'DEFAULT_AUTHENTICATION_CLASSES': (
+#         'rest_framework_simplejwt.authentication.JWTAuthentication',
+#     ),
+#     # 👇 BAS YE EK LINE ADD KAR DO: Ye har API se +05:30 aur T hata dega!
+#     'DATETIME_FORMAT': '%Y-%m-%d %H:%M:%S',
+# }
+
+# ROOT_URLCONF = 'operator_app.urls'
+
+# TEMPLATES = [
+#     {
+#         'BACKEND': 'django.template.backends.django.DjangoTemplates',
+#         'DIRS': [],
+#         'APP_DIRS': True,
+#         'OPTIONS': {
+#             'context_processors': [
+#                 'django.template.context_processors.request',
+#                 'django.contrib.auth.context_processors.auth',
+#                 'django.contrib.messages.context_processors.messages',
+#             ],
+#         },
+#     },
+# ]
+
+# WSGI_APPLICATION = 'operator_app.wsgi.application'
+
+# # Database (external Postgres)
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'django.db.backends.postgresql',
+#         'NAME': os.getenv('DB_NAME', 'Atomone'),
+#         'USER': os.getenv('DB_USER', 'postgres'),
+#         'PASSWORD': os.getenv('DB_PASSWORD', 'atomone'),
+#         'HOST': os.getenv('DB_HOST', '192.168.0.35'),  
+#         'PORT': os.getenv('DB_PORT', '5432'),
+#         'OPTIONS': {
+#             'options': '-c default_transaction_isolation=serializable -c timezone=Asia/Kolkata'
+#         },
+#     }
+# }
+
+# # Email
+# EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+# EMAIL_HOST = 'smtp.gmail.com'
+# EMAIL_PORT = 587
+# EMAIL_USE_TLS = True
+
+# EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', 'alertsatomone@gmail.com')
+# EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', 'dqchgtaihqpiparn')
+# DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
+
+# ALERT_EMAIL_RECIPIENTS = []
+
+# # Password validation - 🔥 COMMENTED OUT SO YOU CAN USE SIMPLE PASSWORDS IN ADMIN PANEL
+# # AUTH_PASSWORD_VALIDATORS = [
+# #     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
+# #     {'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator'},
+# #     {'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator'},
+# #     {'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator'},
+# # ]
+
+# # Internationalization
+# LANGUAGE_CODE = 'en-us'
+# TIME_ZONE = 'Asia/Kolkata'
+# USE_I18N = True
+# USE_TZ = True
+
+# # Static files
+# STATIC_URL = 'static/'
+# STATIC_ROOT = BASE_DIR / "staticfiles"
+
+# # Default primary key field type
+# DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# #py manage.py runserver 0.0.0.0:8000
+
+
+
+
+
 """
 Django settings for operator_app project.
 """
@@ -5,25 +183,29 @@ Django settings for operator_app project.
 from pathlib import Path
 import os
 from datetime import timedelta  # 🔥 NAYA CODE: Token expiry time set karne ke liye
-
-
+from dotenv import load_dotenv  # 🔥 NAYA CODE: .env file load karne ke liye
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# 🔥 Load environment variables from .env file
+load_dotenv(os.path.join(BASE_DIR, '.env'))
+
 # SECURITY WARNING: keep the secret key used in production secret!
+# Agar .env mein SECRET_KEY nahi hogi, toh ye dummy fallback use karega (Local devs ke liye)
 SECRET_KEY = os.getenv(
     "SECRET_KEY",
-    "django-insecure-b%$_56g$6is5&wvn=i%jxtugx40uu1+7^xnxw7m=j6h89_@^oc"
+    "django-insecure-local-dummy-key-for-devs-only"
 )
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = "True"  # TEMP: Render par error diagnose karne ke liye
+# Agar .env mein DEBUG=True hoga tabhi True hoga, warna default False rahega
+DEBUG = os.getenv("DEBUG", "False") == "True"
 
-# Hosts via env (local + cloud) - 🔥 UPDATED FOR ALL LOCAL IPs (.34 and .35)
+# Hosts via env (local + cloud) - .env se aayega, warna default localhost rahega
 ALLOWED_HOSTS = os.getenv(
     "ALLOWED_HOSTS",
-    "localhost,127.0.0.1,192.168.0.34,0.0.0.0,.ngrok-free.dev,unsickerly-unbeclouded-cherish.ngrsok-free.dev"
+    "localhost,127.0.0.1"
 ).split(",")
 
 # Application definition
@@ -73,6 +255,7 @@ CORS_ALLOW_HEADERS = [
 CORS_ALLOW_CREDENTIALS = True
 
 # CSRF Trusted - 🔥 ADDED BOTH .34 AND .35 IPs TO PREVENT BLOCKS
+# (Inko hardcode chhod sakte hain kyunki frontend URLs mostly standard hote hain)
 CSRF_TRUSTED_ORIGINS = [
     'http://localhost',          # 🔥 NAYA ADD KIYA: Android Capacitor default origin
     'https://localhost',         # 🔥 NAYA ADD KIYA: Android Capacitor secure origin
@@ -99,7 +282,7 @@ REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ),
-    # 👇 BAS YE EK LINE ADD KAR DO: Ye har API se +05:30 aur T hata dega!
+    # 👇 Ye har API se +05:30 aur T hata dega!
     'DATETIME_FORMAT': '%Y-%m-%d %H:%M:%S',
 }
 
@@ -123,13 +306,14 @@ TEMPLATES = [
 WSGI_APPLICATION = 'operator_app.wsgi.application'
 
 # Database (external Postgres)
+# 🔥 Yahan se .35 IP fallback hata diya hai! Ab naye developer ko localhost milega.
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': os.getenv('DB_NAME', 'Atomone'),
+        'NAME': os.getenv('DB_NAME', 'Atomone_local'),
         'USER': os.getenv('DB_USER', 'postgres'),
-        'PASSWORD': os.getenv('DB_PASSWORD', 'atomone'),
-        'HOST': os.getenv('DB_HOST', '192.168.0.35'),  
+        'PASSWORD': os.getenv('DB_PASSWORD', 'postgres'),
+        'HOST': os.getenv('DB_HOST', 'localhost'),  
         'PORT': os.getenv('DB_PORT', '5432'),
         'OPTIONS': {
             'options': '-c default_transaction_isolation=serializable -c timezone=Asia/Kolkata'
@@ -149,14 +333,6 @@ DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
 
 ALERT_EMAIL_RECIPIENTS = []
 
-# Password validation - 🔥 COMMENTED OUT SO YOU CAN USE SIMPLE PASSWORDS IN ADMIN PANEL
-# AUTH_PASSWORD_VALIDATORS = [
-#     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
-#     {'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator'},
-#     {'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator'},
-#     {'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator'},
-# ]
-
 # Internationalization
 LANGUAGE_CODE = 'en-us'
 TIME_ZONE = 'Asia/Kolkata'
@@ -169,5 +345,3 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 
 # Default primary key field type
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
-
-#py manage.py runserver 0.0.0.0:8000
