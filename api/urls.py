@@ -15,8 +15,9 @@ from .views import (
 )
 
 from .views import get_machine_history
-from api.views import CustomLoginView
+from .views import CustomLoginView, SaveReportLogView
 from django.contrib import admin
+from .views import CustomLoginView, ChangePasswordView , DirectPasswordResetView
 
 
 urlpatterns = [
@@ -24,7 +25,12 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     
     path('login/', CustomLoginView.as_view(), name='api_login'),
+    path('change-password/', ChangePasswordView.as_view(), name='change_password'),
     
+    
+    path('log-report/', SaveReportLogView.as_view(), name='api_log_report'),
+    
+    path('reset-password-direct/', DirectPasswordResetView.as_view(), name='api_reset_password_direct'),
     # 👇 NAYA NOTIFICATION MODULE YAHAN ADD KIYA HAI 👇
     path('', include('apps.notifications.urls')),
     path('', include('apps.production_reports.urls')),

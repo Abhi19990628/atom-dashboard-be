@@ -2991,3 +2991,112 @@ def get_parts_by_customer(request, customer_name):
         'id', 'part_name', 'part_no', 'part_model', 'inspection_data' 
     ))
     return JsonResponse({'parts': parts})
+
+
+from rest_framework.permissions import IsAuthenticated
+from rest_framework import status
+# Agar CustomTokenObtainPairSerializer same file mein hai toh upar ke imports mein inko add kar lena
+
+class ChangePasswordView(APIView):
+    # Is permission se ensure hoga ki bina valid token ke koi ye API hit na kar paye
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        old_password = request.data.get("old_password")
+        new_password = request.data.get("new_password")
+
+        # Validation 1: Check karo dono fields aayi hain ya nahi
+        if not old_password or not new_password:
+            return Response(
+                {"error": "Old aur new dono password dena zaroori hai."}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Validation 2: Check karo purana password sahi hai ya nahi
+        if not user.check_password(old_password):
+            return Response(
+                {"error": "Purana password galat hai."}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Action: Naya password set karo aur database mein save karo
+        # set_password() automatically hash (encrypt) kar deta hai password ko
+        user.set_password(new_password)
+        user.save()
+
+        return Response(
+            {"message": "Password successfully update ho gaya!"}, 
+            status=status.HTTP_200_OK
+        )
+
+
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from django.contrib.auth import get_user_model
+
+User = get_user_model()
+
+class DirectPasswordResetView(APIView):
+    # 🔥 Yahan permission_classes khali rakhi hai taaki bina login (token) ke access ho sake
+    permission_classes = [] 
+
+    def post(self, request):
+        username = request.data.get("username")
+        new_password = request.data.get("new_password")
+
+        # 1. Check karo details aayi hain ya nahi
+        if not username or not new_password:
+            return Response({"error": "Username aur Naya password dono zaroori hain."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # 2. Database mein user dhoondo
+        try:
+            user = User.objects.get(username=username)
+        except User.DoesNotExist:
+            return Response({"error": "Ye username system mein exist nahi karta."}, status=status.HTTP_404_NOT_FOUND)
+
+        # 3. Naya password set karo aur save kar do
+        user.set_password(new_password)
+        user.save()
+
+        return Response({"message": "Password successfully update ho gaya! Ab aap login kar sakte hain."}, status=status.HTTP_200_OK)
+    
+    
+    
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from django.contrib.auth.models import User
+from .models import ReportActivityLog
+
+class SaveReportLogView(APIView):
+    # Isko public rakh sakte hain ya token validation bhi laga sakte hain
+    permission_classes = [] 
+
+    def post(self, request):
+        username = request.data.get('username')
+        report_name = request.data.get('report_name')
+
+        # Validation: Dono fields honi chahiye
+        if not username or not report_name:
+            return Response({"error": "Username aur report_name dono zaroori hain."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            # Database se user uthao aur check karo wo kis department/plant ka hai
+            user = User.objects.get(username=username)
+            user_department = user.profile.department_name # Model se automatically department utha lega
+        except User.DoesNotExist:
+            return Response({"error": "Ye username system mein nahi mila."}, status=status.HTTP_44_NOT_FOUND)
+        except Exception:
+            # Agar kisi user ka profile create nahi hua hai toh default 'Plant 1' set ho jaye
+            user_department = "Plant 1"
+
+        # Database (user_report_activity_logs table) mein entry save karo
+        ReportActivityLog.objects.create(
+            username=username,
+            department_name=user_department,
+            report_name=report_name
+        )
+        
+        return Response({"message": "Activity log successfully save ho gaya!"}, status=status.HTTP_201_CREATED)
