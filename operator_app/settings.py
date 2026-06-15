@@ -132,14 +132,14 @@ WSGI_APPLICATION = 'operator_app.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': os.getenv('DB_NAME', 'Atomone_local'),
+        'NAME': os.getenv('DB_NAME', 'atomone_test'),
         'USER': os.getenv('DB_USER', 'postgres'),
-        'PASSWORD': os.getenv('DB_PASSWORD', 'postgres'),
+        'PASSWORD': os.getenv('DB_PASSWORD', 'amanpal'),
         'HOST': os.getenv('DB_HOST', 'localhost'),  
         'PORT': os.getenv('DB_PORT', '5432'),
        
         'OPTIONS': {
-            'options': '-c search_path=production,quality,machine_maintenance,tool_maintenance,live_data,master_data,public -c default_transaction_isolation=serializable -c timezone=Asia/Kolkata'
+            'options': '-c search_path=production,quality,machine_maintenance,tool_maintenance,public -c default_transaction_isolation=serializable -c timezone=Asia/Kolkata'
         },
         }, 
     

@@ -197,6 +197,7 @@ class SaveRedBinAnalysisView(APIView):
                         root_cause_reason=row.get('root_cause_reason', ''),
                         action_taken=row.get('action_taken', ''),
                         responsible_person=row.get('responsible_person', ''),
+                        prepared_by=row.get('prepared_by', ''),
                         target_date=format_date(row.get('target_date')),          
                         completion_date=format_date(row.get('completion_date')),  
                         created_time=formatted_time 
@@ -219,8 +220,13 @@ class SaveRedBinAttendanceView(APIView):
             for item in data:
                 entries_to_create.append(
                     RedBinAttendance(
-                        date=item.get('date'), month=item.get('month'), year=int(item.get('year')),
-                        employee_name=item.get('employee_name', ''), designation=item.get('designation', ''), status=item.get('status', '') 
+                        date=item.get('date'),
+                        month=item.get('month'),
+                        year=int(item.get('year')),
+                        employee_name=item.get('employee_name', ''),
+                        designation=item.get('designation', ''),
+                        status=item.get('status', ''),
+                        prepared_by=item.get('prepared_by', '')
                     )
                 )
             if entries_to_create: RedBinAttendance.objects.bulk_create(entries_to_create)
@@ -239,8 +245,13 @@ class SaveScrapNoteView(APIView):
             for row in items:
                 entries_to_create.append(
                     ScrapNoteEntry(
-                        entry_date=row.get('entry_date'), part_name=row.get('part_name', ''), part_no=row.get('part_no', ''),
-                        defect_detail=row.get('defect_detail', ''), quantity=int(row.get('quantity') or 0), remarks=row.get('remarks', '')
+                        entry_date=row.get('entry_date'),
+                        part_name=row.get('part_name', ''),
+                        part_no=row.get('part_no', ''),
+                        defect_detail=row.get('defect_detail', ''),
+                        quantity=int(row.get('quantity') or 0),
+                        prepared_by=row.get('prepared_by', ''),
+                        remarks=row.get('remarks', '')
                     )
                 )
             if entries_to_create: ScrapNoteEntry.objects.bulk_create(entries_to_create)
@@ -268,10 +279,16 @@ class SaveGoodReceiptView(APIView):
     def post(self, request):
         try:
             data = request.data
-            report = GoodReceiptEntry.objects.create(
-                requested_by=data.get('requestedBy', ''), item_name=data.get('itemName', ''), specification=data.get('specification', ''),
-                department=data.get('department', ''), qty=data.get('qty', ''), remark=data.get('remark', ''),
-                received_by=data.get('receivedBy', ''), received_date=data.get('receivedDate')
+            GoodReceiptEntry.objects.create(
+                requested_by=data.get('requestedBy', ''),
+                item_name=data.get('itemName', ''),
+                specification=data.get('specification', ''),
+                department=data.get('department', ''),
+                qty=data.get('qty', ''),
+                remark=data.get('remark', ''),
+                prepared_by=data.get('preparedBy', data.get('prepared_by', '')),
+                received_by=data.get('receivedBy', ''),
+                received_date=data.get('receivedDate')
             )
             return Response({"success": True, "message": "Material Requisition Slip Saved!", "record_id": report.id}, status=status.HTTP_201_CREATED)
         except Exception as e:
@@ -281,21 +298,48 @@ class SaveInspectionReportView(APIView):
     def post(self, request):
         try:
             data = request.data
-            master = data.get('master_data', {})
-            logs = data.get('logs', [])
             
-            date_val = master.get('date') or timezone.now().date()
+            # 🔥 Support both nested format (master_data/logs) and flat format (direct fields)
+            if 'master_data' in data or 'logs' in data:
+                # Old format: nested under master_data and logs
+                master = data.get('master_data', {})
+                logs = data.get('logs', [])
+                date_val = master.get('date') or timezone.now().date()
+                cust = master.get('customer', 'Unknown')
+                part = master.get('part_name', 'Unknown')
+                op = master.get('operation', 'Unknown')
+                part_no = master.get('part_number', 'N/A')
+                plant = master.get('plant_location', 'PLANT 1')
+                current_operator = logs[-1].get('operator', 'Unknown') if logs else 'Unknown'
+                current_machine = logs[-1].get('machine', 'N/A') if logs else 'N/A'
+                prepared_by = master.get('prepared_by') or master.get('preparedBy', '')
+            else:
+                # New flat format: direct fields in payload
+                date_val = data.get('inspection_date') or timezone.now().date()
+                cust = data.get('customer_account', 'Unknown')
+                part = data.get('part_name', 'Unknown')
+                op = data.get('operation', 'Unknown')
+                part_no = data.get('part_number', 'N/A')
+                plant = data.get('plant_location', 'PLANT 1')
+                current_operator = data.get('operator_name', 'Unknown')
+                current_machine = data.get('machine_number', 'N/A')
+                prepared_by = data.get('prepared_by') or data.get('preparedBy', '')
+                logs = []
+            
             report, created = InspectionReport.objects.get_or_create(
                 customer_account=master.get('customer', 'Unknown'), part_name=master.get('part_name', 'Unknown'), operation=master.get('operation', 'Unknown'), inspection_date=date_val,
                 defaults={
-                    'part_number': master.get('part_number', 'N/A'), 'plant_location': master.get('plant_location', 'PLANT 1'),
-                    'operator_name': logs[-1].get('operator', 'Unknown') if logs else 'Unknown', 'machine_number': logs[-1].get('machine', 'N/A') if logs else 'N/A',
+                    'part_number': part_no, 'plant_location': plant,
+                    'operator_name': current_operator, 'machine_number': current_machine,
+                    'prepared_by': prepared_by,
                     'inspection_data': {}
                 }
             )
-            report.operator_name = logs[-1].get('operator', 'Unknown') if logs else 'Unknown'
-            report.machine_number = logs[-1].get('machine', 'N/A') if logs else 'N/A'
-            report.inspection_data = {"parameters": data.get('parameters', []), "logs": logs}
+
+            report.operator_name = current_operator
+            report.machine_number = current_machine
+            report.prepared_by = prepared_by
+            report.inspection_data = {"parameters": data.get('parameters', []), "inspection_items": data.get('inspection_data', {}), "logs": logs}
             report.save()
 
             msg = "New Report Created!" if created else "Report Updated!"

@@ -10,7 +10,7 @@ from apps.machines.machine_map import COUNT52_GROUP
 from django.views.decorators.cache import never_cache
 from apps.machines.machine_state import MACHINE_STATE
 from .models import Plant2HourlyIdletime 
-from apps.mqtt.simple_plant2 import EXACT_REQUIREMENT_STATE
+# from apps.mqtt.simple_plant2 import EXACT_REQUIREMENT_STATE
 from apps.data_storage.hourly_idle_tracker import HOURLY_IDLE_TRACKER
 from rest_framework.views import APIView
 from rest_framework import status

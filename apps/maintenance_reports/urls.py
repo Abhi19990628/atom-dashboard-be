@@ -5,9 +5,9 @@ urlpatterns = [
     # Machine Maintenance
     path('machine-critical-spare/save/', views.SaveMachineCriticalSpareView.as_view(), name='save_machine_critical_spare'),
     path('machine-breakdown-summary/save/', views.SaveMachineBreakdownSummaryView.as_view(), name='save_machine_breakdown_summary'), # Fixed Duplicate URL
-    path('checksheets/daily-power-press/', views.SaveDailyPowerPressView.as_view(), name='save_daily_power_press'),
+    path('operators/add/', views.SaveDailyPowerPressView.as_view(), name='save_daily_power_press'),
     path('machine-history/save/', views.SaveMachineHistoryCardView.as_view(), name='save_machine_history_card'),
-    path('machine-breakdown-slip/save/', views.SaveMachineBreakdownView.as_view(), name='save_machine_breakdown_slip'), # Fixed Duplicate URL
+    path('machine-breakdown/save/', views.SaveMachineBreakdownView.as_view(), name='save_machine_breakdown_slip'), # Fixed Duplicate URL
     
     #machine maintenance weekly 
     path('spot-welding-maintenance/save/', views.SaveSpotWeldingMaintenanceView.as_view(), name='save_spot_welding_maintenance'),

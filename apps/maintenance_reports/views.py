@@ -69,13 +69,16 @@ def parse_date(date_str):
 # =========================================================
 # 🛠️ MAINTENANCE SAVE APIs
 # =========================================================
-
+print("INSIDE SaveDailyPowerPressView")
 class SaveDailyPowerPressView(APIView):
     @transaction.atomic
     def post(self, request):
         try:
+            print("INSIDE SaveDailyPowerPressView")
+
             data = request.data
-            
+            print("REQUEST DATA =", data)
+
             if isinstance(data, list):
                 items = data
             elif isinstance(data, dict):
@@ -83,30 +86,54 @@ class SaveDailyPowerPressView(APIView):
             else:
                 items = []
 
+            print("ITEMS =", items)
+
             entries_to_create = []
+
             for row in items:
+                print("ROW =", row)
+
                 entries_to_create.append(
                     DailyPowerPressChecksheet(
                         plant=row.get('plant', ''),
                         operator_name=row.get('operator_name', ''),
                         machine_no=row.get('machine_no', ''),
+                        prepared_by=row.get('prepared_by', ''),
                         shift=row.get('shift', ''),
                         date=row.get('date'),
-                        checkpoints=row.get('checkpoints', []) 
+                        checkpoints=row.get('checkpoints', [])
                     )
                 )
-            
+
             if entries_to_create:
                 DailyPowerPressChecksheet.objects.bulk_create(entries_to_create)
-                return Response({"success": True, "message": "✅ Daily Power Press Checksheet Data Saved!"}, status=status.HTTP_201_CREATED)
-            
-            return Response({"success": False, "error": "Bhai, koi data nahi mila save karne ke liye."}, status=status.HTTP_400_BAD_REQUEST)
+                return Response(
+                    {
+                        "success": True,
+                        "message": "✅ Daily Power Press Checksheet Data Saved!"
+                    },
+                    status=status.HTTP_201_CREATED
+                )
+
+            return Response(
+                {
+                    "success": False,
+                    "error": "Bhai, koi data nahi mila save karne ke liye."
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         except Exception as e:
-            print(f"Backend Crash: {str(e)}") 
-            return Response({"success": False, "error": f"Server Error: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            print("Backend Crash:", str(e))
+            traceback.print_exc()
 
-
+            return Response(
+                {
+                    "success": False,
+                    "error": f"Server Error: {str(e)}"
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 class SaveMachineHistoryCardView(APIView):
     @transaction.atomic
     def post(self, request):
@@ -152,28 +179,36 @@ class SaveMachineBreakdownView(APIView):
             def get_val(key, default=None):
                 val = data.get(key)
                 return val if val != '' else default
-
             intimation = MachineBreakdownIntimation.objects.create(
-                given_date=get_val('givenDate'),
-                given_time=get_val('givenTime'),
-                machine_name_no=data.get('machineNameNo', ''),
-                breakdown_name=data.get('breakdownName', ''),
-                part_made_after_inspection=data.get('partMadeAfterInspection', ''),
-                breakdown_desc=data.get('breakdownDesc', ''),
-                repair_date=get_val('repairDate'),
-                repair_time=get_val('repairTime'),
-                repair_hours=get_val('repairHours'),
-                mechanics_count=get_val('mechanicsCount'),
-                repair_desc=data.get('repairDesc', ''),
+                given_date=get_val('given_date'),
+                given_time=get_val('given_time'),
+                machine_name_no=data.get('machine_name_no', ''),
+                breakdown_name=data.get('breakdown_name', ''),
+                prepared_by=data.get('prepared_by', ''),
+                part_made_after_inspection=data.get('part_made_after_inspection', ''),
+                breakdown_desc=data.get('breakdown_desc', ''),
+                repair_date=get_val('repair_date'),
+                repair_time=get_val('repair_time'),
+                repair_hours=get_val('repair_hours'),
+                mechanics_count=get_val('mechanics_count'),
+                repair_desc=data.get('repair_desc', ''),
                 status=data.get('status', 'OK'),
-                verification_date=get_val('verificationDate'),
-                verification_time=get_val('verificationTime'),
+                verification_date=get_val('verification_date'),
+                verification_time=get_val('verification_time'),
                 language=data.get('language', 'english')
             )
 
+            print("SAVED ID:", intimation.id)
+            
+            saved_record = MachineBreakdownIntimation.objects.filter(
+                id=intimation.id
+            ).first()
+            
+            print("FOUND IN DB:", saved_record)
+            
             return Response({
-                "success": True, 
-                "message": "✅ Machine Breakdown Intimation Saved Successfully!",
+                "success": True,
+                "message": "Saved",
                 "id": intimation.id
             }, status=status.HTTP_201_CREATED)
 
@@ -197,6 +232,7 @@ class SaveToolHistoryView(APIView):
                 part_no=tool_info.get('partNo', ''),
                 tool_name=tool_info.get('toolName', ''),
                 model=tool_info.get('model', ''),
+                prepared_by=tool_info.get('preparedBy', ''),
                 customer_name=tool_info.get('customerName', ''),
                 estimated_tool_life=tool_info.get('estimatedToolLife', ''),
                 estimated_maintenance_frequency=tool_info.get('estimatedMaintenanceFrequency', ''),
@@ -229,6 +265,7 @@ class SaveToolPreventiveMaintenanceView(APIView):
                 part_no=data.get('partNo', ''),
                 operation_no=data.get('operationNo', ''),
                 maintenance_person=data.get('maintenancePerson', ''),
+                prepared_by=data.get('preparedBy', ''),
                 maintenance_data=data.get('formData', {})
             )
             
@@ -243,7 +280,9 @@ class SaveToolBreakdownSlipView(APIView):
     @transaction.atomic
     def post(self, request):
         try:
-            data = request.data
+          
+            data = request.data.copy()
+            data['prepared_by'] = data.get('prepared_by')
             # helper to check multiple key variants and nested containers
             def get_field(*keys, default=None):
                 # check top-level keys and common nested containers used by frontends
@@ -264,13 +303,14 @@ class SaveToolBreakdownSlipView(APIView):
                 doc_no=get_field('docNo', 'doc_no', default='AOT-F-BD-01'),
 
                 # Production Section
+                # Production Section
                 reporter_name=get_field('reporterName', 'reporter_name', default=''),
                 report_date=get_field('reportDate', 'report_date', default=None),
                 machine_name_no=get_field('machineNameNo', 'machine_name_no', default=''),
                 report_time=get_field('reportTime', 'report_time', default=None),
                 breakdown_details=get_field('breakdownDetails', 'breakdown_details', default=''),
+                prepared_by=get_field('preparedBy', 'prepared_by', default=''),
                 prod_supervisor_name=get_field('prodSupervisorName', 'prod_supervisor_name', default=''),
-
                 # Maintenance Section
                 maint_date=get_field('maintDate', 'maint_date', default=None),
                 maint_time=get_field('maintTime', 'maint_time', default=None),
@@ -773,7 +813,9 @@ class SaveServoPressMaintenanceView(APIView):
 class SaveMachinePreventiveMaintenanceView(APIView):
     def post(self, request):
         try:
-            serializer = MachinePreventiveMaintenanceSerializer(data=request.data)
+            data = request.data.copy()
+            data['prepared_by'] = data.get('prepared_by')
+            serializer = MachinePreventiveMaintenanceSerializer(data=data)
 
             if not serializer.is_valid():
                 return Response(
@@ -801,7 +843,9 @@ class SaveMachinePreventiveMaintenanceView(APIView):
 class SaveCNCMaintenanceReportView(APIView):
     def post(self, request):
         try:
-            serializer = CNCMaintenanceReportSerializer(data=request.data)
+            data = request.data.copy()
+            data['prepared_by'] = data.get('prepared_by')
+            serializer = CNCMaintenanceReportSerializer(data=data)
 
             if not serializer.is_valid():
                 return Response(
@@ -892,7 +936,9 @@ class SaveProjectionWeldingPMCheckSheetView(APIView):
 class SavePowerPressPMCheckSheetView(APIView):
     def post(self, request):
         try:
-            serializer = PowerPressPMCheckSheetSerializer(data=request.data)
+            data = request.data.copy()
+            data['prepared_by'] = data.get('prepared_by')
+            serializer = PowerPressPMCheckSheetSerializer(data=data)
 
             if not serializer.is_valid():
                 return Response(

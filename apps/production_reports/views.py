@@ -41,6 +41,10 @@ def clean_val(val, default=None):
     return val if val != '' and val is not None else default
 
 
+def get_prepared_by(data):
+    return data.get('prepared_by') if data.get('prepared_by') is not None else data.get('preparedBy', '')
+
+
 # ==============================================================================
 # 🏭 DAILY PRODUCTION APIs
 # ==============================================================================
@@ -52,10 +56,11 @@ class SaveBinTrolleyReportView(APIView):
             BinTrolleyReport.objects.create(
                 date=data.get('date'),
                 week=data.get('week', ''),
+                prepared_by=get_prepared_by(data),
                 month=data.get('month', ''),
                 checkpoints=data.get('checkpoints', {}),
                 cleaning_details=data.get('cleaning_details', {}),
-                maintenance_details=data.get('maintenance_details', {})
+                maintenance_details=data.get('maintenance_details', {}),
             )
             return Response({"success": True, "message": "✅ Bin Trolley Data Saved!"}, status=status.HTTP_201_CREATED)
         except Exception as e:
@@ -102,7 +107,9 @@ class SaveMachineChecksheetView(APIView):
 class SaveTipChangeView(APIView):
     def post(self, request):
         try:
-            serializer = TipChangeDressingSerializer(data=request.data)
+            payload = request.data.copy()
+            payload['prepared_by'] = get_prepared_by(request.data)
+            serializer = TipChangeDressingSerializer(data=payload)
             if serializer.is_valid():
                 serializer.save()
                 return Response({"success": True, "message": "✅ Tip Change & Dressing data saved successfully!", "data": serializer.data}, status=status.HTTP_201_CREATED)
@@ -201,7 +208,37 @@ class SaveDailyProductionPlanView(TrackedAPIView):
     report_name = "Daily Production plan"
     def post(self, request):
         try:
-            serializer = DailyProductionPlanSerializer(data=request.data)
+            data = request.data
+            
+            # 🔥 Map Postman/Frontend format to DailyProductionPlan model fields
+            payload = {
+                'plant': data.get('plant', ''),
+                'shift': data.get('shift', ''),
+                'machine_no': data.get('machine_no', ''),
+                'operator_name': data.get('operator_name', ''),
+                'part_name': data.get('part_name', ''),
+                'part_no': data.get('part_no', ''),
+                'operation_name': data.get('operation_name', ''),
+                'planned_quantity': data.get('planned_quantity') or data.get('target_production', 0),
+                'achieved_quantity': data.get('achieved_quantity') or data.get('total_production', 0),
+                'qty_remark': data.get('qty_remark', ''),
+                'production_start_time': data.get('production_start_time'),
+                'production_end_time': data.get('production_end_time'),
+                'total_working_time': data.get('total_working_time') or data.get('working_time_min', ''),
+                'tool_setup_time': data.get('tool_setup_time') or data.get('tool_setup_min', 0),
+                'machine_bd_time': data.get('machine_bd_time') or data.get('machine_bd_min', 0),
+                'tool_bd_time': data.get('tool_bd_time') or data.get('tool_bd_min', 0),
+                'rm_coil_no': data.get('rm_coil_no') or data.get('coil_no', ''),
+                'plan_date': data.get('report_date') or data.get('plan_date'),
+            }
+            
+            # Add remarks if provided
+            if data.get('remarks'):
+                payload['qty_remark'] = data.get('remarks')
+            
+            payload['prepared_by'] = get_prepared_by(data)
+            
+            serializer = DailyProductionPlanSerializer(data=payload)
             if serializer.is_valid():
                 serializer.save()
                 return Response({"success": True, "message": "Daily Production Plan saved successfully!", "data": serializer.data}, status=status.HTTP_201_CREATED)
@@ -250,7 +287,9 @@ class UpdateDailyProductionPlanView(APIView):
 class SaveFourMChangeInspectionView(APIView):
     def post(self, request):
         try:
-            serializer = FourMChangeInspectionSerializer(data=request.data)
+            payload = request.data.copy()
+            payload['prepared_by'] = get_prepared_by(request.data)
+            serializer = FourMChangeInspectionSerializer(data=payload)
             if serializer.is_valid():
                 serializer.save()
                 return Response({"success": True, "message": " 4M Change Inspection data saved successfully!", "data": serializer.data}, status=status.HTTP_201_CREATED)
@@ -264,7 +303,9 @@ class SaveFourMChangeInspectionView(APIView):
 class SaveFourMChangeRecordView(APIView):
     def post(self, request):
         try:
-            serializer = FourMChangeRecordSerializer(data=request.data)
+            payload = request.data.copy()
+            payload['prepared_by'] = get_prepared_by(request.data)
+            serializer = FourMChangeRecordSerializer(data=payload)
             if serializer.is_valid():
                 serializer.save() 
                 return Response({"success": True, "message": " 4M Change Record saved successfully!", "data": serializer.data}, status=status.HTTP_201_CREATED)
@@ -290,7 +331,8 @@ class SaveFourMDisplayView(APIView):
                     man=entry.get('man', ''),
                     machine=entry.get('machine', ''),
                     material=entry.get('material', ''),
-                    method=entry.get('method', '')
+                    method=entry.get('method', ''),
+                    prepared_by=get_prepared_by(entry),
                 )
             
             return Response({"success": True, "message": " 4M Display Board Saved!"}, status=status.HTTP_201_CREATED)
@@ -303,8 +345,8 @@ class SaveFourMSummaryView(APIView):
     def post(self, request):
         try:
             data = request.data
-            prepared_by = data.get('prepared_by', '')
-            approved_by = data.get('approved_by', '')
+            prepared_by = get_prepared_by(data)
+            approved_by = data.get('approved_by', '') if data.get('approved_by') is not None else data.get('approvedBy', '')
             entries = data.get('entries', [])
 
             # Har row object me top-level prepared_by aur approved_by add kar rahe hain
