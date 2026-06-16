@@ -530,7 +530,41 @@ class SaveProcessValidationView(APIView):
 
 @api_view(['GET'])
 def production_data_view(request, form_key):
-    # Helper: raw SQL table se data fetch karna
+
+    # ── 🔥 MASTER HELPER FUNCTION (Sabhi APIs ko Filter Karne Ke Liye) ──
+    def apply_date_filter(queryset, date_field):
+        start_date = request.GET.get('start_date')
+        end_date = request.GET.get('end_date')
+
+        # Agar 'all' pass kiya hai toh pura DB data return kar do
+        if start_date == 'all':
+            return queryset
+
+        # Default Behavior: Agar filter se kuch na bhejein toh sirf Aaj (Today) ka data aayega
+        if not start_date and not end_date:
+            ist_tz = pytz.timezone('Asia/Kolkata')
+            today_str = now().astimezone(ist_tz).strftime("%Y-%m-%d")
+            if date_field == 'created_at':
+                return queryset.filter(**{f"{date_field}__date": today_str})
+            return queryset.filter(**{f"{date_field}": today_str})
+
+        # Custom Filters: Last 2 days, Specific Date wagerah
+        if start_date and end_date:
+            if date_field == 'created_at':
+                return queryset.filter(**{f"{date_field}__date__range": [start_date, end_date]})
+            return queryset.filter(**{f"{date_field}__range": [start_date, end_date]})
+        elif start_date:
+            if date_field == 'created_at':
+                return queryset.filter(**{f"{date_field}__date__gte": start_date})
+            return queryset.filter(**{f"{date_field}__gte": start_date})
+        elif end_date:
+            if date_field == 'created_at':
+                return queryset.filter(**{f"{date_field}__date__lte": end_date})
+            return queryset.filter(**{f"{date_field}__lte": end_date})
+            
+        return queryset
+
+    # ── Helper: raw SQL table se data fetch karna
     def fetch_from_table(table_name, source_tag=None):
         try:
             with connection.cursor() as cursor:
@@ -553,12 +587,14 @@ def production_data_view(request, form_key):
     # ── 1. DAILY PRODUCTION PLAN ────────────────────────────────
     if form_key == 'daily-prod-plan':
         try:
-            records = DailyProductionPlan.objects.all().order_by('-plan_date', '-created_at')
+            base_query = DailyProductionPlan.objects.all()
+            records = apply_date_filter(base_query, 'plan_date').order_by('-plan_date', '-created_at')
             data = [{
-                "id": r.id,
+                # "id": r.id,
                 'Date': str(r.plan_date),
                 'Plant': r.plant or '',
                 'Machine No': r.machine_no or '—',
+                'Shift': r.shift or '—',
                 'Operator Name': r.operator_name,
                 'Part Name': r.part_name,
                 'Part No': r.part_no,
@@ -581,7 +617,8 @@ def production_data_view(request, form_key):
     # ── 2. 4M CHANGE INSPECTION REPORT ──────────────────────────
     elif form_key == 'four-m-inspection':
         try:
-            records = FourMChangeInspection.objects.all().order_by('-inspection_date', '-created_at')
+            base_query = FourMChangeInspection.objects.all()
+            records = apply_date_filter(base_query, 'inspection_date').order_by('-inspection_date', '-created_at')
             data = []
             
             for r in records:
@@ -626,7 +663,8 @@ def production_data_view(request, form_key):
     # ── 3. 4M CHANGE RECORD ─────────────────────────────────────
     elif form_key == 'four-m-record':
         try:
-            records = FourMChangeRecord.objects.all().order_by('-created_at')
+            base_query = FourMChangeRecord.objects.all()
+            records = apply_date_filter(base_query, 'created_at').order_by('-created_at')
             data = []
             
             for r in records:
@@ -678,7 +716,8 @@ def production_data_view(request, form_key):
     # ── 4. TIP CHANGE DRESSING ──────────────────────────────────
     elif form_key == 'tip-change':
         try:
-            records = TipChangeDressing.objects.all().order_by('-date')
+            base_query = TipChangeDressing.objects.all()
+            records = apply_date_filter(base_query, 'date').order_by('-date')
             data = [{
                 'Date': str(r.date),
                 'Plant': r.plant or 'N/A',
@@ -696,7 +735,8 @@ def production_data_view(request, form_key):
     # ── 5. BIN TROLLEY REPORT ───────────────────────────────────
     elif form_key == 'bin-trolley':
         try:
-            records = BinTrolleyReport.objects.all().order_by('-date', '-created_at')
+            base_query = BinTrolleyReport.objects.all()
+            records = apply_date_filter(base_query, 'date').order_by('-date', '-created_at')
             data = []
             for r in records:
                 def parse_json(field_data):
@@ -746,7 +786,8 @@ def production_data_view(request, form_key):
     # ── 6. 5S CHECKSHEET REPORT ─────────────────────────────────
     elif form_key == 'five-s-view':
         try:
-            reports = FiveSChecksheetReport.objects.prefetch_related('observations').order_by('-date', '-created_at')
+            base_query = FiveSChecksheetReport.objects.prefetch_related('observations')
+            reports = apply_date_filter(base_query, 'date').order_by('-date', '-created_at')
             data = []
             for report in reports:
                 observations = report.observations.all()
@@ -780,7 +821,8 @@ def production_data_view(request, form_key):
     # ── 7. MONTHLY PRODUCTION PLAN ──────────────────────────────
     elif form_key == 'monthly-prod-plan':
         try:
-            reports = MonthlyProductionPlan.objects.all().order_by('-created_at')
+            base_query = MonthlyProductionPlan.objects.all()
+            reports = apply_date_filter(base_query, 'created_at').order_by('-created_at')
             data = []
             for r in reports:
                 data.append({
@@ -801,7 +843,8 @@ def production_data_view(request, form_key):
     # ── 8. OPERATOR OBSERVANCE CHECKLIST ────────────────────────
     elif form_key == 'operator-observance-checklist':
         try:
-            reports = OperatorObservanceChecklist.objects.all().order_by('-created_at')
+            base_query = OperatorObservanceChecklist.objects.all()
+            reports = apply_date_filter(base_query, 'record_date').order_by('-created_at')
             data = []
             effect_map = {'100': 'High', '50': 'Medium', 'low': 'Low'}
             
@@ -841,7 +884,8 @@ def production_data_view(request, form_key):
     # ── 9. OPERATOR OBSERVANCE PLAN ─────────────────────────────
     elif form_key == 'operator-observance-plan':
         try:
-            reports = OperatorObservancePlan.objects.all().order_by('-created_at')
+            base_query = OperatorObservancePlan.objects.all()
+            reports = apply_date_filter(base_query, 'created_at').order_by('-created_at')
             data = []
             for r in reports:
                 common_data = {
@@ -873,7 +917,8 @@ def production_data_view(request, form_key):
     # ── 10. PM CHECKLIST MHE ─────────────────────────────────────
     elif form_key == 'pm-checklist-mhe':
         try:
-            reports = PMChecklistMHE.objects.all().order_by('-created_at')
+            base_query = PMChecklistMHE.objects.all()
+            reports = apply_date_filter(base_query, 'filled_date').order_by('-created_at')
             data = []
             for r in reports:
                 common_data = {
@@ -911,7 +956,8 @@ def production_data_view(request, form_key):
     # ── 11. PROJECTION WELDER QUALIFICATION ───────────────────────
     elif form_key == 'projection-welder':
         try:
-            records = ProjectionWelderQual.objects.all().order_by('-created_at')
+            base_query = ProjectionWelderQual.objects.all()
+            records = apply_date_filter(base_query, 'date').order_by('-created_at')
             data = []
             for r in records:
                 common_data = {
@@ -960,7 +1006,8 @@ def production_data_view(request, form_key):
     # ── 12. SPOT WELDER QUALIFICATION ─────────────────────────────
     elif form_key == 'spot-welder':
         try:
-            records = SpotWelderQual.objects.all().order_by('-created_at')
+            base_query = SpotWelderQual.objects.all()
+            records = apply_date_filter(base_query, 'date').order_by('-created_at')
             data = []
             for r in records:
                 common_data = {
@@ -1009,7 +1056,8 @@ def production_data_view(request, form_key):
     # ── 13. TIG/MIG WELDER QUALIFICATION ──────────────────────────
     elif form_key == 'tig-mig-welder':
         try:
-            records = TigMigWelderQual.objects.all().order_by('-created_at')
+            base_query = TigMigWelderQual.objects.all()
+            records = apply_date_filter(base_query, 'testing_date').order_by('-created_at')
             data = []
             for r in records:
                 common_data = {
@@ -1059,7 +1107,8 @@ def production_data_view(request, form_key):
     # ── 14. PROCESS VALIDATION REPORT ─────────────────────────────
     elif form_key == 'process-validation':
         try:
-            records = ProcessValidation.objects.all().order_by('-created_at')
+            base_query = ProcessValidation.objects.all()
+            records = apply_date_filter(base_query, 'validation_date').order_by('-created_at')
             data = []
             for r in records:
                 ops = r.operators
@@ -1117,7 +1166,8 @@ def production_data_view(request, form_key):
     # ── 15. 4M DISPLAY BOARD ──────────────────────────────────────
     elif form_key == 'four-m-display':
         try:
-            records = FourMDisplay.objects.all().order_by('-created_at')
+            base_query = FourMDisplay.objects.all()
+            records = apply_date_filter(base_query, 'date_filled').order_by('-created_at')
             data = [{
                 'Machine No': r.machine_no or '',
                 'Operator Name': r.operator_name or '',
@@ -1125,7 +1175,7 @@ def production_data_view(request, form_key):
                 'Machine': r.machine or '',
                 'Material': r.material or '',
                 'Method': r.method or '',
-                'Date Filled': str(r.date_filled) if r.date_filled else ''
+                'Date': str(r.date_filled) if r.date_filled else ''
             } for r in records]
             return JsonResponse({'data': data})
         except Exception as e:
@@ -1135,7 +1185,8 @@ def production_data_view(request, form_key):
     # ── 16. 4M SUMMARY SHEET ──────────────────────────────────────
     elif form_key == 'four-m-summary':
         try:
-            records = FourMSummary.objects.all().order_by('-created_at')
+            base_query = FourMSummary.objects.all()
+            records = apply_date_filter(base_query, 'date').order_by('-created_at')
             data = [{
                 # 'S.No': r.s_no if r.s_no is not None else '',
                 'Date': str(r.date) if r.date else '',
