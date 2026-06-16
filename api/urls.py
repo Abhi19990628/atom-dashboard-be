@@ -2,7 +2,7 @@
 from django.urls import path, include  # 🔥 NAYA: yahan 'include' add kiya hai
 from . import views
 # from .views import MasterDropdownView, MasterParametersView
-from .views import log_idle_reason
+from .views import ApproveReportView, GetQANotificationsView, log_idle_reason
 
 from .views import (
 
@@ -15,7 +15,6 @@ from .views import (
 )
 
 from .views import get_machine_history
-from .views import CustomLoginView, SaveReportLogView
 from django.contrib import admin
 from .views import CustomLoginView, ChangePasswordView , DirectPasswordResetView
 
@@ -27,8 +26,8 @@ urlpatterns = [
     path('login/', CustomLoginView.as_view(), name='api_login'),
     path('change-password/', ChangePasswordView.as_view(), name='change_password'),
     
-    
-    path('log-report/', SaveReportLogView.as_view(), name='api_log_report'),
+  
+    path('approve-report/', ApproveReportView.as_view(), name='api_approve_report'),
     
     path('reset-password-direct/', DirectPasswordResetView.as_view(), name='api_reset_password_direct'),
     # 👇 NAYA NOTIFICATION MODULE YAHAN ADD KIYA HAI 👇
@@ -86,6 +85,7 @@ urlpatterns = [
     
     path('customers/', views.get_unique_customers, name='get_customers'),
     path('parts/<str:customer_name>/', views.get_parts_by_customer, name='get_parts'),
+    path('qa-notifications/<str:username>/', GetQANotificationsView.as_view(), name='api_get_qa_notifications'),
     
 ]
 

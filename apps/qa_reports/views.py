@@ -1,16 +1,19 @@
 import json
+import traceback
 from datetime import datetime
+import pytz
 
 from django.db import connection, transaction
 from django.shortcuts import get_object_or_404
 from django.http import JsonResponse
 from django.utils import timezone
+from django.utils.timezone import localtime
+from django.contrib.auth.models import User
 
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.decorators import api_view
-import pytz
 
 # ==============================================================================
 # IMPORTS FROM MAIN API APP
@@ -20,7 +23,8 @@ from api.models import (
     DeviationApproval, GoodReceiptEntry, InspectionReport, ProcessAuditChecksheet, 
     CoherenceChecklist, LayoutInspection, ProductAuditPlan, CustomerComplaint, 
     CustomerSatisfaction, WarrantyClaim, MinutesOfMeeting, ReworkEntry,
-    L1_PartInfoMaster, L2_ProcessReportMaster, L3_ParameterDetailMaster,IncomingMaterialInspection
+    L1_PartInfoMaster, L2_ProcessReportMaster, L3_ParameterDetailMaster,IncomingMaterialInspection,
+    ReportActivityLog, QANotification
 )
 
 from api.serializers import (
@@ -45,158 +49,110 @@ def parse_date(date_str):
             return None
     return date_str
 
+def clean_date(val):
+    if not val:
+        return None
+    try:
+        return datetime.strptime(val, '%d-%m-%Y').strftime('%Y-%m-%d')
+    except ValueError:
+        return val      
+
 class TrackedAPIView(APIView):
     report_name = "General Report"
-
     def finalize_response(self, request, response, *args, **kwargs):
         if response.status_code in [200, 201] and request.method in ['POST', 'PATCH', 'PUT']:
             try:
                 username = 'Unknown'
                 department = 'Unknown'
-                
-                # 🚀 SMART TRICK: Django ke token (request.user) se direct details nikalna
                 if request.user and request.user.is_authenticated:
                     username = request.user.username
-                    
                     if request.user.groups.exists():
                         department = request.user.groups.first().name
                     else:
                         department = 'Default_User'
                 else:
-                    # Fallback: Agar kabhi token na ho, toh request body me dhoondho
                     if hasattr(request, 'data') and isinstance(request.data, dict):
                         username = request.data.get('username', 'Unknown')
                         department = request.data.get('department', 'Unknown')
-
-                ReportTrackHistory.objects.create(
-                    username=username,
-                    department=department,
-                    report_name=self.report_name
-                )
+                ReportTrackHistory.objects.create(username=username, department=department, report_name=self.report_name)
             except Exception as e:
                 print("⚠️ Tracking Error:", e)
-                
         return super().finalize_response(request, response, *args, **kwargs)
     
 # ==================================================
-# 🟢 1. DROPDOWN API (Connects to L1 and L2 Models)
+# 🟢 1. DROPDOWN & MASTER APIs
 # ==================================================
 class MasterDropdownView(APIView):
     def get(self, request):
         filter_type = request.query_params.get('filter') 
-        
         if filter_type == 'customer':
             data = L1_PartInfoMaster.objects.values_list('customer_name', flat=True).distinct()
             return Response(list(data))
-        
         elif filter_type == 'all_parts':
-            # Seedha saare parts return karega bina customer filter ke
             data = L1_PartInfoMaster.objects.values_list('part_name','part_no').distinct()
             return Response(list(data))
-            
         elif filter_type == 'operations_by_part':
             part = request.query_params.get('part')
-            ops = L2_ProcessReportMaster.objects.filter(
-                part_info__part_name=part
-            ).values_list('report_name', flat=True).distinct()
+            ops = L2_ProcessReportMaster.objects.filter(part_info__part_name=part).values_list('report_name', flat=True).distinct()
             return Response(list(ops))
-                
         elif filter_type == 'part':
             cust = request.query_params.get('cust')
             data = L1_PartInfoMaster.objects.filter(customer_name=cust).values_list('part_name', flat=True).distinct()
             return Response(list(data))
-
         elif filter_type == 'operation':
             cust = request.query_params.get('cust')
             part = request.query_params.get('part')
-            ops = L2_ProcessReportMaster.objects.filter(
-                part_info__customer_name=cust, 
-                part_info__part_name=part
-            ).values_list('report_name', flat=True).distinct()
+            ops = L2_ProcessReportMaster.objects.filter(part_info__customer_name=cust, part_info__part_name=part).values_list('report_name', flat=True).distinct()
             return Response(list(ops))
-        
         elif filter_type == 'part_no':
             part = request.query_params.get('part')
-            # Fetch related part numbers for the selected part description
             data = L1_PartInfoMaster.objects.filter(part_name=part).values_list('part_no', flat=True).distinct()
             return Response(list(data))
-        
         elif filter_type == 'model_by_part':
             part = request.query_params.get('part')
             data = L1_PartInfoMaster.objects.filter(part_name=part).values_list('model_name', flat=True).distinct()
             return Response(list(data))
-
         elif filter_type == 'method':
             data = L3_ParameterDetailMaster.objects.values_list('instrument', flat=True).distinct()
             clean_data = sorted(list(set([str(x).strip() for x in data if x and str(x).strip()])))
             return Response(clean_data)
-            
         elif filter_type == 'parameter':
             data = L3_ParameterDetailMaster.objects.values_list('parameter_name', flat=True).distinct()
             clean_data = sorted(list(set([str(x).strip() for x in data if x and str(x).strip()])))
             return Response(clean_data)
-            
         elif filter_type == 'spec':
             try:
                 data = L3_ParameterDetailMaster.objects.values_list('specification', flat=True).distinct()
                 clean_data = sorted(list(set([str(x).strip() for x in data if x and str(x).strip()])))
                 return Response(clean_data)
             except Exception as e:
-                print(f"❌ Error fetching specification: {e}")
                 return Response([])
 
-
-# ==================================================
-# 🟢 2. AUTO-FILL PARAMETERS API (Connects to L3 Model)
-# ==================================================
 class MasterParametersView(APIView):
     def get(self, request):
         cust = request.query_params.get('customer')
         part = request.query_params.get('part')
         op_name = request.query_params.get('operation')
-        
-        if not all([cust, part, op_name]):
-            return Response({"error": "Missing filters"}, status=400)
-
-        process = L2_ProcessReportMaster.objects.filter(
-            part_info__customer_name=cust,
-            part_info__part_name=part,
-            report_name=op_name
-        ).first()
-
-        if not process: 
-            return Response({"error": "Process Not Found in Master Data"}, status=404)
+        if not all([cust, part, op_name]): return Response({"error": "Missing filters"}, status=400)
+        process = L2_ProcessReportMaster.objects.filter(part_info__customer_name=cust, part_info__part_name=part, report_name=op_name).first()
+        if not process: return Response({"error": "Process Not Found in Master Data"}, status=404)
 
         params = L3_ParameterDetailMaster.objects.filter(process_report=process).order_by('id')
-        
-        product_list = []
-        process_list = []
-        prod_sr = 1
-        proc_sr = 11
+        product_list, process_list, prod_sr, proc_sr = [], [], 1, 11
 
         for p in params:
             raw_spec = p.specification or ""
-            final_spec = raw_spec
-            final_tol = "-"
-
+            final_spec, final_tol = raw_spec, "-"
             if "±" in raw_spec:
                 parts = raw_spec.split("±", 1)
                 final_spec = parts[0].strip()          
                 final_tol = "± " + parts[1].strip()    
-                
             elif "+" in raw_spec:
                 parts = raw_spec.split("+", 1)
                 final_spec = parts[0].strip()
                 final_tol = "+" + parts[1].strip()
 
-            item_data = {
-                "item": p.parameter_name,
-                "spec": final_spec,
-                "tol": final_tol,
-                "instr": p.instrument,
-                "category": p.category
-            }
-
+            item_data = {"item": p.parameter_name, "spec": final_spec, "tol": final_tol, "instr": p.instrument, "category": p.category}
             if p.category == 'PRODUCT':
                 item_data['sr_no'] = prod_sr
                 product_list.append(item_data)
@@ -207,15 +163,12 @@ class MasterParametersView(APIView):
                 proc_sr += 1
 
         return Response({
-            "productItems": product_list,
-            "processItems": process_list,
-            "part_number": process.part_info.part_no, 
-            "model_name": process.part_info.model_name
+            "productItems": product_list, "processItems": process_list,
+            "part_number": process.part_info.part_no, "model_name": process.part_info.model_name
         })
 
-
 # =========================================================
-# 📝 QA HUB SAVE APIs
+# 📝 QA HUB SAVE APIs (All return record_id now)
 # =========================================================
 
 class SaveRedBinAnalysisView(APIView):
@@ -224,20 +177,13 @@ class SaveRedBinAnalysisView(APIView):
         try:
             data = request.data
             items = data.get('items', []) if 'items' in data else [data]
-            
             def format_date(d):
                 if not d: return None
-                try:
-                    return datetime.strptime(d, "%d-%m-%Y").strftime("%Y-%m-%d")
-                except ValueError:
-                    return d 
+                try: return datetime.strptime(d, "%d-%m-%Y").strftime("%Y-%m-%d")
+                except ValueError: return d 
             
-            # 👇 1. Seedha server/system ka local time uthao
             current_time = datetime.now()
-            
-            # 👇 2. Exact AM/PM format banao 
             formatted_time = current_time.strftime("%Y-%m-%d %I:%M %p").lower()
-            # Result exactly yahi aayega: "2026-06-01 04:25 pm"
             
             entries_to_create = []
             for row in items:
@@ -253,16 +199,14 @@ class SaveRedBinAnalysisView(APIView):
                         responsible_person=row.get('responsible_person', ''),
                         target_date=format_date(row.get('target_date')),          
                         completion_date=format_date(row.get('completion_date')),  
-                        
-                        # 👇 3. Yahan formatted string pass ki
                         created_time=formatted_time 
                     )
                 )
-                
             if entries_to_create:
                 RedBinAnalysisReport.objects.bulk_create(entries_to_create)
-                
-            return Response({"success": True, "message": "✅ Saved EXACTLY as AM/PM!"}, status=status.HTTP_201_CREATED)
+            
+            last_record = RedBinAnalysisReport.objects.last()
+            return Response({"success": True, "message": "Saved EXACTLY as AM/PM!", "record_id": last_record.id if last_record else None}, status=status.HTTP_201_CREATED)
         except Exception as e:
             return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -271,30 +215,19 @@ class SaveRedBinAttendanceView(APIView):
     def post(self, request):
         try:
             data = request.data
-            if not isinstance(data, list):
-                return Response({"success": False, "error": "Expected an array of attendance records"}, status=status.HTTP_400_BAD_REQUEST)
-            
             entries_to_create = []
             for item in data:
                 entries_to_create.append(
                     RedBinAttendance(
-                        date=item.get('date'),
-                        month=item.get('month'),
-                        year=int(item.get('year')),
-                        employee_name=item.get('employee_name', ''),
-                        designation=item.get('designation', ''),
-                        status=item.get('status', '') 
+                        date=item.get('date'), month=item.get('month'), year=int(item.get('year')),
+                        employee_name=item.get('employee_name', ''), designation=item.get('designation', ''), status=item.get('status', '') 
                     )
                 )
-                
-            if entries_to_create:
-                RedBinAttendance.objects.bulk_create(entries_to_create)
-                
-            return Response({"success": True, "message": "✅ Attendance Saved!"}, status=status.HTTP_201_CREATED)
-            
+            if entries_to_create: RedBinAttendance.objects.bulk_create(entries_to_create)
+            last_record = RedBinAttendance.objects.last()
+            return Response({"success": True, "message": "Attendance Saved!", "record_id": last_record.id if last_record else None}, status=status.HTTP_201_CREATED)
         except Exception as e:
             return Response({"success": False, "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-
 
 class SaveScrapNoteView(APIView):
     @transaction.atomic
@@ -302,80 +235,47 @@ class SaveScrapNoteView(APIView):
         try:
             data = request.data
             items = data.get('items', []) if 'items' in data else [data]
-            
             entries_to_create = []
             for row in items:
                 entries_to_create.append(
                     ScrapNoteEntry(
-                        entry_date=row.get('entry_date'),
-                        part_name=row.get('part_name', ''),
-                        part_no=row.get('part_no', ''),
-                        defect_detail=row.get('defect_detail', ''),
-                        quantity=int(row.get('quantity') or 0),
-                        remarks=row.get('remarks', '')
+                        entry_date=row.get('entry_date'), part_name=row.get('part_name', ''), part_no=row.get('part_no', ''),
+                        defect_detail=row.get('defect_detail', ''), quantity=int(row.get('quantity') or 0), remarks=row.get('remarks', '')
                     )
                 )
-                
-            if entries_to_create:
-                ScrapNoteEntry.objects.bulk_create(entries_to_create)
-                
-            return Response({"success": True, "message": "✅ Scrap Note Saved!"}, status=status.HTTP_201_CREATED)
+            if entries_to_create: ScrapNoteEntry.objects.bulk_create(entries_to_create)
+            last_record = ScrapNoteEntry.objects.last()
+            return Response({"success": True, "message": "Scrap Note Saved!", "record_id": last_record.id if last_record else None}, status=status.HTTP_201_CREATED)
         except Exception as e:
             return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
 
 class SaveDeviationApprovalView(APIView):
     @transaction.atomic
     def post(self, request):
         try:
             data = request.data
-            items = data.get('items', []) if 'items' in data else [data]
-
-            entries_to_create = []
-            for row in items:
-                entries_to_create.append(
-                    DeviationApproval(
-                        tool_name_no=row.get('tool_name_no', ''),
-                        location=row.get('location', ''),
-                        problem=row.get('problem', ''),
-                        reason_for_deviation=row.get('reason_for_deviation', ''),
-                        date=row.get('date'),
-                        duration=row.get('duration', ''),
-                        prod_incharge=row.get('prod_incharge', ''),
-                        qa_incharge=row.get('qa_incharge', ''),
-                        remarks=row.get('remarks', '')
-                    )
-                )
-            
-            if entries_to_create:
-                DeviationApproval.objects.bulk_create(entries_to_create)
-                return Response({"success": True, "message": "✅ Deviation Approval Data Saved!"}, status=status.HTTP_201_CREATED)
-            
-            return Response({"success": False, "error": "No data provided"}, status=status.HTTP_400_BAD_REQUEST)
-
+            report = DeviationApproval.objects.create(
+                tool_name_no=data.get('tool_name_no', ''), location=data.get('location', ''), problem=data.get('problem', ''),
+                reason_for_deviation=data.get('reason_for_deviation', ''), date=data.get('date'), duration=data.get('duration', ''),
+                prod_incharge=data.get('prod_incharge', ''), qa_incharge=data.get('qa_incharge', ''), remarks=data.get('remarks', '')
+            )
+            return Response({"success": True, "message": "Deviation Approval Data Saved!", "record_id": report.id}, status=status.HTTP_201_CREATED)
         except Exception as e:
             return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
 
 class SaveGoodReceiptView(APIView):
     @transaction.atomic
     def post(self, request):
         try:
             data = request.data
-            GoodReceiptEntry.objects.create(
-                requested_by=data.get('requestedBy', ''),
-                item_name=data.get('itemName', ''),
-                specification=data.get('specification', ''),
-                department=data.get('department', ''),
-                qty=data.get('qty', ''),
-                remark=data.get('remark', ''),
-                received_by=data.get('receivedBy', ''),
-                received_date=data.get('receivedDate')
+            report = GoodReceiptEntry.objects.create(
+                requested_by=data.get('requestedBy', ''), item_name=data.get('itemName', ''), specification=data.get('specification', ''),
+                department=data.get('department', ''), qty=data.get('qty', ''), remark=data.get('remark', ''),
+                received_by=data.get('receivedBy', ''), received_date=data.get('receivedDate')
             )
-            return Response({"success": True, "message": "✅ Material Requisition Slip Saved!"}, status=status.HTTP_201_CREATED)
+            return Response({"success": True, "message": "Material Requisition Slip Saved!", "record_id": report.id}, status=status.HTTP_201_CREATED)
         except Exception as e:
             return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
 
 class SaveInspectionReportView(APIView):
     def post(self, request):
@@ -385,36 +285,199 @@ class SaveInspectionReportView(APIView):
             logs = data.get('logs', [])
             
             date_val = master.get('date') or timezone.now().date()
-            cust = master.get('customer', 'Unknown')
-            part = master.get('part_name', 'Unknown')
-            op = master.get('operation', 'Unknown')
-            part_no = master.get('part_number', 'N/A')
-            plant = master.get('plant_location', 'PLANT 1')
-
-            current_operator = logs[-1].get('operator', 'Unknown') if logs else 'Unknown'
-            current_machine = logs[-1].get('machine', 'N/A') if logs else 'N/A'
-
             report, created = InspectionReport.objects.get_or_create(
-                customer_account=cust, part_name=part, operation=op, inspection_date=date_val,
+                customer_account=master.get('customer', 'Unknown'), part_name=master.get('part_name', 'Unknown'), operation=master.get('operation', 'Unknown'), inspection_date=date_val,
                 defaults={
-                    'part_number': part_no, 'plant_location': plant,
-                    'operator_name': current_operator, 'machine_number': current_machine,
+                    'part_number': master.get('part_number', 'N/A'), 'plant_location': master.get('plant_location', 'PLANT 1'),
+                    'operator_name': logs[-1].get('operator', 'Unknown') if logs else 'Unknown', 'machine_number': logs[-1].get('machine', 'N/A') if logs else 'N/A',
                     'inspection_data': {}
                 }
             )
-
-            report.operator_name = current_operator
-            report.machine_number = current_machine
+            report.operator_name = logs[-1].get('operator', 'Unknown') if logs else 'Unknown'
+            report.machine_number = logs[-1].get('machine', 'N/A') if logs else 'N/A'
             report.inspection_data = {"parameters": data.get('parameters', []), "logs": logs}
             report.save()
 
-            msg = "✅ New Report Created Successfully!" if created else "✅ Report Updated Successfully! (New Stage Added)"
-            return Response({"message": msg, "report_id": report.id}, status=status.HTTP_200_OK)
-
+            msg = "New Report Created!" if created else "Report Updated!"
+            return Response({"message": msg, "report_id": report.id, "record_id": report.id}, status=status.HTTP_200_OK)
         except Exception as e:
-            print("Django Error: ", str(e)) 
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+class SaveProcessAuditView(APIView):
+    @transaction.atomic
+    def post(self, request):
+        try:
+            raw_data = request.data
+            mapped_data = {
+                'part_name_no': f"{raw_data.get('part_name', '')} - {raw_data.get('part_no', '')}", 'machine_model': raw_data.get('model_name', ''),
+                'date': clean_val(raw_data.get('audit_date')), 'auditor': raw_data.get('auditor_name', ''),
+                'auditee': raw_data.get('auditee_name', ''), 'audit_details': raw_data.get('audit_details', [])
+            }
+            serializer = ProcessAuditChecksheetSerializer(data=mapped_data)
+            if serializer.is_valid():
+                obj = serializer.save()
+                return Response({"success": True, "message": "Process Audit Saved!", "record_id": obj.id}, status=status.HTTP_201_CREATED)
+            return Response({"success": False, "error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+class SaveCoherenceChecklistView(APIView):
+    @transaction.atomic
+    def post(self, request):
+        try:
+            raw_data = request.data
+            mapped_data = {
+                'part_name': raw_data.get('partName', ''), 'part_no': raw_data.get('partNo', ''), 'date': clean_val(raw_data.get('date')),
+                'model_name': raw_data.get('model', ''), 'prepared_by': raw_data.get('preparedBy', ''), 'verified_by': raw_data.get('verifiedBy', ''),
+                'operations': raw_data.get('operations', [])
+            }
+            serializer = CoherenceChecklistSerializer(data=mapped_data)
+            if serializer.is_valid():
+                obj = serializer.save()
+                return Response({"success": True, "message": "Coherence Checklist Saved!", "record_id": obj.id}, status=status.HTTP_201_CREATED)
+            return Response({"success": False, "error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+class SaveLayoutInspectionView(APIView):
+    @transaction.atomic
+    def post(self, request):
+        try:
+            raw_data = request.data
+            mapped_data = {
+                'part_name': raw_data.get('partName', ''), 'part_no': raw_data.get('partNo', ''), 'model_name': raw_data.get('model', ''),
+                'customer_name': raw_data.get('customer', ''), 'date': clean_val(raw_data.get('date')), 'sample_size': str(raw_data.get('sampleSize', '')),
+                'prepared_by': raw_data.get('preparedBy', ''), 'verified_by': raw_data.get('verifiedBy', ''), 'inspections': raw_data.get('inspections', [])
+            }
+            serializer = LayoutInspectionSerializer(data=mapped_data)
+            if serializer.is_valid():
+                obj = serializer.save()
+                return Response({"success": True, "message": "Layout Inspection Saved!", "record_id": obj.id}, status=status.HTTP_201_CREATED)
+            return Response({"success": False, "error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+class SaveProductAuditPlanView(APIView):
+    @transaction.atomic
+    def post(self, request):
+        try:
+            raw_data = request.data
+            mapped_data = {
+                'doc_no': raw_data.get('doc_no', ''), 'rev_no': raw_data.get('rev_no', ''), 'date': clean_val(raw_data.get('date')),
+                'plan_year': raw_data.get('plan_year', ''), 'prepared_by': raw_data.get('prepared_by', ''),  'approved_by': raw_data.get('approved_by', ''),
+                'audit_rows': raw_data.get('rows', [])
+            }
+            serializer = ProductAuditPlanSerializer(data=mapped_data)
+            if serializer.is_valid():
+                obj = serializer.save()
+                return Response({"success": True, "message": "Product Audit Plan Saved!", "record_id": obj.id}, status=status.HTTP_201_CREATED)
+            return Response({"success": False, "error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+class SaveCustomerComplaintView(APIView):
+    @transaction.atomic
+    def post(self, request):
+        try:
+            raw_data = request.data
+            mapped_data = {
+                'date': clean_val(raw_data.get('date')), 'part_details': raw_data.get('part_details', ''), 'model_name': raw_data.get('model_name', ''),              
+                'customer_name': raw_data.get('customer_name', ''), 'problem_description': raw_data.get('problem_description', ''), 
+                'counter_measure': raw_data.get('counter_measure', ''), 'target_date': clean_val(raw_data.get('target_date')),      
+                'horizontal_action': raw_data.get('horizontal_action', ''), 'status': raw_data.get('status', 'OPEN')
+            }
+            serializer = CustomerComplaintSerializer(data=mapped_data)
+            if serializer.is_valid():
+                obj = serializer.save()
+                return Response({"success": True, "message": "Customer Complaint Saved!", "record_id": obj.id}, status=status.HTTP_201_CREATED)
+            return Response({"success": False, "error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+class SaveCustomerSatisfactionView(APIView):
+    @transaction.atomic
+    def post(self, request):
+        try:
+            raw_data = request.data
+            mapped_data = {
+                'customer_name': raw_data.get('customerName', ''), 'month_year': raw_data.get('monthYear', ''),
+                'performance_indicators': {
+                    'line_complaints': raw_data.get('lineComplaints', ''), 'warranty_complaints': raw_data.get('warrantyComplaints', ''),
+                    'premium_freight_incidents': raw_data.get('premiumFreightIncidents', ''), 'line_stoppage_quality': raw_data.get('lineStoppageQuality', ''),
+                    'line_stoppage_supply': raw_data.get('lineStoppageSupply', ''), 'premium_fight_incident': raw_data.get('premiumFightIncident', ''),
+                    'schedule_vs_dispatch': raw_data.get('scheduleVsDispatch', ''), 'customer_audit_score': raw_data.get('customerAuditScore', '')
+                }
+            }
+            serializer = CustomerSatisfactionSerializer(data=mapped_data)
+            if serializer.is_valid():
+                obj = serializer.save()
+                return Response({"success": True, "message": "Customer Satisfaction Saved!", "record_id": obj.id}, status=status.HTTP_201_CREATED)
+            return Response({"success": False, "error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+class SaveWarrantyClaimView(APIView):
+    @transaction.atomic
+    def post(self, request):
+        try:
+            raw_data = request.data
+            mapped_data = {
+                'date': raw_data.get('date') or None, 'customer_name': raw_data.get('customerName', ''), 'part_details': raw_data.get('partDetails', ''),
+                'claim_qty': raw_data.get('claimQty', ''), 'warranty_defect': raw_data.get('warrantyDefect', ''), 'decision': raw_data.get('decision', 'PENDING'),
+                'rejection_root_cause': raw_data.get('rejectionRootCause', ''), 'disposal_action': raw_data.get('disposalAction', ''), 'capa_analysis': raw_data.get('capaAnalysis', '')
+            }
+            serializer = WarrantyClaimSerializer(data=mapped_data)
+            if serializer.is_valid():
+                obj = serializer.save()
+                return Response({"success": True, "message": "Warranty Claim Saved!", "record_id": obj.id}, status=status.HTTP_201_CREATED)
+            return Response({"success": False, "error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+class SaveMinutesOfMeetingView(APIView):
+    @transaction.atomic
+    def post(self, request):
+        try:
+            raw_data = request.data
+            mapped_data = {
+                'date': raw_data.get('date') or None, 'time': raw_data.get('time') or None, 'subject': raw_data.get('subject', ''),
+                'aot_members': raw_data.get('aotMembers', ''), 'supplier_members': raw_data.get('supplierMembers', ''),
+                'discussions': [{
+                        'sr_no': 1, 'part_name_no': raw_data.get('partDetails', ''), 'defects_problem_details': raw_data.get('problemDetails', ''),
+                        'action_plan': raw_data.get('actionPlan', ''), 'responsibility': raw_data.get('responsibility', ''), 'target_date': raw_data.get('targetDate', ''),
+                        'follow_up_comments': raw_data.get('followUpComment', ''), 'status_remark': raw_data.get('statusRemark', '')
+                }]
+            }
+            serializer = MinutesOfMeetingSerializer(data=mapped_data)
+            if serializer.is_valid():
+                obj = serializer.save()
+                return Response({"success": True, "message": "MOM Saved Successfully!", "record_id": obj.id}, status=status.HTTP_201_CREATED)
+            return Response({"success": False, "error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+class SaveIncomingMaterialInspectionView(APIView):
+    @transaction.atomic
+    def post(self, request):
+        try:
+            raw_data = request.data
+            raw_part_no = raw_data.get('part_no', '')
+            final_part_no = None if str(raw_part_no).strip() == '' else raw_part_no
+            
+            mapped_data = {
+                'supplier': raw_data.get('supplier', 'ATOMONE TECHNOLOGIES PVT.LTD'), 'customer': raw_data.get('customer', ''), 'part_name': raw_data.get('part_name', ''),
+                'part_no': final_part_no, 'date': raw_data.get('date'), 'grade': raw_data.get('grade', ''), 'mtc': raw_data.get('mtc', ''),
+                'ga_nga': raw_data.get('ga_nga', ''), 'coil_no': raw_data.get('coil_no', ''), 'invoice_no': raw_data.get('invoice_no', ''),
+                'qty': str(raw_data.get('qty', '')), 'inspection_data': raw_data.get('inspection_data', []), 'prepared_by': raw_data.get('prepared_by', ''),
+                'checked_by': raw_data.get('checked_by', ''), 'approved_by': raw_data.get('approved_by', '')
+            }
+            serializer = IncomingMaterialInspectionSerializer(data=mapped_data)
+            if serializer.is_valid():
+                obj = serializer.save()
+                return Response({"success": True, "message": "Incoming Material Inspection Saved!", "record_id": obj.id}, status=status.HTTP_201_CREATED)
+            return Response({"success": False, "error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class GetInspectionReportView(APIView):
     def get(self, request):
@@ -438,283 +501,246 @@ class GetInspectionReportView(APIView):
              return Response({"message": "No report found for given filters"}, status=status.HTTP_404_NOT_FOUND)
 
 
-class SaveProcessAuditView(APIView):
-    @transaction.atomic
+# ==============================================================================
+# 🏭 PURE & STRICT DYNAMIC ROUTING (UPDATED FOR NEW FIELDS: location)
+# ==============================================================================
+class SaveReportLogView(APIView):
+    permission_classes = [] 
+    
     def post(self, request):
+        username = request.data.get('username')
+        report_name = request.data.get('report_name')
+        record_id = request.data.get('record_id') 
+
+        if not username or not report_name:
+            return Response({"error": "Username and report_name are required fields."}, status=status.HTTP_400_BAD_REQUEST)
+
         try:
-            raw_data = request.data
-            mapped_data = {
-                'part_name_no': f"{raw_data.get('part_name', '')} - {raw_data.get('part_no', '')}",
-                'machine_model': raw_data.get('model_name', ''),
-                'date': clean_val(raw_data.get('audit_date')),
-                'auditor': raw_data.get('auditor_name', ''),
-                'auditee': raw_data.get('auditee_name', ''),
-                'audit_details': raw_data.get('audit_details', [])
-            }
+            user_obj = User.objects.get(username=username)
+        except User.DoesNotExist:
+            return Response({"error": f"System Error: User '{username}' not found in database."}, status=status.HTTP_404_NOT_FOUND)
 
-            serializer = ProcessAuditChecksheetSerializer(data=mapped_data)
-            
-            if serializer.is_valid():
-                serializer.save()
-                return Response({"success": True, "message": "Process Audit Saved Successfully!"}, status=status.HTTP_201_CREATED)
-            else:
-                print("Serializer Validation Error:", serializer.errors)
-                return Response({"success": False, "error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
-                
-        except Exception as e:
-            print("Server Exception:", str(e))
-            return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-class SaveCoherenceChecklistView(APIView):
-    @transaction.atomic
-    def post(self, request):
-        try:
-            raw_data = request.data
-            mapped_data = {
-                'part_name': raw_data.get('partName', ''),
-                'part_no': raw_data.get('partNo', ''),
-                'date': clean_val(raw_data.get('date')),
-                'model_name': raw_data.get('model', ''),
-                'prepared_by': raw_data.get('preparedBy', ''),
-                'verified_by': raw_data.get('verifiedBy', ''),
-                'operations': raw_data.get('operations', [])
-            }
-            serializer = CoherenceChecklistSerializer(data=mapped_data)
-            if serializer.is_valid():
-                serializer.save()
-                return Response({"success": True, "message": "Coherence Checklist Saved!"}, status=status.HTTP_201_CREATED)
-            return Response({"success": False, "error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
-        except Exception as e:
-            return Response({"success": False, "error": "Internal Server Error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-class SaveLayoutInspectionView(APIView):
-    @transaction.atomic
-    def post(self, request):
-        try:
-            raw_data = request.data
-            mapped_data = {
-                'part_name': raw_data.get('partName', ''),
-                'part_no': raw_data.get('partNo', ''),
-                'model_name': raw_data.get('model', ''),
-                'customer_name': raw_data.get('customer', ''),
-                'date': clean_val(raw_data.get('date')),
-                'sample_size': str(raw_data.get('sampleSize', '')),
-                'prepared_by': raw_data.get('preparedBy', ''),
-                'verified_by': raw_data.get('verifiedBy', ''),
-                'inspections': raw_data.get('inspections', [])
-            }
-            serializer = LayoutInspectionSerializer(data=mapped_data)
-            if serializer.is_valid():
-                serializer.save()
-                return Response({"success": True, "message": "Layout Inspection Saved!"}, status=status.HTTP_201_CREATED)
-            return Response({"success": False, "error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
-        except Exception as e:
-            return Response({"success": False, "error": "Internal Server Error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-class SaveProductAuditPlanView(APIView):
-    @transaction.atomic
-    def post(self, request):
-        try:
-            raw_data = request.data
-            mapped_data = {
-                'doc_no': raw_data.get('doc_no', ''),
-                'rev_no': raw_data.get('rev_no', ''),
-                'date': clean_val(raw_data.get('date')),
-                'plan_year': raw_data.get('plan_year', ''),
-                'prepared_by': raw_data.get('prepared_by', ''), 
-                'approved_by': raw_data.get('approved_by', ''),
-                'audit_rows': raw_data.get('rows', [])
-            }
-            
-            serializer = ProductAuditPlanSerializer(data=mapped_data)
-            if serializer.is_valid():
-                serializer.save()
-                return Response({"success": True, "message": "Product Audit Plan Saved!"}, status=status.HTTP_201_CREATED)
-            
-            print("Serializer Errors:", serializer.errors)
-            return Response({"success": False, "error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
-            
-        except Exception as e:
-            print("Exception in SaveProductAuditPlanView:", str(e))
-            return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-class SaveCustomerComplaintView(APIView):
-    @transaction.atomic
-    def post(self, request):
-        try:
-            raw_data = request.data
-            mapped_data = {
-                'date': clean_val(raw_data.get('date')),
-                'part_details': raw_data.get('part_details', ''),          
-                'model_name': raw_data.get('model_name', ''),              
-                'customer_name': raw_data.get('customer_name', ''),        
-                'problem_description': raw_data.get('problem_description', ''), 
-                'counter_measure': raw_data.get('counter_measure', ''),    
-                'target_date': clean_val(raw_data.get('target_date')),      
-                'horizontal_action': raw_data.get('horizontal_action', ''),
-                'status': raw_data.get('status', 'OPEN')
-            }
-            
-            serializer = CustomerComplaintSerializer(data=mapped_data)
-            if serializer.is_valid():
-                serializer.save()
-                return Response({"success": True, "message": "Customer Complaint Saved!"}, status=status.HTTP_201_CREATED)
-            
-            return Response({"success": False, "error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+        # ── 1. STRICT PROFILE EXTRACTION (NEW FIELD 'location' SE CHECK KAREGA) ──
+        submitter_location = None
         
-        except Exception as e:
-            return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-class SaveCustomerSatisfactionView(APIView):
-    @transaction.atomic
-    def post(self, request):
         try:
-            raw_data = request.data
-            mapped_data = {
-                'customer_name': raw_data.get('customerName', ''),
-                'month_year': raw_data.get('monthYear', ''),
-                'performance_indicators': {
-                    'line_complaints': raw_data.get('lineComplaints', ''),
-                    'warranty_complaints': raw_data.get('warrantyComplaints', ''),
-                    'premium_freight_incidents': raw_data.get('premiumFreightIncidents', ''),
-                    'line_stoppage_quality': raw_data.get('lineStoppageQuality', ''),
-                    'line_stoppage_supply': raw_data.get('lineStoppageSupply', ''),
-                    'premium_fight_incident': raw_data.get('premiumFightIncident', ''),
-                    'schedule_vs_dispatch': raw_data.get('scheduleVsDispatch', ''),
-                    'customer_audit_score': raw_data.get('customerAuditScore', '')
-                }
-            }
-
-            serializer = CustomerSatisfactionSerializer(data=mapped_data)
-            if serializer.is_valid():
-                serializer.save()
-                return Response({"success": True, "message": "Customer Satisfaction Saved!"}, status=status.HTTP_201_CREATED)
-            
-            return Response({"success": False, "error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+            profile = getattr(user_obj, 'userprofile', getattr(user_obj, 'profile', None))
+            # 🔥 FIX: 'department_name' hata kar 'location' laga diya!
+            if profile and getattr(profile, 'location', None):
+                submitter_location = str(profile.location).strip()
         except Exception as e:
-            return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            print(f"⚠️ Profile check exception for {username}: {e}")
 
+        # 🔥 STRICT GATE: Agar location (Plant 1/2) nahi mila toh form yahin ruk jayega!
+        if not submitter_location:
+            return Response({
+                "error": f"Validation Error: User '{username}' does not have a valid Location assigned in Django Admin. Please map the user to Plant 1 or Plant 2."
+            }, status=status.HTTP_400_BAD_REQUEST)
 
-class SaveWarrantyClaimView(APIView):
-    @transaction.atomic
-    def post(self, request):
-        try:
-            raw_data = request.data
-            mapped_data = {
-                'date': raw_data.get('date') or None,
-                'customer_name': raw_data.get('customerName', ''),
-                'part_details': raw_data.get('partDetails', ''),
-                'claim_qty': raw_data.get('claimQty', ''),
-                'warranty_defect': raw_data.get('warrantyDefect', ''),
-                'decision': raw_data.get('decision', 'PENDING'),
-                'rejection_root_cause': raw_data.get('rejectionRootCause', ''),
-                'disposal_action': raw_data.get('disposalAction', ''),
-                'capa_analysis': raw_data.get('capaAnalysis', '')
-            }
+        # Routing ke liye clean format (e.g., "Plant 1" -> "plant1")
+        submitter_plant_code = submitter_location.replace(" ", "").lower()
 
-            serializer = WarrantyClaimSerializer(data=mapped_data)
-            if serializer.is_valid():
-                serializer.save()
-                return Response({"success": True, "message": "Warranty Claim Saved!"}, status=status.HTTP_201_CREATED)
-            
-            return Response({"success": False, "error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
-        except Exception as e:
-            return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        # ── 2. LOG THE ENTRY ──
+        log = ReportActivityLog.objects.create(
+            username=username, 
+            department_name=submitter_location, # Database logs mein ab Plant 1 / Plant 2 save hoga
+            report_name=report_name, 
+            record_id=record_id 
+        )
+        
+        # ── 3. STRICT NOTIFICATION ROUTING ──
+        local_time = localtime(log.timestamp).strftime('%I:%M %p')
+        date_str = localtime(log.timestamp).strftime('%d-%b-%Y')
+        msg = f"{username} submitted {report_name} on {date_str} at {local_time}."
+        
+        print(f"🚀 ROUTING START | Submitter: {username} -> Extracted Plant: {submitter_plant_code}")
 
+        approvers = User.objects.filter(groups__name='QA_Approvers')
+        notifs_sent = 0
+        
+        for approver in approvers:
+            try:
+                # 🔥 FIX: Approver ke liye bhi 'location' field check karega
+                approver_profile = getattr(approver, 'userprofile', getattr(approver, 'profile', None))
+                if approver_profile and getattr(approver_profile, 'location', None):
+                    approver_location = str(approver_profile.location).strip()
+                    approver_plant_code = approver_location.replace(" ", "").lower()
+                    
+                    print(f"   -> Checking Approver: {approver.username} -> Extracted Plant: {approver_plant_code}")
+                    
+                    # 🔥 100% STRICT MATCH ONLY (plant1 == plant1, plant2 == plant2)
+                    if submitter_plant_code == approver_plant_code:
+                        QANotification.objects.create(user=approver, message=msg, report_log=log)
+                        notifs_sent += 1
+                        print(f"      ✅ MATCHED! Notification sent to {approver.username}")
+                    else:
+                        print(f"      ❌ BLOCKED! Submitter({submitter_plant_code}) != Approver({approver_plant_code})")
+                else:
+                    print(f"   -> ❌ SKIP: Approver {approver.username} has no location configured.")
+            except Exception:
+                pass
 
-class SaveMinutesOfMeetingView(APIView):
-    @transaction.atomic
-    def post(self, request):
-        try:
-            raw_data = request.data
-            mapped_data = {
-                'date': raw_data.get('date') or None,
-                'time': raw_data.get('time') or None,
-                'subject': raw_data.get('subject', ''),
-                'aot_members': raw_data.get('aotMembers', ''),
-                'supplier_members': raw_data.get('supplierMembers', ''),
-                'discussions': [
-                    {
-                        'sr_no': 1, 
-                        'part_name_no': raw_data.get('partDetails', ''),
-                        'defects_problem_details': raw_data.get('problemDetails', ''),
-                        'action_plan': raw_data.get('actionPlan', ''),
-                        'responsibility': raw_data.get('responsibility', ''),
-                        'target_date': raw_data.get('targetDate', ''),
-                        'follow_up_comments': raw_data.get('followUpComment', ''),
-                        'status_remark': raw_data.get('statusRemark', '')
-                    }
-                ]
-            }
-
-            serializer = MinutesOfMeetingSerializer(data=mapped_data)
-            if serializer.is_valid():
-                serializer.save()
-                return Response({"success": True, "message": "MOM Saved Successfully!"}, status=status.HTTP_201_CREATED)
-            
-            return Response({"success": False, "error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
-        except Exception as e:
-            return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-from datetime import datetime
-
-# ── Is function ko class ke UPAR yahan define karo ──
-def clean_date(val):
-    if not val:
-        return None
+        return Response({
+            "message": "Activity log saved and strictly routed successfully!", 
+            "log_id": log.id
+        }, status=status.HTTP_201_CREATED)
+        
+# ==============================================================================
+# 🔥 ALL FORMS FETCH API (For View/Approve Mode)
+# ==============================================================================
+@api_view(['GET'])
+def get_single_report_view(request, form_key, report_id):
     try:
-        # Frontend date DD-MM-YYYY ko YYYY-MM-DD me convert karta hai
-        return datetime.strptime(val, '%d-%m-%Y').strftime('%Y-%m-%d')
-    except ValueError:
-        return val      
-class SaveIncomingMaterialInspectionView(APIView):
-    @transaction.atomic
-    def post(self, request):
-        try:
-            raw_data = request.data
-            
-            # 🔥 LOGIC ADDED: Agar part_no khali string hai, to use None (NULL) bana do
-            raw_part_no = raw_data.get('part_no', '')
-            final_part_no = None if str(raw_part_no).strip() == '' else raw_part_no
-            
-            mapped_data = {
-                'supplier': raw_data.get('supplier', 'ATOMONE TECHNOLOGIES PVT.LTD'),
-                'customer': raw_data.get('customer', ''),
-                'part_name': raw_data.get('part_name', ''),
-                
-                # 🔥 Updated value mapped here
-                'part_no': final_part_no,          
-                
-                'date': raw_data.get('date'), # Assumes frontend is sending YYYY-MM-DD now
-                'grade': raw_data.get('grade', ''),
-                'mtc': raw_data.get('mtc', ''),
-                'ga_nga': raw_data.get('ga_nga', ''),
-                'coil_no': raw_data.get('coil_no', ''),
-                'invoice_no': raw_data.get('invoice_no', ''),
-                'qty': str(raw_data.get('qty', '')),
-                'inspection_data': raw_data.get('inspection_data', []), 
-                'prepared_by': raw_data.get('prepared_by', ''),
-                'checked_by': raw_data.get('checked_by', ''),
-                'approved_by': raw_data.get('approved_by', '')
-            }
-            
-            serializer = IncomingMaterialInspectionSerializer(data=mapped_data)
-            if serializer.is_valid():
-                serializer.save()
-                return Response({"success": True, "message": "Incoming Material Inspection Saved!"}, status=status.HTTP_201_CREATED)
-            
-            return Response({"success": False, "error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
-        
-        except Exception as e:
-            return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-# ==============================================================================
-# 📊 QA DATA FETCH API (View Reports)
-# ==============================================================================
+        log_entry = get_object_or_404(ReportActivityLog, id=report_id)
+        submitted_user = log_entry.username
+        rec_id = log_entry.record_id
 
+        if not rec_id:
+            return Response({"success": False, "error": "No Record ID attached to this notification."}, status=404)
+
+        if form_key in ['deviation-view', 'deviation']:
+            report = get_object_or_404(DeviationApproval, id=rec_id)
+            data = {
+                "toolNameNo": report.tool_name_no, "location": report.location, "problem": report.problem,
+                "reasonForDeviation": report.reason_for_deviation, "date": str(report.date), "duration": report.duration,
+                "prodIncharge": report.prod_incharge, "qaIncharge": report.qa_incharge, "remarks": report.remarks,
+                "submitted_by": submitted_user
+            }
+            return Response({"success": True, "data": data}, status=200)
+
+        elif form_key == 'good-receipt':
+             report = get_object_or_404(GoodReceiptEntry, id=rec_id)
+             data = {
+                "requestedBy": report.requested_by, "itemName": report.item_name, "specification": report.specification,
+                "department": report.department, "qty": report.qty, "remark": report.remark, "receivedBy": report.received_by,
+                "receivedDate": str(report.received_date), "submitted_by": submitted_user
+             }
+             return Response({"success": True, "data": data}, status=200)
+
+        elif form_key in ['incoming-inspection-view', 'incoming']:
+             report = get_object_or_404(IncomingMaterialInspection, id=rec_id)
+             data = {
+                "supplier": report.supplier, "customer": report.customer, "part_name": report.part_name, "part_no": report.part_no,
+                "date": str(report.date), "grade": report.grade, "mtc": report.mtc, "ga_nga": report.ga_nga, "coil_no": report.coil_no,
+                "invoice_no": report.invoice_no, "qty": report.qty, "inspection_data": report.inspection_data,
+                "prepared_by": report.prepared_by, "checked_by": report.checked_by, "approved_by": report.approved_by, "submitted_by": submitted_user
+             }
+             return Response({"success": True, "data": data}, status=200)
+
+        elif form_key in ['redbin-view', 'redbin']:
+            report = get_object_or_404(RedBinAnalysisReport, id=rec_id)
+            data = {
+                "entry_date": str(report.entry_date), "part_name_model": report.part_name_model, "operation": report.operation,
+                "total_rej_qty": report.total_rej_qty, "defect_detail": report.defect_detail, "root_cause_reason": report.root_cause_reason,
+                "action_taken": report.action_taken, "responsible_person": report.responsible_person,
+                "target_date": str(report.target_date) if report.target_date else "",
+                "completion_date": str(report.completion_date) if report.completion_date else "", "submitted_by": submitted_user
+            }
+            return Response({"success": True, "data": data}, status=200)
+
+        elif form_key in ['scrap-note-view', 'scrap']:
+            report = get_object_or_404(ScrapNoteEntry, id=rec_id)
+            data = {
+                "entry_date": str(report.entry_date), "part_name": report.part_name, "part_no": report.part_no,
+                "defect_detail": report.defect_detail, "quantity": report.quantity, "remarks": report.remarks, "submitted_by": submitted_user
+            }
+            return Response({"success": True, "data": data}, status=200)
+
+        elif form_key in ['process-audit-view', 'process-audit']:
+            report = get_object_or_404(ProcessAuditChecksheet, id=rec_id)
+            data = {
+                "part_name_no": report.part_name_no, "model_name": report.machine_model, "audit_date": str(report.date),
+                "auditor_name": report.auditor, "auditee_name": report.auditee, "audit_details": report.audit_details, "submitted_by": submitted_user
+            }
+            return Response({"success": True, "data": data}, status=200)
+
+        elif form_key in ['coherence-view', 'coherence']:
+            report = get_object_or_404(CoherenceChecklist, id=rec_id)
+            data = {
+                "partName": report.part_name, "partNo": report.part_no, "date": str(report.date), "model": report.model_name,
+                "preparedBy": report.prepared_by, "verifiedBy": report.verified_by, "operations": report.operations, "submitted_by": submitted_user
+            }
+            return Response({"success": True, "data": data}, status=200)
+
+        elif form_key in ['layout-inspection-view', 'layout-inspection']:
+            report = get_object_or_404(LayoutInspection, id=rec_id)
+            data = {
+                "partName": report.part_name, "partNo": report.part_no, "model": report.model_name, "customer": report.customer_name,
+                "date": str(report.date), "sampleSize": report.sample_size, "preparedBy": report.prepared_by, "verifiedBy": report.verified_by,
+                "inspections": report.inspections, "submitted_by": submitted_user
+            }
+            return Response({"success": True, "data": data}, status=200)
+
+        elif form_key in ['product-audit-plan-view', 'product-audit-plan']:
+            report = get_object_or_404(ProductAuditPlan, id=rec_id)
+            data = {
+                "doc_no": report.doc_no, "rev_no": report.rev_no, "date": str(report.date), "plan_year": report.plan_year,
+                "prepared_by": report.prepared_by, "approved_by": report.approved_by, "rows": report.audit_rows, "submitted_by": submitted_user
+            }
+            return Response({"success": True, "data": data}, status=200)
+
+        elif form_key in ['customer-complaint-view', 'customer-complaint']:
+            report = get_object_or_404(CustomerComplaint, id=rec_id)
+            data = {
+                "date": str(report.date), "part_details": report.part_details, "model_name": report.model_name, "customer_name": report.customer_name,
+                "problem_description": report.problem_description, "counter_measure": report.counter_measure, "target_date": str(report.target_date),
+                "horizontal_action": report.horizontal_action, "status": report.status, "submitted_by": submitted_user
+            }
+            return Response({"success": True, "data": data}, status=200)
+
+        elif form_key in ['customer-satisfaction-view', 'customer-satisfaction']:
+            report = get_object_or_404(CustomerSatisfaction, id=rec_id)
+            data = {
+                "customerName": report.customer_name, "monthYear": report.month_year, **report.performance_indicators, "submitted_by": submitted_user
+            }
+            return Response({"success": True, "data": data}, status=200)
+
+        elif form_key in ['warranty-claim-view', 'warranty-claim']:
+            report = get_object_or_404(WarrantyClaim, id=rec_id)
+            data = {
+                "date": str(report.date), "customerName": report.customer_name, "partDetails": report.part_details, "claimQty": report.claim_qty,
+                "warrantyDefect": report.warranty_defect, "decision": report.decision, "rejectionRootCause": report.rejection_root_cause,
+                "disposalAction": report.disposal_action, "capaAnalysis": report.capa_analysis, "submitted_by": submitted_user
+            }
+            return Response({"success": True, "data": data}, status=200)
+
+        elif form_key in ['mom-view', 'mom']:
+            report = get_object_or_404(MinutesOfMeeting, id=rec_id)
+            data = {
+                "date": str(report.date), "time": str(report.time), "subject": report.subject, "aotMembers": report.aot_members,
+                "supplierMembers": report.supplier_members, "discussions": report.discussions, "submitted_by": submitted_user
+            }
+            return Response({"success": True, "data": data}, status=200)
+
+        elif form_key in ['redbin-attendance-view', 'redbin-attendance']:
+            report = get_object_or_404(RedBinAttendance, id=rec_id)
+            data = {
+                "date": str(report.date), "month": report.month, "year": report.year, "employee_name": report.employee_name,
+                "designation": report.designation, "status": report.status, "submitted_by": submitted_user
+            }
+            return Response({"success": True, "data": data}, status=200)
+
+        elif form_key in ['inspection-view', 'inspection']:
+            report = get_object_or_404(InspectionReport, id=rec_id)
+            data = {
+                "customer": report.customer_account, "part_name": report.part_name, "operation": report.operation, "part_number": report.part_number,
+                "plant_location": report.plant_location, "date": str(report.inspection_date), "operator": report.operator_name,
+                "machine": report.machine_number, "inspection_data": report.inspection_data, "submitted_by": submitted_user
+            }
+            return Response({"success": True, "data": data}, status=200)
+
+        else:
+            return Response({"success": False, "error": f"Form '{form_key}' Not Supported Yet"}, status=400)
+
+    except Exception as e:
+        import traceback
+        print("🔥 ERROR IN GET SINGLE REPORT:", traceback.format_exc())
+        return Response({"success": False, "error": str(e)}, status=500)
+
+
+# ==============================================================================
+# 📊 QA DATA FETCH API (General List Views)
+# ==============================================================================
 @api_view(['GET'])
 def qa_data_view(request, form_key):
 
@@ -862,33 +888,38 @@ def qa_data_view(request, form_key):
                     logs       = insp_data.get('logs', [])
                     parameters = insp_data.get('parameters', [])
 
-                    param_map = { str(p.get('sr', p.get('sr_no', ''))): p for p in parameters }
+                    # 🔥 NAYA LOGIC: Ek Parameter = Ek Row, Stages ke val1/val2 side me aayenge
+                    for param in parameters:
+                        sr_key = str(param.get('sr', param.get('sr_no', '')))
+                        
+                        row_data = {
+                            'Customer':      rec.get('customer_account', '—'),
+                            'Part Name':     rec.get('part_name', '—'),
+                            'Operation':     rec.get('operation', '—'),
+                            'Part Number':   rec.get('part_number', '—'),
+                            'Plant':         rec.get('plant_location', '—'),
+                            'Insp. Date':    rec.get('inspection_date', '—'),
+                            'Operator':      rec.get('operator_name', '—') or '—',
+                            'Machine No':    rec.get('machine_number', '—') or '—',
+                            'Parameter':     param.get('item', '—'),
+                            'Category':      param.get('category', '—'),
+                            'Specification': param.get('spec', '—'),
+                            'Tolerance':     param.get('tol', '—'),
+                            'Instrument':    param.get('instr', '—'),
+                        }
 
-                    for log in logs:
-                        readings = log.get('readings', {})
-                        if not readings:
-                            continue
-
-                        for sr_key, vals in readings.items():
-                            param = param_map.get(str(sr_key), {})
-                            all_data.append({
-                                'Customer':      rec.get('customer_account', '—'),
-                                'Part Name':     rec.get('part_name', '—'),
-                                'Operation':     rec.get('operation', '—'),
-                                'Part Number':   rec.get('part_number', '—'),
-                                'Plant':         log.get('plant', rec.get('plant_location', '—')),
-                                'Insp. Date':    log.get('date', rec.get('inspection_date', '—')),
-                                'Operator':      log.get('operator', rec.get('operator_name', '—')) or '—',
-                                'Machine No':    log.get('machine', rec.get('machine_number', '—')) or '—',
-                                'Parameter':     param.get('item', '—'),
-                                'Category':      param.get('category', '—'),
-                                'Specification': param.get('spec', '—'),
-                                'Tolerance':     param.get('tol', '—'),
-                                'Instrument':    param.get('instr', '—'),
-                                'Stage':         log.get('displayStage', log.get('baseStage', '—')),
-                                'Val 1':         vals.get('val1', '—'),
-                                'Val 2':         vals.get('val2', '—'),
-                            })
+                        for log in logs:
+                            stage_name = log.get('displayStage', log.get('baseStage', 'STAGE')).upper()
+                            readings = log.get('readings', {})
+                            vals = readings.get(sr_key, {})
+                            
+                            val1 = vals.get('val1', '—')
+                            val2 = vals.get('val2', '—')
+                            
+                            row_data[f'{stage_name} VAL 1'] = val1 if val1 else '—'
+                            row_data[f'{stage_name} VAL 2'] = val2 if val2 else '—'
+                            
+                        all_data.append(row_data)
 
         except Exception as e:
             print(f"⚠️ inspection-view error: {e}")
@@ -908,7 +939,6 @@ def qa_data_view(request, form_key):
                 
                 data.append({
                     'Date': str(report.entry_date), 
-                    'Created Time': format_to_ampm(raw_time), 
                     'Part Name & Model': report.part_name_model,
                     'Operation': report.operation,
                     'Total Rejected Qty': report.total_rej_qty,
@@ -939,7 +969,7 @@ def qa_data_view(request, form_key):
                     'Year': report.year,
                     'Employee Name': report.employee_name,
                     'Designation': report.designation,
-                    'Status': status_map.get(report.status, report.status),
+                    'Attendance': status_map.get(report.status, report.status),
                 })
             return JsonResponse({'data': data})
         except Exception as e:

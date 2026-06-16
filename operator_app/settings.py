@@ -137,10 +137,12 @@ DATABASES = {
         'PASSWORD': os.getenv('DB_PASSWORD', 'postgres'),
         'HOST': os.getenv('DB_HOST', 'localhost'),  
         'PORT': os.getenv('DB_PORT', '5432'),
+       
         'OPTIONS': {
-            'options': '-c default_transaction_isolation=serializable -c timezone=Asia/Kolkata'
+            'options': '-c search_path=production,quality,machine_maintenance,tool_maintenance,live_data,master_data,public -c default_transaction_isolation=serializable -c timezone=Asia/Kolkata'
         },
-    }
+        }, 
+    
 }
 
 # Email

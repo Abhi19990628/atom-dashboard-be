@@ -28,4 +28,11 @@ urlpatterns = [
 
     #  Main Data Fetch View -> YE SABSE ZAROORI HAI TABLE DIKHANE KE LIYE
     path('qa-data/<str:form_key>/', views.qa_data_view, name='qa_data_view'),
+    
+    path('get-single-report/<str:form_key>/<int:report_id>/', views.get_single_report_view, name='get-single-report'),
+
+    path('log-report/', views.SaveReportLogView.as_view(), name='api_log_report'),
+    
+  
+   
 ]

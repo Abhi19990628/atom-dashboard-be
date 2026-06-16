@@ -1954,45 +1954,107 @@ class IncomingMaterialInspection(models.Model):
     
     
     
+# from django.db import models
+# from django.contrib.auth.models import User
+
+# # 1. User Profile: Kaunsa user kis Department/Plant ka hai
+# class UserProfile(models.Model):
+#     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
+    
+#     # Department / Plant ke options
+#     DEPARTMENT_CHOICES = (
+#         ('Plant 1', 'Plant 1'),
+#         ('Plant 2', 'Plant 2'),
+#         ('QA Hub', 'QA Hub'),
+#         ('Production Hub', 'Production Hub'),
+#         ('Maintenance Hub', 'Maintenance Hub'),
+#     )
+#     department_name = models.CharField(max_length=50, choices=DEPARTMENT_CHOICES, default='Plant 1')
+
+#     class Meta:
+#         # 🔥 Puraani default table ki jagah ye naam DB mein aayega
+#         db_table = 'user_department_profiles' 
+
+#     def __str__(self):
+#         return f"{self.user.username} - {self.department_name}"
+
 from django.db import models
 from django.contrib.auth.models import User
+from django.db.models.signals import post_save
+from django.dispatch import receiver
 
-# 1. User Profile: Kaunsa user kis Department/Plant ka hai
+# ==============================================================================
+# 🏭 ENTERPRISE USER PROFILE MASTER
+# ==============================================================================
 class UserProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
     
-    # Department / Plant ke options
-    DEPARTMENT_CHOICES = (
+    # 📌 Nayi Fields Jo Aapne Maangi Thi
+    employee_id = models.CharField(max_length=50, unique=True, null=True, blank=True, help_text="Unique Employee Code")
+    mobile_no = models.CharField(max_length=15, null=True, blank=True)
+    contact_email = models.EmailField(null=True, blank=True, help_text="Alternate/Direct Email")
+    
+    # 📌 Location (Konsa Plant Hai)
+    LOCATION_CHOICES = (
         ('Plant 1', 'Plant 1'),
         ('Plant 2', 'Plant 2'),
-        ('QA Hub', 'QA Hub'),
-        ('Production Hub', 'Production Hub'),
-        ('Maintenance Hub', 'Maintenance Hub'),
+        ('HQ', 'Headquarters'),
     )
-    department_name = models.CharField(max_length=50, choices=DEPARTMENT_CHOICES, default='Plant 1')
+    location = models.CharField(max_length=50, choices=LOCATION_CHOICES, default='Plant 1')
+
+    # 📌 Department
+    DEPARTMENT_CHOICES = (
+        ('QA', 'Quality Assurance (QA)'),
+        ('Production', 'Production'),
+        ('Maintenance', 'Maintenance'),
+        ('Management', 'Management'),
+    )
+    department = models.CharField(max_length=50, choices=DEPARTMENT_CHOICES, default='QA')
 
     class Meta:
-        # 🔥 Puraani default table ki jagah ye naam DB mein aayega
         db_table = 'user_department_profiles' 
 
     def __str__(self):
-        return f"{self.user.username} - {self.department_name}"
+        emp_code = self.employee_id if self.employee_id else "NO-ID"
+        return f"{self.user.username} | ID: {emp_code} | {self.location} - {self.department}"
+    
+
+from django.db import models
+from django.contrib.auth.models import User
 
 
-# 2. Report Log: Kaun, kis department se, konsi report, kab bhar raha hai
 class ReportActivityLog(models.Model):
     username = models.CharField(max_length=255)
-    department_name = models.CharField(max_length=100) # Plant 1 ya QA_Hub aayega isme
+    department_name = models.CharField(max_length=100) 
     report_name = models.CharField(max_length=255)
+    record_id = models.IntegerField(null=True, blank=True)
     timestamp = models.DateTimeField(auto_now_add=True)
+    status = models.CharField(max_length=255, default="In Progress") 
 
     class Meta:
-        # 🔥 MAIN CHANGE: Ye naam database table ka hoga (Sabse clear naam)
-        db_table = 'user_report_activity_logs' 
-        
-        # Ye Django Admin panel mein dikhne ke liye clear naam hai
-        verbose_name = 'User Report Log'
-        verbose_name_plural = 'User Report Logs'
+        db_table = 'user_report_activity_logs'
 
     def __str__(self):
-        return f"{self.username} | {self.department_name} | {self.report_name} | {self.timestamp}"
+        return f"{self.username} | {self.report_name} | Status: {self.status}"
+
+
+# ==========================================
+# 3. 🔥 NAYA MODEL: SIRF QA HUB NOTIFICATIONS KE LIYE
+# ==========================================
+class QANotification(models.Model):
+    # Jisko notification bhejna hai (e.g., rajeshdhiman)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='qa_notifications')
+    
+    # Kis report ke baare mein hai ye notification
+    report_log = models.ForeignKey(ReportActivityLog, on_delete=models.CASCADE)
+    
+    message = models.TextField()
+    is_read = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'qa_hub_notifications' # 🔥 Table ka naam clear rakha hai
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"QA Alert for {self.user.username}: {self.report_log.report_name}"

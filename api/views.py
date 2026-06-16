@@ -3062,41 +3062,71 @@ class DirectPasswordResetView(APIView):
 
         return Response({"message": "Password successfully update ho gaya! Ab aap login kar sakte hain."}, status=status.HTTP_200_OK)
     
-    
-    
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from django.contrib.auth.models import User
-from .models import ReportActivityLog
+from django.utils.timezone import localtime
+from .models import ReportActivityLog, QANotification
 
-class SaveReportLogView(APIView):
-    # Isko public rakh sakte hain ya token validation bhi laga sakte hain
-    permission_classes = [] 
+ 
+
+class ApproveReportView(APIView):
+    permission_classes = []
 
     def post(self, request):
-        username = request.data.get('username')
-        report_name = request.data.get('report_name')
+        log_id = request.data.get('log_id')
+        approver_username = request.data.get('approver_username')
 
-        # Validation: Dono fields honi chahiye
-        if not username or not report_name:
-            return Response({"error": "Username aur report_name dono zaroori hain."}, status=status.HTTP_400_BAD_REQUEST)
+        if not log_id or not approver_username:
+            return Response({"error": "log_id and approver_username are required."}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            # Database se user uthao aur check karo wo kis department/plant ka hai
-            user = User.objects.get(username=username)
-            user_department = user.profile.department_name # Model se automatically department utha lega
-        except User.DoesNotExist:
-            return Response({"error": "Ye username system mein nahi mila."}, status=status.HTTP_44_NOT_FOUND)
-        except Exception:
-            # Agar kisi user ka profile create nahi hua hai toh default 'Plant 1' set ho jaye
-            user_department = "Plant 1"
+            from .models import ReportActivityLog, QANotification # Local import to avoid circular dependency issues
+            
+            # Find the report
+            report = ReportActivityLog.objects.get(id=log_id)
+            
+            # Update the status 
+            report.status = f"Approved by {approver_username}"
+            report.save()
 
-        # Database (user_report_activity_logs table) mein entry save karo
-        ReportActivityLog.objects.create(
-            username=username,
-            department_name=user_department,
-            report_name=report_name
-        )
+            # Mark notification as read
+            notifications = QANotification.objects.filter(report_log=report)
+            for notif in notifications:
+                notif.is_read = True
+                notif.save()
+
+            return Response({"message": f"Report successfully approved by {approver_username}!"}, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            return Response({"error": f"Report not found or error occurred: {str(e)}"}, status=status.HTTP_404_NOT_FOUND)
         
-        return Response({"message": "Activity log successfully save ho gaya!"}, status=status.HTTP_201_CREATED)
+        
+class GetQANotificationsView(APIView):
+    permission_classes = []
+
+    def get(self, request, username):
+        try:
+            # Jo user login hai, sirf usko database mein dhundo
+            user = User.objects.get(username=username)
+            
+            # Sirf is specific user ki UNREAD notifications nikalo
+            notifications = QANotification.objects.filter(user=user, is_read=False).order_by('-created_at')
+            
+            notif_list = []
+            for n in notifications:
+                notif_list.append({
+                    "id": n.id,
+                    "message": n.message,
+                    "time": localtime(n.created_at).strftime('%d-%b %I:%M %p'),
+                    "report_log_id": n.report_log.id if n.report_log else None
+                })
+                
+            return Response({"notifications": notif_list}, status=status.HTTP_200_OK)
+        except User.DoesNotExist:
+            return Response({"error": "User nahi mila"}, status=status.HTTP_404_NOT_FOUND)
+        
+        
+        
+        
