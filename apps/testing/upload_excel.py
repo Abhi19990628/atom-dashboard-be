@@ -18,22 +18,7 @@ from api.models import (
     L3_ParameterDetailMaster,
 )
 
-FOLDER_PATH = r"C:\Users\Dell\Desktop\Updated Gestamp CP"
-
-POSSIBLE_FILES = [
-    "REINFORCEMENT A-PILLAR TOP HINGE-LHRH.xlsx",
-
-]
-
-FILE_PATH = None
-FILE_NAME = None
-
-for file in POSSIBLE_FILES:
-    path = os.path.join(FOLDER_PATH, file)
-    if os.path.exists(path):
-        FILE_PATH = path
-        FILE_NAME = file
-        break
+FILE_PATH = r"C:\Users\Dell\Desktop\Updated topre CP\Control_Plan_Database_Ready.xlsx"
 
 
 def clean(value):
@@ -49,39 +34,8 @@ def clean(value):
     return value
 
 
-def filename_to_part_name(file_name):
-    name = os.path.splitext(file_name)[0]
-    name = re.sub(r"\(\d+\)$", "", name).strip()
-    return name
-
-
-def find_right_value(df, keywords, max_rows=25):
-    for r in range(min(max_rows, len(df))):
-        for c in range(len(df.columns)):
-            cell = clean(df.iloc[r, c]).upper()
-
-            if any(k.upper() in cell for k in keywords):
-                for offset in range(1, 10):
-                    if c + offset < len(df.columns):
-                        val = clean(df.iloc[r, c + offset])
-                        if val:
-                            return val
-    return ""
-
-
-def is_valid_process_no(value):
-    value = clean(value)
-    if not value:
-        return False
-
-    try:
-        float(value)
-        return True
-    except ValueError:
-        return False
-
-
-def delete_old_l2_l3_data(part_obj):
+def delete_old_l1_l2_l3_data(customer_name, part_name, part_no):
+    l1_table = L1_PartInfoMaster._meta.db_table
     l2_table = L2_ProcessReportMaster._meta.db_table
     l3_table = L3_ParameterDetailMaster._meta.db_table
 
@@ -90,153 +44,136 @@ def delete_old_l2_l3_data(part_obj):
             f"""
             DELETE FROM "{l3_table}"
             WHERE process_report_id IN (
-                SELECT id FROM "{l2_table}"
-                WHERE part_info_id = %s
+                SELECT l2.id
+                FROM "{l2_table}" l2
+                INNER JOIN "{l1_table}" l1 ON l1.id = l2.part_info_id
+                WHERE l1.customer_name = %s
+                AND l1.part_name = %s
+                AND l1.part_no = %s
             )
             """,
-            [part_obj.id],
+            [customer_name, part_name, part_no],
         )
 
         cursor.execute(
             f"""
             DELETE FROM "{l2_table}"
-            WHERE part_info_id = %s
+            WHERE part_info_id IN (
+                SELECT id FROM "{l1_table}"
+                WHERE customer_name = %s
+                AND part_name = %s
+                AND part_no = %s
+            )
             """,
-            [part_obj.id],
+            [customer_name, part_name, part_no],
+        )
+
+        cursor.execute(
+            f"""
+            DELETE FROM "{l1_table}"
+            WHERE customer_name = %s
+            AND part_name = %s
+            AND part_no = %s
+            """,
+            [customer_name, part_name, part_no],
         )
 
 
 def upload_excel():
     print("FILE PATH:", FILE_PATH)
-    print("FILE EXISTS:", FILE_PATH is not None and os.path.exists(FILE_PATH))
+    print("FILE EXISTS:", os.path.exists(FILE_PATH))
 
-    if not FILE_PATH:
-        print("File not found. Check exact file name.")
+    if not os.path.exists(FILE_PATH):
+        print("File not found. Check file path.")
         return
 
-    xls = pd.ExcelFile(FILE_PATH)
-    print("SHEETS:", xls.sheet_names)
+    df = pd.read_excel(FILE_PATH, sheet_name="Database_Import_Format")
+    df.columns = [clean(col) for col in df.columns]
 
-    sheet_name = xls.sheet_names[0]
-    print("SHEET USED:", sheet_name)
-
-    df = pd.read_excel(FILE_PATH, sheet_name=sheet_name, header=None)
-
-    customer_name = "GESTAMP"
-    part_name = filename_to_part_name(FILE_NAME)
-
-    part_no = find_right_value(df, ["PART NO", "PART NO.", "PART NO / REV NO"]) or "UNKNOWN"
-    model_name = find_right_value(df, ["MODEL", "MODEL NAME"]) or "UNKNOWN"
-
-    part_obj, _ = L1_PartInfoMaster.objects.update_or_create(
-        customer_name=customer_name,
-        part_name=part_name,
-        part_no=part_no,
-        defaults={"model_name": model_name},
-    )
-
-    delete_old_l2_l3_data(part_obj)
-
-    current_process = None
-    l2_count = 0
-    l3_count = 0
-    storage_count = 0
-
-    skip_words = [
-        "CONTROL PLAN",
-        "PART/PROCESS NO",
-        "PROCESS NAME",
-        "OPERATION DESCRIPTION",
-        "MACHINE/JIG/FIXTURE",
-        "CHARACTERISTICS",
-        "PRODUCT/ PROCESS SPECIFICATION",
-        "EVALUATION",
-        "INSP. TECHNIQUE",
-        "CHECKING METHOD",
-        "SAMPLE",
-        "METHOD",
-        "REACTION PLAN",
-        "DOC NO",
-        "REVISION NO",
-        "PAGE NO",
-        "PREPARED BY",
-        "APPROVED BY",
-        "CUSTOMER",
-        "CORE TEAM",
-        "SUPPLER NAME",
-        "SUPPLIER NAME",
+    required_cols = [
+        "Customer",
+        "Part Name",
+        "Part No",
+        "Model",
+        "Operation",
+        "Type",
+        "Parameter",
+        "Specification",
+        "Tolerance",
+        "Instrument",
     ]
 
-    for i in range(len(df)):
-        process_no = clean(df.iloc[i, 1]) if df.shape[1] > 1 else ""
-        operation_desc = clean(df.iloc[i, 2]) if df.shape[1] > 2 else ""
-        machine = clean(df.iloc[i, 3]) if df.shape[1] > 3 else ""
+    for col in required_cols:
+        if col not in df.columns:
+            print(f"Missing column: {col}")
+            return
 
-        parameter_no = clean(df.iloc[i, 4]) if df.shape[1] > 4 else ""
-        process_char = clean(df.iloc[i, 5]) if df.shape[1] > 5 else ""
-        product_char = clean(df.iloc[i, 6]) if df.shape[1] > 6 else ""
-        special_char = clean(df.iloc[i, 7]) if df.shape[1] > 7 else ""
-        specification = clean(df.iloc[i, 8]) if df.shape[1] > 8 else ""
-        instrument = clean(df.iloc[i, 9]) if df.shape[1] > 9 else ""
+    for col in required_cols:
+        df[col] = df[col].apply(clean)
 
-        joined = " ".join([
-            process_no,
-            operation_desc,
-            machine,
-            parameter_no,
-            process_char,
-            product_char,
-            special_char,
-            specification,
-            instrument,
-        ]).upper()
+    df = df[df["Part Name"] != ""]
 
-        if any(word in joined for word in skip_words):
-            continue
+    parts_df = df[["Part Name", "Part No", "Model"]].drop_duplicates()
 
-        stop_after_this_row = False
+    l1_count = 0
+    l2_count = 0
+    l3_count = 0
+    deleted_parts_count = 0
 
-        if is_valid_process_no(process_no) and operation_desc:
-            report_name = operation_desc.strip()
+    for _, part_row in parts_df.iterrows():
+        customer_name = "TOPRE"
+        part_name = clean(part_row["Part Name"])
+        part_no = clean(part_row["Part No"]) or "UNKNOWN"
+        model_name = clean(part_row["Model"]) or "YTB"
 
-            if report_name.upper() == "STORAGE":
-                storage_count += 1
+        delete_old_l1_l2_l3_data(customer_name, part_name, part_no)
+        deleted_parts_count += 1
 
-                if storage_count == 2:
-                    report_name = "STORAGE TWO"
-                elif storage_count == 3:
-                    report_name = "STORAGE THREE"
+        part_obj = L1_PartInfoMaster.objects.create(
+            customer_name=customer_name,
+            part_name=part_name,
+            part_no=part_no,
+            model_name=model_name,
+        )
+        l1_count += 1
 
-            current_process = L2_ProcessReportMaster.objects.create(
-                part_info=part_obj,
-                report_name=report_name,
-            )
+        part_data = df[
+            (df["Part Name"] == part_name)
+            & (df["Part No"] == part_no)
+            & (df["Model"] == model_name)
+        ]
 
-            l2_count += 1
+        operation_map = {}
 
-            if "DISPATCH" in report_name.upper() or "DESPATCH" in report_name.upper():
-                stop_after_this_row = True
+        for _, row in part_data.iterrows():
+            operation = clean(row["Operation"])
+            if not operation:
+                continue
 
-        if not current_process:
-            continue
+            if operation not in operation_map:
+                process_obj = L2_ProcessReportMaster.objects.create(
+                    part_info=part_obj,
+                    report_name=operation,
+                )
+                operation_map[operation] = process_obj
+                l2_count += 1
+            else:
+                process_obj = operation_map[operation]
 
-        category = ""
-        parameter_name = ""
+            category = clean(row["Type"]).upper()
+            parameter_name = clean(row["Parameter"])
+            specification = clean(row["Specification"])
+            tolerance = clean(row["Tolerance"])
+            instrument = clean(row["Instrument"])
 
-        if product_char:
-            category = "PRODUCT"
-            parameter_name = product_char
-        elif process_char:
-            category = "PROCESS"
-            parameter_name = process_char
-        elif special_char:
-            category = "SPECIAL"
-            parameter_name = special_char
+            if tolerance:
+                specification = f"{specification} {tolerance}".strip()
 
-       
-        if parameter_name or specification or instrument:
+            if not parameter_name and not specification and not instrument:
+                continue
+
             L3_ParameterDetailMaster.objects.create(
-                process_report=current_process,
+                process_report=process_obj,
                 category=category,
                 parameter_name=parameter_name,
                 specification=specification,
@@ -244,17 +181,11 @@ def upload_excel():
             )
             l3_count += 1
 
-        if stop_after_this_row:
-            break
-
     print("================================")
     print("UPLOAD COMPLETED SUCCESSFULLY")
-    print("File:", FILE_NAME)
-    print("Part Name:", part_name)
-    print("Part No:", part_no)
-    print("Model:", model_name)
-    print("L1 ID:", part_obj.id)
-    print("Old L2/L3 deleted and new data inserted")
+    print("Customer: TOPRE")
+    print("Old L1/L2/L3 deleted for parts:", deleted_parts_count)
+    print("L1 inserted:", l1_count)
     print("L2 inserted:", l2_count)
     print("L3 inserted:", l3_count)
     print("================================")
