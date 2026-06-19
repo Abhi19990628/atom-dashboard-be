@@ -24,7 +24,7 @@ from api.models import (
     VibraMaintenance, DipMoldingMaintenance, ServoPressMaintenance,
     MachinePreventiveMaintenance, CNCMaintenanceReport, VerticalMillingMachineCheckSheet, 
     ProjectionWeldingPMCheckSheet, PowerPressPMCheckSheet, HydraulicPMCheckSheet,
-    PartMaster,
+    PartMaster,FixtureMaintenanceRecord
     
 )
 
@@ -1034,15 +1034,14 @@ def maintenance_data_view(request, form_key):
                 history_list = card.history_records or []
                 if not history_list:
                     data.append({
-                        'Machine Name': card.machine_name, 'Machine No.': card.machine_no, 'Machine Specs': card.machine_specs or '—', 'Location': card.location or '—', 'Date': '—', 'Problem': '—', 'Action Taken': '—', '4M Update': '—', 'Signature': '—', 'Remarks': '—', 'Prepared By': card.prepared_by or '—', 'Approved By': card.approved_by or '—',
+                        'Machine Name': card.machine_name, 'Machine No.': card.machine_no, 'Machine Specs': card.machine_specs or 'N/A', 'Location': card.location or 'N/A', 'Date': 'N/A', 'Problem': 'N/A', 'Action Taken': 'N/A', '4M Update': 'N/A', 'Signature': 'N/A', 'Remarks': 'N/A', 'Prepared By': card.prepared_by or 'N/A', 'Approved By': card.approved_by or 'N/A',
                     })
                 else:
                     for i, record in enumerate(history_list):
                         if not record.get('date') and not record.get('problem'):
                             continue
-                        show_base = (i == 0)
                         data.append({
-                            'Machine Name': card.machine_name if show_base else '', 'Machine No.': card.machine_no if show_base else '', 'Machine Specs': (card.machine_specs or '—') if show_base else '', 'Location': (card.location or '—') if show_base else '', 'Date': record.get('date', '—'), 'Problem': record.get('problem', '—'), 'Action Taken': record.get('actionTaken', '—'), '4M Update': record.get('update4M', '—'), 'Signature': record.get('signature', '—'), 'Remarks': record.get('remarks', '—'), 'Prepared By': (card.prepared_by or '—') if show_base else '', 'Approved By': (card.approved_by or '—') if show_base else '',
+                            'Machine Name': card.machine_name, 'Machine No.': card.machine_no, 'Machine Specs': card.machine_specs or 'N/A', 'Location': card.location or 'N/A', 'Date': record.get('date', 'N/A'), 'Problem': record.get('problem', 'N/A'), 'Action Taken': record.get('actionTaken', 'N/A'), '4M Update': record.get('update4M', 'N/A'), 'Signature': record.get('signature', 'N/A'), 'Remarks': record.get('remarks', 'N/A'), 'Prepared By': card.prepared_by or 'N/A', 'Approved By': card.approved_by or 'N/A',
                         })
             return JsonResponse({'data': data})
             
@@ -1053,7 +1052,7 @@ def maintenance_data_view(request, form_key):
             data = []
             for report in reports:
                 data.append({
-                    'Given Date': str(report.given_date) if report.given_date else '—', 'Given Time': str(report.given_time) if report.given_time else '—', 'Machine Name & No.': report.machine_name_no or '—', 'Breakdown Name': report.breakdown_name or '—', 'Part Made': report.part_made_after_inspection or '—', 'Breakdown Desc': report.breakdown_desc or '—', 'Repair Date': str(report.repair_date) if report.repair_date else '—', 'Repair Time': str(report.repair_time) if report.repair_time else '—', 'Repair Hours': str(report.repair_hours) if report.repair_hours else '—', 'Mechanics Involved': str(report.mechanics_count) if report.mechanics_count else '—', 'Repair Desc': report.repair_desc or '—', 'Quality Status': report.status or '—', 'Verification Date': str(report.verification_date) if report.verification_date else '—', 'Verification Time': str(report.verification_time) if report.verification_time else '—',
+                    'Given Date': str(report.given_date) if report.given_date else 'N/A', 'Given Time': str(report.given_time) if report.given_time else 'N/A', 'Machine Name & No.': report.machine_name_no or 'N/A', 'Breakdown Name': report.breakdown_name or 'N/A', 'Part Made': report.part_made_after_inspection or 'N/A', 'Breakdown Desc': report.breakdown_desc or 'N/A', 'Repair Date': str(report.repair_date) if report.repair_date else 'N/A', 'Repair Time': str(report.repair_time) if report.repair_time else 'N/A', 'Repair Hours': str(report.repair_hours) if report.repair_hours else 'N/A', 'Mechanics Involved': str(report.mechanics_count) if report.mechanics_count else 'N/A', 'Repair Desc': report.repair_desc or 'N/A', 'Quality Status': report.status or 'N/A', 'Verification Date': str(report.verification_date) if report.verification_date else 'N/A', 'Verification Time': str(report.verification_time) if report.verification_time else 'N/A',
                 })
             return JsonResponse({'data': data})
 
@@ -1064,7 +1063,7 @@ def maintenance_data_view(request, form_key):
             data = []
             for check in checks:
                 base_data = {
-                    'Date': str(check.date) if check.date else '—', 'Shift': check.shift or '—', 'Plant': check.plant or '—', 'Machine No': check.machine_no or '—', 'Operator Name': check.operator_name or '—',
+                    'Date': str(check.date) if check.date else 'N/A', 'Shift': check.shift or 'N/A', 'Plant': check.plant or 'N/A', 'Machine No': check.machine_no or 'N/A', 'Operator Name': check.operator_name or 'N/A',
                 }
                 checkpoint_list = check.checkpoints
                 if isinstance(checkpoint_list, str):
@@ -1073,21 +1072,27 @@ def maintenance_data_view(request, form_key):
 
                 if isinstance(checkpoint_list, list) and len(checkpoint_list) > 0:
                     for i, cp in enumerate(checkpoint_list):
-                        show_base = (i == 0)
                         if isinstance(cp, dict):
                             is_ok_val = cp.get('status', cp.get('is_ok', cp.get('value')))
                             if is_ok_val is True or str(is_ok_val).upper() == 'OK': cp_status = 'OK'
                             elif is_ok_val is False or str(is_ok_val).upper() in ['NG', 'NOT OK']: cp_status = 'NOT OK'
-                            else: cp_status = str(is_ok_val) if is_ok_val is not None else '—'
+                            else: cp_status = str(is_ok_val) if is_ok_val is not None else 'N/A'
 
                             data.append({
-                                'Date': base_data['Date'] if show_base else '', 'Shift': base_data['Shift'] if show_base else '', 'Plant': base_data['Plant'] if show_base else '', 'Machine No': base_data['Machine No'] if show_base else '', 'Operator Name': base_data['Operator Name'] if show_base else '', 'Check Point': cp.get('Check Point', cp.get('checkPoint', cp.get('check_point', cp.get('checkpoint', cp.get('name', '—'))))), 'Specification': cp.get('Specification', cp.get('specification', cp.get('spec', '—'))), 'Method': cp.get('Method', cp.get('method', cp.get('checkingMethod', cp.get('checking_method', '—')))), 'Observed Value': cp.get('Observed Value', cp.get('observedValue', cp.get('observed_value', cp.get('observed', cp.get('value', '—'))))), 'Status': cp_status,
+                                **base_data,
+                                'Sr.': str(i+1),
+                                'Check Points': cp.get('Check Point', cp.get('checkPoint', cp.get('check_point', cp.get('checkpoint', cp.get('name', 'N/A'))))), 
+                                'Checking Parameter': cp.get('Specification', cp.get('specification', cp.get('spec', 'N/A'))), 
+                                'Method': cp.get('Method', cp.get('method', cp.get('checkingMethod', cp.get('checking_method', 'N/A')))), 
+                                'Before Maint.': cp.get('Observed Value', cp.get('observedValue', cp.get('observed_value', cp.get('observed', cp.get('value', 'N/A'))))), 
+                                'After Maint': cp_status,
+                                'Remarks': cp.get('Remarks', cp.get('remarks', cp.get('remark', ''))) or 'N/A'
                             })
                         else:
-                            data.append({**{k: v if show_base else '' for k, v in base_data.items()}, 'Check Point': str(cp), 'Specification': '—', 'Method': '—', 'Observed Value': '—', 'Status': '—'})
+                            data.append({**base_data, 'Sr.': str(i+1), 'Check Points': str(cp), 'Checking Parameter': 'N/A', 'Method': 'N/A', 'Before Maint.': 'N/A', 'After Maint': 'N/A', 'Remarks': 'N/A'})
                 else:
                     row_data = base_data.copy()
-                    row_data.update({'Check Point': 'No checkpoints recorded', 'Specification': '—', 'Method': '—', 'Observed Value': '—', 'Status': '—'})
+                    row_data.update({'Sr.': 'N/A', 'Check Points': 'No checkpoints recorded', 'Checking Parameter': 'N/A', 'Method': 'N/A', 'Before Maint.': 'N/A', 'After Maint': 'N/A', 'Remarks': 'N/A'})
                     data.append(row_data)
             return JsonResponse({'data': data})
 
@@ -1098,7 +1103,7 @@ def maintenance_data_view(request, form_key):
             data = []
             for r in reports:
                 data.append({
-                    'Date': str(r.date) if r.date else '—', 'Tool Name': r.tool_name or '—', 'Part Name & No': f"{r.part_name} ({r.part_no})" if r.part_name else '—', 'Customer': r.customer_name or '—', 'Prod Count': r.prod or '—', 'Resharp Stroke': r.resharpening_stroke or '—', 'Cumulative Prod': r.cumulative_prod or '—', 'Problem Reported': r.problem_reported or '—', 'Action Taken': r.action_taken or '—', '4M Update': r.updated_in_4m or '—', 'Remarks': r.remarks or '—',
+                    'Date': str(r.date) if r.date else 'N/A', 'Tool Name': r.tool_name or 'N/A', 'Part Name & No': f"{r.part_name} ({r.part_no})" if r.part_name else 'N/A', 'Customer': r.customer_name or 'N/A', 'Prod Count': r.prod or 'N/A', 'Resharp Stroke': r.resharpening_stroke or 'N/A', 'Cumulative Prod': r.cumulative_prod or 'N/A', 'Problem Reported': r.problem_reported or 'N/A', 'Action Taken': r.action_taken or 'N/A', '4M Update': r.updated_in_4m or 'N/A', 'Remarks': r.remarks or 'N/A',
                 })
             return JsonResponse({'data': data})
 
@@ -1109,7 +1114,7 @@ def maintenance_data_view(request, form_key):
             data = []
             for report in reports:
                 base_data = {
-                    'Date': str(report.date), 'Tool Name': report.tool_name, 'Part Name': report.part_name or '—', 'Part No.': report.part_no or '—', 'Op No.': report.operation_no or '—', 'Maint. Person': report.maintenance_person or '—',
+                    'Date': str(report.date), 'Tool Name': report.tool_name, 'Part Name': report.part_name or 'N/A', 'Part No.': report.part_no or 'N/A', 'Op No.': report.operation_no or 'N/A', 'Maint. Person': report.maintenance_person or 'N/A',
                 }
                 maint_data = report.maintenance_data
                 if maint_data and isinstance(maint_data, dict):
@@ -1118,14 +1123,22 @@ def maintenance_data_view(request, form_key):
                         parts = key.split('-', 1)
                         item_name = parts[0] if len(parts) > 0 else 'Unknown'
                         checkpoint_name = parts[1] if len(parts) > 1 else 'Unknown'
-                        show_base = (i == 0)
                         
-                        row_data = {**{k: v if show_base else '' for k, v in base_data.items()}, 'Item': item_name, 'Checkpoint': checkpoint_name, 'Before Maint.': vals.get('beforeMaint', '—'), 'After Maint.': vals.get('afterMaint', '—'), 'Remarks': vals.get('remark', '—')}
+                        row_data = {
+                            **base_data, 
+                            'Sr.': str(i+1),
+                            'Check Points': f"{item_name} - {checkpoint_name}", 
+                            'Checking Parameter': vals.get('parameter', vals.get('specification', 'N/A')),
+                            'Method': vals.get('method', vals.get('checkingMethod', 'N/A')), 
+                            'Before Maint.': vals.get('beforeMaint', 'N/A'), 
+                            'After Maint': vals.get('afterMaint', 'N/A'), 
+                            'Remarks': vals.get('remark', 'N/A')
+                        }
                         data.append(row_data)
                         i += 1
                 else:
                     row_data = base_data.copy()
-                    row_data.update({'Item': 'No data recorded', 'Checkpoint': '—', 'Before Maint.': '—', 'After Maint.': '—', 'Remarks': '—'})
+                    row_data.update({'Sr.': 'N/A', 'Check Points': 'No data recorded', 'Checking Parameter': 'N/A', 'Method': 'N/A', 'Before Maint.': 'N/A', 'After Maint': 'N/A', 'Remarks': 'N/A'})
                     data.append(row_data)
             return JsonResponse({'data': data})
 
@@ -1137,7 +1150,7 @@ def maintenance_data_view(request, form_key):
             for r in reports:
                 details = r.details or {}
                 data.append({
-                    'Date': str(r.date) if r.date else '—', 'Machine Type & No.': r.machine_type_no or '—', 'Problem Description': details.get('problem_description', '—'), 'Time Period': details.get('time_period_maintenance', '—'), 'Status': details.get('status_after_period', '—'), '4M Update': details.get('updated_in_4m', '—'), 'Sign': details.get('sign', '—'), 'Remarks': details.get('remarks', '—'),
+                    'Date': str(r.date) if r.date else 'N/A', 'Machine Type & No.': r.machine_type_no or 'N/A', 'Problem Description': details.get('problem_description', 'N/A'), 'Time Period': details.get('time_period_maintenance', 'N/A'), 'Status': details.get('status_after_period', 'N/A'), '4M Update': details.get('updated_in_4m', 'N/A'), 'Sign': details.get('sign', 'N/A'), 'Remarks': details.get('remarks', 'N/A'),
                 })
             return JsonResponse({'data': data})
 
@@ -1149,7 +1162,7 @@ def maintenance_data_view(request, form_key):
             for r in reports:
                 details = r.details or {}
                 data.append({
-                    'Date': str(r.date) if r.date else '—', 'Tool Name': r.tool_name or '—', 'Process Name': details.get('process_name', '—'), 'Problem': details.get('problem', '—'), 'Action Taken': details.get('action_taken', '—'), 'Total Time': details.get('total_time_taken', '—'), 'Checked By': details.get('checked_by', '—'), 'History Card': details.get('history_card_status', '—'), '4M Update': details.get('updated_in_4m', '—'), 'Sign': details.get('sign', '—'), 'Remarks': details.get('remarks', '—'),
+                    'Date': str(r.date) if r.date else 'N/A', 'Tool Name': r.tool_name or 'N/A', 'Process Name': details.get('process_name', 'N/A'), 'Problem': details.get('problem', 'N/A'), 'Action Taken': details.get('action_taken', 'N/A'), 'Total Time': details.get('total_time_taken', 'N/A'), 'Checked By': details.get('checked_by', 'N/A'), 'History Card': details.get('history_card_status', 'N/A'), '4M Update': details.get('updated_in_4m', 'N/A'), 'Sign': details.get('sign', 'N/A'), 'Remarks': details.get('remarks', 'N/A'),
                 })
             return JsonResponse({'data': data})
 
@@ -1161,7 +1174,7 @@ def maintenance_data_view(request, form_key):
             for r in reports:
                 details = r.spare_details or {}
                 data.append({
-                    'Date': str(r.date) if r.date else '—', 'Spare Description': r.spare_description or '—', 'Model / Box No.': r.model_description or '—', 'Location': r.box_location or '—', 'Prepared By': r.prepared_by or '—', 'Approved By': r.approved_by or '—', 'Spare Type': details.get('spare_type', '—'), 'UOM': details.get('uom', '—'), 'Opening Stock': details.get('opening_stock', '—'), 'Minimum Level': details.get('minimum_level', '—'), 'Maximum Level': details.get('maximum_level', '—'), 'Reorder Level': details.get('reorder_level', '—'), 'Lead Time': details.get('lead_time', '—'), 'Closing Stock': details.get('closing_stock', '—'), 'PR Status': details.get('pr_status', '—'),
+                    'Date': str(r.date) if r.date else 'N/A', 'Spare Description': r.spare_description or 'N/A', 'Model / Box No.': r.model_description or 'N/A', 'Location': r.box_location or 'N/A', 'Prepared By': r.prepared_by or 'N/A', 'Approved By': r.approved_by or 'N/A', 'Spare Type': details.get('spare_type', 'N/A'), 'UOM': details.get('uom', 'N/A'), 'Opening Stock': details.get('opening_stock', 'N/A'), 'Minimum Level': details.get('minimum_level', 'N/A'), 'Maximum Level': details.get('maximum_level', 'N/A'), 'Reorder Level': details.get('reorder_level', 'N/A'), 'Lead Time': details.get('lead_time', 'N/A'), 'Closing Stock': details.get('closing_stock', 'N/A'), 'PR Status': details.get('pr_status', 'N/A'),
                 })
             return JsonResponse({'data': data})
 
@@ -1173,7 +1186,7 @@ def maintenance_data_view(request, form_key):
             for r in reports:
                 details = r.spare_details or {}
                 data.append({
-                    'Date': str(r.date) if r.date else '—', 'Spare Description': r.spare_description or '—', 'Model / Box No.': r.model_description or '—', 'Location': r.box_location or '—', 'Spare Type': details.get('spare_type', '—'), 'UOM': details.get('uom', '—'), 'Opening Stock': details.get('opening_stock', '—'), 'Minimum Level': details.get('minimum_level', '—'), 'Lead Time': details.get('lead_time', '—'),
+                    'Date': str(r.date) if r.date else 'N/A', 'Spare Description': r.spare_description or 'N/A', 'Model / Box No.': r.model_description or 'N/A', 'Location': r.box_location or 'N/A', 'Spare Type': details.get('spare_type', 'N/A'), 'UOM': details.get('uom', 'N/A'), 'Opening Stock': details.get('opening_stock', 'N/A'), 'Minimum Level': details.get('minimum_level', 'N/A'), 'Lead Time': details.get('lead_time', 'N/A'),
                 })
             return JsonResponse({'data': data})
 
@@ -1185,7 +1198,7 @@ def maintenance_data_view(request, form_key):
             for report in reports:
                 for obs in report.check_points.all():
                     data.append({
-                        'Poka Yoke Detail': obs.poka_yoke_detail, 'Checking Method':  obs.checking_method, 'Result': 'OK' if obs.is_ok else 'NOT OK', 'Plant': report.plant_name, 'Machine No': report.machine_no, 'Checked By': report.checked_by_maintenance or '—', 'Verified By': report.verified_by_production or '—', 'Remarks': obs.remarks or '—', 'Date': str(report.date),
+                        'Poka Yoke Detail': obs.poka_yoke_detail, 'Checking Method':  obs.checking_method, 'Result': 'OK' if obs.is_ok else 'NOT OK', 'Plant': report.plant_name, 'Machine No': report.machine_no, 'Checked By': report.checked_by_maintenance or 'N/A', 'Verified By': report.verified_by_production or 'N/A', 'Remarks': obs.remarks or 'N/A', 'Date': str(report.date),
                     })
             return JsonResponse({'data': data})
 
@@ -1196,37 +1209,31 @@ def maintenance_data_view(request, form_key):
             data = []
             for report in reports:
                 data.append({
-                    'Reporter Name': report.reporter_name or '—', 'Report Date': str(report.report_date) if report.report_date else '—', 'Machine Name & No.': report.machine_name_no or '—', 'Report Time': str(report.report_time) if report.report_time else '—', 'Breakdown Details': report.breakdown_details or '—', 'Prod Supervisor': report.prod_supervisor_name or '—', 'Maint Date': str(report.maint_date) if report.maint_date else '—', 'Maint Time': str(report.maint_time) if report.maint_time else '—', 'Time Taken': report.time_taken_to_rectify or '—', 'Men Engaged': str(report.men_engaged) if report.men_engaged else '—', 'Action Taken': report.action_taken_details or '—', 'Maint Incharge': report.maint_incharge_name or '—', 'Quality Status': report.status or '—', 'QA Date': str(report.qa_date) if report.qa_date else '—', 'QA Time': str(report.qa_time) if report.qa_time else '—', 'NC Verification': report.nc_verification or '—', 'QA Incharge': report.qa_incharge_name or '—',
+                    'Reporter Name': report.reporter_name or 'N/A', 'Report Date': str(report.report_date) if report.report_date else 'N/A', 'Machine Name & No.': report.machine_name_no or 'N/A', 'Report Time': str(report.report_time) if report.report_time else 'N/A', 'Breakdown Details': report.breakdown_details or 'N/A', 'Prod Supervisor': report.prod_supervisor_name or 'N/A', 'Maint Date': str(report.maint_date) if report.maint_date else 'N/A', 'Maint Time': str(report.maint_time) if report.maint_time else 'N/A', 'Time Taken': report.time_taken_to_rectify or 'N/A', 'Men Engaged': str(report.men_engaged) if report.men_engaged else 'N/A', 'Action Taken': report.action_taken_details or 'N/A', 'Maint Incharge': report.maint_incharge_name or 'N/A', 'Quality Status': report.status or 'N/A', 'QA Date': str(report.qa_date) if report.qa_date else 'N/A', 'QA Time': str(report.qa_time) if report.qa_time else 'N/A', 'NC Verification': report.nc_verification or 'N/A', 'QA Incharge': report.qa_incharge_name or 'N/A',
                 })
             return JsonResponse({'data': data})
 
+
         # =========================================================================
-        # 🔥🔥🔥 12 TO 23: GROUPED WORKING MACHINES (CLEAN & FAST) 🔥🔥🔥
+        # 🔥🔥🔥 SEPARATED WORKING MACHINES (12 to 29) 🔥🔥🔥
         # =========================================================================
-        
-        elif form_key in ['surface_grinder', 'tig_welding', 'spot_welding', 'compressor', 'lathe_machine', 'vertical_drill', 'base_grinder', 'belt_grinder', 'pipe_cutting', 'vibra', 'dip_molding', 'servo_press']:
-            model_map = {
-                'surface_grinder': SurfaceGrinderMaintenance, 'tig_welding': TigWeldingMaintenance, 'spot_welding': SpotWeldingMaintenance,
-                'compressor': CompressorMaintenance, 'lathe_machine': LatheMachineMaintenance, 'vertical_drill': VerticalDrillMachineMaintenance,
-                'base_grinder': BaseGrinderMaintenance, 'belt_grinder': BeltGrinderMaintenance, 'pipe_cutting': PipeCuttingMaintenance,
-                'vibra': VibraMaintenance, 'dip_molding': DipMoldingMaintenance, 'servo_press': ServoPressMaintenance
-            }
-            base_query = model_map[form_key].objects.all()
+
+        # ── 12. SURFACE GRINDER ──
+        elif form_key == 'surface_grinder':
+            base_query = SurfaceGrinderMaintenance.objects.all()
             reports = apply_date_filter(base_query, 'date').order_by('-date', '-created_at')
             data = []
-            
             for report in reports:
                 base_data = {
-                    'Date': str(report.date) if getattr(report, 'date', None) else '—', 
-                    'Machine Name': getattr(report, 'machine_name', '—') or '—', 
-                    'Machine No': getattr(report, 'machine_no', '—') or '—', 
-                    'Location': getattr(report, 'location', '—') or '—', 
-                    'Specification': getattr(report, 'specification', '—') or '—', 
-                    'Maint. Personnel': getattr(report, 'maintenance_personnel', '—') or '—', 
-                    'Prepared By': getattr(report, 'prepared_by', '—') or '—', 
-                    'Checked By': getattr(report, 'checked_by', '—') or '—',
+                    'Date': str(report.date) if getattr(report, 'date', None) else 'N/A', 
+                    'Machine Name': getattr(report, 'machine_name', 'N/A') or 'N/A', 
+                    'Machine No': getattr(report, 'machine_no', 'N/A') or 'N/A', 
+                    'Location': getattr(report, 'location', 'N/A') or 'N/A', 
+                    'Specification': getattr(report, 'specification', 'N/A') or 'N/A', 
+                    'Maint. Personnel': getattr(report, 'maintenance_personnel', 'N/A') or 'N/A', 
+                    'Prepared By': getattr(report, 'prepared_by', 'N/A') or 'N/A', 
+                    'Checked By': getattr(report, 'checked_by', 'N/A') or 'N/A',
                 }
-                
                 checkpoint_list = getattr(report, 'checkpoints', [])
                 if isinstance(checkpoint_list, str):
                     try: checkpoint_list = json.loads(checkpoint_list)
@@ -1238,42 +1245,575 @@ def maintenance_data_view(request, form_key):
 
                 if isinstance(checkpoint_list, list) and len(checkpoint_list) > 0:
                     for i, cp in enumerate(checkpoint_list):
-                        show_base = (i == 0)
                         if isinstance(cp, dict):
-                            data.append({**{k: (v if show_base else '') for k, v in base_data.items()}, 'Sr.': cp.get('id', str(i+1)), 'Check Point': cp.get('point', cp.get('checkPoint', '—')), 'Parameter': cp.get('parameter', '—'), 'Method': cp.get('method', '—'), 'Before': cp.get('before', '—'), 'After': cp.get('after', '—'), 'Remarks': cp.get('remarks', '—')})
+                            raw_after = cp.get('after_maintenance', cp.get('after', cp.get('status', cp.get('is_ok', cp.get('value')))))
+                            cp_status = 'OK' if (raw_after is True or str(raw_after).upper() in ['OK', 'YES']) else ('NOT OK' if (raw_after is False or str(raw_after).upper() in ['NG', 'NOT OK', 'NO']) else str(raw_after or 'N/A'))
+                            data.append({
+                                **base_data, 
+                                'Sr.': str(cp.get('sr_no', cp.get('id', i+1))), 
+                                'Check Points': cp.get('check_point', cp.get('point', cp.get('checkPoint', 'N/A'))), 
+                                'Checking Parameter': cp.get('parameter', cp.get('specification', cp.get('Specification', cp.get('Checking Parameter', cp.get('checking_parameter', 'N/A'))))), 
+                                'Method': cp.get('checking_method', cp.get('method', 'N/A')), 
+                                'Before Maint.': cp.get('before_maintenance', cp.get('before', 'N/A')), 
+                                'After Maint': cp_status, 
+                                'Remarks': cp.get('remarks', cp.get('remark', cp.get('Remarks', cp.get('Remark', '')))) or 'N/A'
+                            })
                         else:
-                            data.append({**{k: (v if show_base else '') for k, v in base_data.items()}, 'Sr.': str(i+1), 'Check Point': str(cp), 'Parameter': '—', 'Method': '—', 'Before': '—', 'After': '—', 'Remarks': '—'})
+                            data.append({**base_data, 'Sr.': str(i+1), 'Check Points': str(cp), 'Checking Parameter': 'N/A', 'Method': 'N/A', 'Before Maint.': 'N/A', 'After Maint': 'N/A', 'Remarks': 'N/A'})
                 else:
                     row_data = base_data.copy()
-                    row_data.update({'Sr.': '—', 'Check Point': 'No checkpoints recorded', 'Parameter': '—', 'Method': '—', 'Before': '—', 'After': '—', 'Remarks': '—'})
+                    row_data.update({'Sr.': 'N/A', 'Check Points': 'No checkpoints recorded', 'Checking Parameter': 'N/A', 'Method': 'N/A', 'Before Maint.': 'N/A', 'After Maint': 'N/A', 'Remarks': 'N/A'})
                     data.append(row_data)
             return JsonResponse({'data': data})
 
-        # =========================================================================
-        # 🔥🔥🔥 24 TO 29: BULLETPROOF FIX BASED EXACTLY ON YOUR MODELS 🔥🔥🔥
-        # =========================================================================
+        # ── 13. TIG WELDING ──
+        elif form_key == 'tig_welding':
+            base_query = TigWeldingMaintenance.objects.all()
+            reports = apply_date_filter(base_query, 'date').order_by('-date', '-created_at')
+            data = []
+            for report in reports:
+                base_data = {
+                    'Date': str(report.date) if getattr(report, 'date', None) else 'N/A', 
+                    'Machine Name': getattr(report, 'machine_name', 'N/A') or 'N/A', 
+                    'Machine No': getattr(report, 'machine_no', 'N/A') or 'N/A', 
+                    'Location': getattr(report, 'location', 'N/A') or 'N/A', 
+                    'Specification': getattr(report, 'specification', 'N/A') or 'N/A', 
+                    'Maint. Personnel': getattr(report, 'maintenance_personnel', 'N/A') or 'N/A', 
+                    'Prepared By': getattr(report, 'prepared_by', 'N/A') or 'N/A', 
+                    'Checked By': getattr(report, 'checked_by', 'N/A') or 'N/A',
+                }
+                checkpoint_list = getattr(report, 'checkpoints', [])
+                if isinstance(checkpoint_list, str):
+                    try: checkpoint_list = json.loads(checkpoint_list)
+                    except:
+                        try: checkpoint_list = ast.literal_eval(checkpoint_list)
+                        except: checkpoint_list = []
+                elif isinstance(checkpoint_list, dict):
+                    checkpoint_list = checkpoint_list.get('data', [])
 
-        # ── 24. PROJECTION WELDING ──
+                if isinstance(checkpoint_list, list) and len(checkpoint_list) > 0:
+                    for i, cp in enumerate(checkpoint_list):
+                        if isinstance(cp, dict):
+                            raw_after = cp.get('after_maintenance', cp.get('after', cp.get('status', cp.get('is_ok', cp.get('value')))))
+                            cp_status = 'OK' if (raw_after is True or str(raw_after).upper() in ['OK', 'YES']) else ('NOT OK' if (raw_after is False or str(raw_after).upper() in ['NG', 'NOT OK', 'NO']) else str(raw_after or 'N/A'))
+                            data.append({
+                                **base_data, 
+                                'Sr.': str(cp.get('sr_no', cp.get('id', i+1))), 
+                                'Check Points': cp.get('check_point', cp.get('point', cp.get('checkPoint', 'N/A'))), 
+                                'Checking Parameter': cp.get('parameter', cp.get('specification', cp.get('Specification', cp.get('Checking Parameter', cp.get('checking_parameter', 'N/A'))))), 
+                                'Method': cp.get('checking_method', cp.get('method', 'N/A')), 
+                                'Before Maint.': cp.get('before_maintenance', cp.get('before', 'N/A')), 
+                                'After Maint': cp_status, 
+                                'Remarks': cp.get('remarks', cp.get('remark', cp.get('Remarks', cp.get('Remark', '')))) or 'N/A'
+                            })
+                        else:
+                            data.append({**base_data, 'Sr.': str(i+1), 'Check Points': str(cp), 'Checking Parameter': 'N/A', 'Method': 'N/A', 'Before Maint.': 'N/A', 'After Maint': 'N/A', 'Remarks': 'N/A'})
+                else:
+                    row_data = base_data.copy()
+                    row_data.update({'Sr.': 'N/A', 'Check Points': 'No checkpoints recorded', 'Checking Parameter': 'N/A', 'Method': 'N/A', 'Before Maint.': 'N/A', 'After Maint': 'N/A', 'Remarks': 'N/A'})
+                    data.append(row_data)
+            return JsonResponse({'data': data})
+
+        # ── 14. SPOT WELDING ──
+        elif form_key == 'spot_welding':
+            base_query = SpotWeldingMaintenance.objects.all()
+            reports = apply_date_filter(base_query, 'date').order_by('-date', '-created_at')
+            data = []
+            for report in reports:
+                base_data = {
+                    'Date': str(report.date) if getattr(report, 'date', None) else 'N/A', 
+                    'Machine Name': getattr(report, 'machine_name', 'N/A') or 'N/A', 
+                    'Machine No': getattr(report, 'machine_no', 'N/A') or 'N/A', 
+                    'Location': getattr(report, 'location', 'N/A') or 'N/A', 
+                    'Specification': getattr(report, 'specification', 'N/A') or 'N/A', 
+                    'Maint. Personnel': getattr(report, 'maintenance_personnel', 'N/A') or 'N/A', 
+                    'Prepared By': getattr(report, 'prepared_by', 'N/A') or 'N/A', 
+                    'Checked By': getattr(report, 'checked_by', 'N/A') or 'N/A',
+                }
+                checkpoint_list = getattr(report, 'checkpoints', [])
+                if isinstance(checkpoint_list, str):
+                    try: checkpoint_list = json.loads(checkpoint_list)
+                    except:
+                        try: checkpoint_list = ast.literal_eval(checkpoint_list)
+                        except: checkpoint_list = []
+                elif isinstance(checkpoint_list, dict):
+                    checkpoint_list = checkpoint_list.get('data', [])
+
+                if isinstance(checkpoint_list, list) and len(checkpoint_list) > 0:
+                    for i, cp in enumerate(checkpoint_list):
+                        if isinstance(cp, dict):
+                            raw_after = cp.get('after_maintenance', cp.get('after', cp.get('status', cp.get('is_ok', cp.get('value')))))
+                            cp_status = 'OK' if (raw_after is True or str(raw_after).upper() in ['OK', 'YES']) else ('NOT OK' if (raw_after is False or str(raw_after).upper() in ['NG', 'NOT OK', 'NO']) else str(raw_after or 'N/A'))
+                            data.append({
+                                **base_data, 
+                                'Sr.': str(cp.get('sr_no', cp.get('id', i+1))), 
+                                'Check Points': cp.get('check_point', cp.get('point', cp.get('checkPoint', 'N/A'))), 
+                                'Checking Parameter': cp.get('parameter', cp.get('specification', cp.get('Specification', cp.get('Checking Parameter', cp.get('checking_parameter', 'N/A'))))), 
+                                'Method': cp.get('checking_method', cp.get('method', 'N/A')), 
+                                'Before Maint.': cp.get('before_maintenance', cp.get('before', 'N/A')), 
+                                'After Maint': cp_status, 
+                                'Remarks': cp.get('remarks', cp.get('remark', cp.get('Remarks', cp.get('Remark', '')))) or 'N/A'
+                            })
+                        else:
+                            data.append({**base_data, 'Sr.': str(i+1), 'Check Points': str(cp), 'Checking Parameter': 'N/A', 'Method': 'N/A', 'Before Maint.': 'N/A', 'After Maint': 'N/A', 'Remarks': 'N/A'})
+                else:
+                    row_data = base_data.copy()
+                    row_data.update({'Sr.': 'N/A', 'Check Points': 'No checkpoints recorded', 'Checking Parameter': 'N/A', 'Method': 'N/A', 'Before Maint.': 'N/A', 'After Maint': 'N/A', 'Remarks': 'N/A'})
+                    data.append(row_data)
+            return JsonResponse({'data': data})
+
+        # ── 15. COMPRESSOR ──
+        elif form_key == 'compressor':
+            base_query = CompressorMaintenance.objects.all()
+            reports = apply_date_filter(base_query, 'date').order_by('-date', '-created_at')
+            data = []
+            for report in reports:
+                base_data = {
+                    'Date': str(report.date) if getattr(report, 'date', None) else 'N/A', 
+                    'Machine Name': getattr(report, 'machine_name', 'N/A') or 'N/A', 
+                    'Machine No': getattr(report, 'machine_no', 'N/A') or 'N/A', 
+                    'Location': getattr(report, 'location', 'N/A') or 'N/A', 
+                    'Specification': getattr(report, 'specification', 'N/A') or 'N/A', 
+                    'Maint. Personnel': getattr(report, 'maintenance_personnel', 'N/A') or 'N/A', 
+                    'Prepared By': getattr(report, 'prepared_by', 'N/A') or 'N/A', 
+                    'Checked By': getattr(report, 'checked_by', 'N/A') or 'N/A',
+                }
+                checkpoint_list = getattr(report, 'checkpoints', [])
+                if isinstance(checkpoint_list, str):
+                    try: checkpoint_list = json.loads(checkpoint_list)
+                    except:
+                        try: checkpoint_list = ast.literal_eval(checkpoint_list)
+                        except: checkpoint_list = []
+                elif isinstance(checkpoint_list, dict):
+                    checkpoint_list = checkpoint_list.get('data', [])
+
+                if isinstance(checkpoint_list, list) and len(checkpoint_list) > 0:
+                    for i, cp in enumerate(checkpoint_list):
+                        if isinstance(cp, dict):
+                            raw_after = cp.get('after_maintenance', cp.get('after', cp.get('status', cp.get('is_ok', cp.get('value')))))
+                            cp_status = 'OK' if (raw_after is True or str(raw_after).upper() in ['OK', 'YES']) else ('NOT OK' if (raw_after is False or str(raw_after).upper() in ['NG', 'NOT OK', 'NO']) else str(raw_after or 'N/A'))
+                            data.append({
+                                **base_data, 
+                                'Sr.': str(cp.get('sr_no', cp.get('id', i+1))), 
+                                'Check Points': cp.get('check_point', cp.get('point', cp.get('checkPoint', 'N/A'))), 
+                                'Checking Parameter': cp.get('parameter', cp.get('specification', cp.get('Specification', cp.get('Checking Parameter', cp.get('checking_parameter', 'N/A'))))), 
+                                'Method': cp.get('checking_method', cp.get('method', 'N/A')), 
+                                'Before Maint.': cp.get('before_maintenance', cp.get('before', 'N/A')), 
+                                'After Maint': cp_status, 
+                                'Remarks': cp.get('remarks', cp.get('remark', cp.get('Remarks', cp.get('Remark', '')))) or 'N/A'
+                            })
+                        else:
+                            data.append({**base_data, 'Sr.': str(i+1), 'Check Points': str(cp), 'Checking Parameter': 'N/A', 'Method': 'N/A', 'Before Maint.': 'N/A', 'After Maint': 'N/A', 'Remarks': 'N/A'})
+                else:
+                    row_data = base_data.copy()
+                    row_data.update({'Sr.': 'N/A', 'Check Points': 'No checkpoints recorded', 'Checking Parameter': 'N/A', 'Method': 'N/A', 'Before Maint.': 'N/A', 'After Maint': 'N/A', 'Remarks': 'N/A'})
+                    data.append(row_data)
+            return JsonResponse({'data': data})
+
+        # ── 16. LATHE MACHINE ──
+        elif form_key == 'lathe_machine':
+            base_query = LatheMachineMaintenance.objects.all()
+            reports = apply_date_filter(base_query, 'date').order_by('-date', '-created_at')
+            data = []
+            for report in reports:
+                base_data = {
+                    'Date': str(report.date) if getattr(report, 'date', None) else 'N/A', 
+                    'Machine Name': getattr(report, 'machine_name', 'N/A') or 'N/A', 
+                    'Machine No': getattr(report, 'machine_no', 'N/A') or 'N/A', 
+                    'Location': getattr(report, 'location', 'N/A') or 'N/A', 
+                    'Specification': getattr(report, 'specification', 'N/A') or 'N/A', 
+                    'Maint. Personnel': getattr(report, 'maintenance_personnel', 'N/A') or 'N/A', 
+                    'Prepared By': getattr(report, 'prepared_by', 'N/A') or 'N/A', 
+                    'Checked By': getattr(report, 'checked_by', 'N/A') or 'N/A',
+                }
+                checkpoint_list = getattr(report, 'checkpoints', [])
+                if isinstance(checkpoint_list, str):
+                    try: checkpoint_list = json.loads(checkpoint_list)
+                    except:
+                        try: checkpoint_list = ast.literal_eval(checkpoint_list)
+                        except: checkpoint_list = []
+                elif isinstance(checkpoint_list, dict):
+                    checkpoint_list = checkpoint_list.get('data', [])
+
+                if isinstance(checkpoint_list, list) and len(checkpoint_list) > 0:
+                    for i, cp in enumerate(checkpoint_list):
+                        if isinstance(cp, dict):
+                            raw_after = cp.get('after_maintenance', cp.get('after', cp.get('status', cp.get('is_ok', cp.get('value')))))
+                            cp_status = 'OK' if (raw_after is True or str(raw_after).upper() in ['OK', 'YES']) else ('NOT OK' if (raw_after is False or str(raw_after).upper() in ['NG', 'NOT OK', 'NO']) else str(raw_after or 'N/A'))
+                            data.append({
+                                **base_data, 
+                                'Sr.': str(cp.get('sr_no', cp.get('id', i+1))), 
+                                'Check Points': cp.get('check_point', cp.get('point', cp.get('checkPoint', 'N/A'))), 
+                                'Checking Parameter': cp.get('parameter', cp.get('specification', cp.get('Specification', cp.get('Checking Parameter', cp.get('checking_parameter', 'N/A'))))), 
+                                'Method': cp.get('checking_method', cp.get('method', 'N/A')), 
+                                'Before Maint.': cp.get('before_maintenance', cp.get('before', 'N/A')), 
+                                'After Maint': cp_status, 
+                                'Remarks': cp.get('remarks', cp.get('remark', cp.get('Remarks', cp.get('Remark', '')))) or 'N/A'
+                            })
+                        else:
+                            data.append({**base_data, 'Sr.': str(i+1), 'Check Points': str(cp), 'Checking Parameter': 'N/A', 'Method': 'N/A', 'Before Maint.': 'N/A', 'After Maint': 'N/A', 'Remarks': 'N/A'})
+                else:
+                    row_data = base_data.copy()
+                    row_data.update({'Sr.': 'N/A', 'Check Points': 'No checkpoints recorded', 'Checking Parameter': 'N/A', 'Method': 'N/A', 'Before Maint.': 'N/A', 'After Maint': 'N/A', 'Remarks': 'N/A'})
+                    data.append(row_data)
+            return JsonResponse({'data': data})
+
+        # ── 17. VERTICAL DRILL ──
+        elif form_key == 'vertical_drill':
+            base_query = VerticalDrillMachineMaintenance.objects.all()
+            reports = apply_date_filter(base_query, 'date').order_by('-date', '-created_at')
+            data = []
+            for report in reports:
+                base_data = {
+                    'Date': str(report.date) if getattr(report, 'date', None) else 'N/A', 
+                    'Machine Name': getattr(report, 'machine_name', 'N/A') or 'N/A', 
+                    'Machine No': getattr(report, 'machine_no', 'N/A') or 'N/A', 
+                    'Location': getattr(report, 'location', 'N/A') or 'N/A', 
+                    'Specification': getattr(report, 'specification', 'N/A') or 'N/A', 
+                    'Maint. Personnel': getattr(report, 'maintenance_personnel', 'N/A') or 'N/A', 
+                    'Prepared By': getattr(report, 'prepared_by', 'N/A') or 'N/A', 
+                    'Checked By': getattr(report, 'checked_by', 'N/A') or 'N/A',
+                }
+                checkpoint_list = getattr(report, 'checkpoints', [])
+                if isinstance(checkpoint_list, str):
+                    try: checkpoint_list = json.loads(checkpoint_list)
+                    except:
+                        try: checkpoint_list = ast.literal_eval(checkpoint_list)
+                        except: checkpoint_list = []
+                elif isinstance(checkpoint_list, dict):
+                    checkpoint_list = checkpoint_list.get('data', [])
+
+                if isinstance(checkpoint_list, list) and len(checkpoint_list) > 0:
+                    for i, cp in enumerate(checkpoint_list):
+                        if isinstance(cp, dict):
+                            raw_after = cp.get('after_maintenance', cp.get('after', cp.get('status', cp.get('is_ok', cp.get('value')))))
+                            cp_status = 'OK' if (raw_after is True or str(raw_after).upper() in ['OK', 'YES']) else ('NOT OK' if (raw_after is False or str(raw_after).upper() in ['NG', 'NOT OK', 'NO']) else str(raw_after or 'N/A'))
+                            data.append({
+                                **base_data, 
+                                'Sr.': str(cp.get('sr_no', cp.get('id', i+1))), 
+                                'Check Points': cp.get('check_point', cp.get('point', cp.get('checkPoint', 'N/A'))), 
+                                'Checking Parameter': cp.get('parameter', cp.get('specification', cp.get('Specification', cp.get('Checking Parameter', cp.get('checking_parameter', 'N/A'))))), 
+                                'Method': cp.get('checking_method', cp.get('method', 'N/A')), 
+                                'Before Maint.': cp.get('before_maintenance', cp.get('before', 'N/A')), 
+                                'After Maint': cp_status, 
+                                'Remarks': cp.get('remarks', cp.get('remark', cp.get('Remarks', cp.get('Remark', '')))) or 'N/A'
+                            })
+                        else:
+                            data.append({**base_data, 'Sr.': str(i+1), 'Check Points': str(cp), 'Checking Parameter': 'N/A', 'Method': 'N/A', 'Before Maint.': 'N/A', 'After Maint': 'N/A', 'Remarks': 'N/A'})
+                else:
+                    row_data = base_data.copy()
+                    row_data.update({'Sr.': 'N/A', 'Check Points': 'No checkpoints recorded', 'Checking Parameter': 'N/A', 'Method': 'N/A', 'Before Maint.': 'N/A', 'After Maint': 'N/A', 'Remarks': 'N/A'})
+                    data.append(row_data)
+            return JsonResponse({'data': data})
+
+        # ── 18. BASE GRINDER ──
+        elif form_key == 'base_grinder':
+            base_query = BaseGrinderMaintenance.objects.all()
+            reports = apply_date_filter(base_query, 'date').order_by('-date', '-created_at')
+            data = []
+            for report in reports:
+                base_data = {
+                    'Date': str(report.date) if getattr(report, 'date', None) else 'N/A', 
+                    'Machine Name': getattr(report, 'machine_name', 'N/A') or 'N/A', 
+                    'Machine No': getattr(report, 'machine_no', 'N/A') or 'N/A', 
+                    'Location': getattr(report, 'location', 'N/A') or 'N/A', 
+                    'Specification': getattr(report, 'specification', 'N/A') or 'N/A', 
+                    'Maint. Personnel': getattr(report, 'maintenance_personnel', 'N/A') or 'N/A', 
+                    'Prepared By': getattr(report, 'prepared_by', 'N/A') or 'N/A', 
+                    'Checked By': getattr(report, 'checked_by', 'N/A') or 'N/A',
+                }
+                checkpoint_list = getattr(report, 'checkpoints', [])
+                if isinstance(checkpoint_list, str):
+                    try: checkpoint_list = json.loads(checkpoint_list)
+                    except:
+                        try: checkpoint_list = ast.literal_eval(checkpoint_list)
+                        except: checkpoint_list = []
+                elif isinstance(checkpoint_list, dict):
+                    checkpoint_list = checkpoint_list.get('data', [])
+
+                if isinstance(checkpoint_list, list) and len(checkpoint_list) > 0:
+                    for i, cp in enumerate(checkpoint_list):
+                        if isinstance(cp, dict):
+                            raw_after = cp.get('after_maintenance', cp.get('after', cp.get('status', cp.get('is_ok', cp.get('value')))))
+                            cp_status = 'OK' if (raw_after is True or str(raw_after).upper() in ['OK', 'YES']) else ('NOT OK' if (raw_after is False or str(raw_after).upper() in ['NG', 'NOT OK', 'NO']) else str(raw_after or 'N/A'))
+                            data.append({
+                                **base_data, 
+                                'Sr.': str(cp.get('sr_no', cp.get('id', i+1))), 
+                                'Check Points': cp.get('check_point', cp.get('point', cp.get('checkPoint', 'N/A'))), 
+                                'Checking Parameter': cp.get('parameter', cp.get('specification', cp.get('Specification', cp.get('Checking Parameter', cp.get('checking_parameter', 'N/A'))))), 
+                                'Method': cp.get('checking_method', cp.get('method', 'N/A')), 
+                                'Before Maint.': cp.get('before_maintenance', cp.get('before', 'N/A')), 
+                                'After Maint': cp_status, 
+                                'Remarks': cp.get('remarks', cp.get('remark', cp.get('Remarks', cp.get('Remark', '')))) or 'N/A'
+                            })
+                        else:
+                            data.append({**base_data, 'Sr.': str(i+1), 'Check Points': str(cp), 'Checking Parameter': 'N/A', 'Method': 'N/A', 'Before Maint.': 'N/A', 'After Maint': 'N/A', 'Remarks': 'N/A'})
+                else:
+                    row_data = base_data.copy()
+                    row_data.update({'Sr.': 'N/A', 'Check Points': 'No checkpoints recorded', 'Checking Parameter': 'N/A', 'Method': 'N/A', 'Before Maint.': 'N/A', 'After Maint': 'N/A', 'Remarks': 'N/A'})
+                    data.append(row_data)
+            return JsonResponse({'data': data})
+
+        # ── 19. BELT GRINDER ──
+        elif form_key == 'belt_grinder':
+            base_query = BeltGrinderMaintenance.objects.all()
+            reports = apply_date_filter(base_query, 'date').order_by('-date', '-created_at')
+            data = []
+            for report in reports:
+                base_data = {
+                    'Date': str(report.date) if getattr(report, 'date', None) else 'N/A', 
+                    'Machine Name': getattr(report, 'machine_name', 'N/A') or 'N/A', 
+                    'Machine No': getattr(report, 'machine_no', 'N/A') or 'N/A', 
+                    'Location': getattr(report, 'location', 'N/A') or 'N/A', 
+                    'Specification': getattr(report, 'specification', 'N/A') or 'N/A', 
+                    'Maint. Personnel': getattr(report, 'maintenance_personnel', 'N/A') or 'N/A', 
+                    'Prepared By': getattr(report, 'prepared_by', 'N/A') or 'N/A', 
+                    'Checked By': getattr(report, 'checked_by', 'N/A') or 'N/A',
+                }
+                checkpoint_list = getattr(report, 'checkpoints', [])
+                if isinstance(checkpoint_list, str):
+                    try: checkpoint_list = json.loads(checkpoint_list)
+                    except:
+                        try: checkpoint_list = ast.literal_eval(checkpoint_list)
+                        except: checkpoint_list = []
+                elif isinstance(checkpoint_list, dict):
+                    checkpoint_list = checkpoint_list.get('data', [])
+
+                if isinstance(checkpoint_list, list) and len(checkpoint_list) > 0:
+                    for i, cp in enumerate(checkpoint_list):
+                        if isinstance(cp, dict):
+                            raw_after = cp.get('after_maintenance', cp.get('after', cp.get('status', cp.get('is_ok', cp.get('value')))))
+                            cp_status = 'OK' if (raw_after is True or str(raw_after).upper() in ['OK', 'YES']) else ('NOT OK' if (raw_after is False or str(raw_after).upper() in ['NG', 'NOT OK', 'NO']) else str(raw_after or 'N/A'))
+                            data.append({
+                                **base_data, 
+                                'Sr.': str(cp.get('sr_no', cp.get('id', i+1))), 
+                                'Check Points': cp.get('check_point', cp.get('point', cp.get('checkPoint', 'N/A'))), 
+                                'Checking Parameter': cp.get('parameter', cp.get('specification', cp.get('Specification', cp.get('Checking Parameter', cp.get('checking_parameter', 'N/A'))))), 
+                                'Method': cp.get('checking_method', cp.get('method', 'N/A')), 
+                                'Before Maint.': cp.get('before_maintenance', cp.get('before', 'N/A')), 
+                                'After Maint': cp_status, 
+                                'Remarks': cp.get('remarks', cp.get('remark', cp.get('Remarks', cp.get('Remark', '')))) or 'N/A'
+                            })
+                        else:
+                            data.append({**base_data, 'Sr.': str(i+1), 'Check Points': str(cp), 'Checking Parameter': 'N/A', 'Method': 'N/A', 'Before Maint.': 'N/A', 'After Maint': 'N/A', 'Remarks': 'N/A'})
+                else:
+                    row_data = base_data.copy()
+                    row_data.update({'Sr.': 'N/A', 'Check Points': 'No checkpoints recorded', 'Checking Parameter': 'N/A', 'Method': 'N/A', 'Before Maint.': 'N/A', 'After Maint': 'N/A', 'Remarks': 'N/A'})
+                    data.append(row_data)
+            return JsonResponse({'data': data})
+
+        # ── 20. PIPE CUTTING ──
+        elif form_key == 'pipe_cutting':
+            base_query = PipeCuttingMaintenance.objects.all()
+            reports = apply_date_filter(base_query, 'date').order_by('-date', '-created_at')
+            data = []
+            for report in reports:
+                base_data = {
+                    'Date': str(report.date) if getattr(report, 'date', None) else 'N/A', 
+                    'Machine Name': getattr(report, 'machine_name', 'N/A') or 'N/A', 
+                    'Machine No': getattr(report, 'machine_no', 'N/A') or 'N/A', 
+                    'Location': getattr(report, 'location', 'N/A') or 'N/A', 
+                    'Specification': getattr(report, 'specification', 'N/A') or 'N/A', 
+                    'Maint. Personnel': getattr(report, 'maintenance_personnel', 'N/A') or 'N/A', 
+                    'Prepared By': getattr(report, 'prepared_by', 'N/A') or 'N/A', 
+                    'Checked By': getattr(report, 'checked_by', 'N/A') or 'N/A',
+                }
+                checkpoint_list = getattr(report, 'checkpoints', [])
+                if isinstance(checkpoint_list, str):
+                    try: checkpoint_list = json.loads(checkpoint_list)
+                    except:
+                        try: checkpoint_list = ast.literal_eval(checkpoint_list)
+                        except: checkpoint_list = []
+                elif isinstance(checkpoint_list, dict):
+                    checkpoint_list = checkpoint_list.get('data', [])
+
+                if isinstance(checkpoint_list, list) and len(checkpoint_list) > 0:
+                    for i, cp in enumerate(checkpoint_list):
+                        if isinstance(cp, dict):
+                            raw_after = cp.get('after_maintenance', cp.get('after', cp.get('status', cp.get('is_ok', cp.get('value')))))
+                            cp_status = 'OK' if (raw_after is True or str(raw_after).upper() in ['OK', 'YES']) else ('NOT OK' if (raw_after is False or str(raw_after).upper() in ['NG', 'NOT OK', 'NO']) else str(raw_after or 'N/A'))
+                            data.append({
+                                **base_data, 
+                                'Sr.': str(cp.get('sr_no', cp.get('id', i+1))), 
+                                'Check Points': cp.get('check_point', cp.get('point', cp.get('checkPoint', 'N/A'))), 
+                                'Checking Parameter': cp.get('parameter', cp.get('specification', cp.get('Specification', cp.get('Checking Parameter', cp.get('checking_parameter', 'N/A'))))), 
+                                'Method': cp.get('checking_method', cp.get('method', 'N/A')), 
+                                'Before Maint.': cp.get('before_maintenance', cp.get('before', 'N/A')), 
+                                'After Maint': cp_status, 
+                                'Remarks': cp.get('remarks', cp.get('remark', cp.get('Remarks', cp.get('Remark', '')))) or 'N/A'
+                            })
+                        else:
+                            data.append({**base_data, 'Sr.': str(i+1), 'Check Points': str(cp), 'Checking Parameter': 'N/A', 'Method': 'N/A', 'Before Maint.': 'N/A', 'After Maint': 'N/A', 'Remarks': 'N/A'})
+                else:
+                    row_data = base_data.copy()
+                    row_data.update({'Sr.': 'N/A', 'Check Points': 'No checkpoints recorded', 'Checking Parameter': 'N/A', 'Method': 'N/A', 'Before Maint.': 'N/A', 'After Maint': 'N/A', 'Remarks': 'N/A'})
+                    data.append(row_data)
+            return JsonResponse({'data': data})
+
+        # ── 21. VIBRA ──
+        elif form_key == 'vibra':
+            base_query = VibraMaintenance.objects.all()
+            reports = apply_date_filter(base_query, 'date').order_by('-date', '-created_at')
+            data = []
+            for report in reports:
+                base_data = {
+                    'Date': str(report.date) if getattr(report, 'date', None) else 'N/A', 
+                    'Machine Name': getattr(report, 'machine_name', 'N/A') or 'N/A', 
+                    'Machine No': getattr(report, 'machine_no', 'N/A') or 'N/A', 
+                    'Location': getattr(report, 'location', 'N/A') or 'N/A', 
+                    'Specification': getattr(report, 'specification', 'N/A') or 'N/A', 
+                    'Maint. Personnel': getattr(report, 'maintenance_personnel', 'N/A') or 'N/A', 
+                    'Prepared By': getattr(report, 'prepared_by', 'N/A') or 'N/A', 
+                    'Checked By': getattr(report, 'checked_by', 'N/A') or 'N/A',
+                }
+                checkpoint_list = getattr(report, 'checkpoints', [])
+                if isinstance(checkpoint_list, str):
+                    try: checkpoint_list = json.loads(checkpoint_list)
+                    except:
+                        try: checkpoint_list = ast.literal_eval(checkpoint_list)
+                        except: checkpoint_list = []
+                elif isinstance(checkpoint_list, dict):
+                    checkpoint_list = checkpoint_list.get('data', [])
+
+                if isinstance(checkpoint_list, list) and len(checkpoint_list) > 0:
+                    for i, cp in enumerate(checkpoint_list):
+                        if isinstance(cp, dict):
+                            raw_after = cp.get('after_maintenance', cp.get('after', cp.get('status', cp.get('is_ok', cp.get('value')))))
+                            cp_status = 'OK' if (raw_after is True or str(raw_after).upper() in ['OK', 'YES']) else ('NOT OK' if (raw_after is False or str(raw_after).upper() in ['NG', 'NOT OK', 'NO']) else str(raw_after or 'N/A'))
+                            data.append({
+                                **base_data, 
+                                'Sr.': str(cp.get('sr_no', cp.get('id', i+1))), 
+                                'Check Points': cp.get('check_point', cp.get('point', cp.get('checkPoint', 'N/A'))), 
+                                'Checking Parameter': cp.get('parameter', cp.get('specification', cp.get('Specification', cp.get('Checking Parameter', cp.get('checking_parameter', 'N/A'))))), 
+                                'Method': cp.get('checking_method', cp.get('method', 'N/A')), 
+                                'Before Maint.': cp.get('before_maintenance', cp.get('before', 'N/A')), 
+                                'After Maint': cp_status, 
+                                'Remarks': cp.get('remarks', cp.get('remark', cp.get('Remarks', cp.get('Remark', '')))) or 'N/A'
+                            })
+                        else:
+                            data.append({**base_data, 'Sr.': str(i+1), 'Check Points': str(cp), 'Checking Parameter': 'N/A', 'Method': 'N/A', 'Before Maint.': 'N/A', 'After Maint': 'N/A', 'Remarks': 'N/A'})
+                else:
+                    row_data = base_data.copy()
+                    row_data.update({'Sr.': 'N/A', 'Check Points': 'No checkpoints recorded', 'Checking Parameter': 'N/A', 'Method': 'N/A', 'Before Maint.': 'N/A', 'After Maint': 'N/A', 'Remarks': 'N/A'})
+                    data.append(row_data)
+            return JsonResponse({'data': data})
+
+        # ── 22. DIP MOLDING ──
+        elif form_key == 'dip_molding':
+            base_query = DipMoldingMaintenance.objects.all()
+            reports = apply_date_filter(base_query, 'date').order_by('-date', '-created_at')
+            data = []
+            for report in reports:
+                base_data = {
+                    'Date': str(report.date) if getattr(report, 'date', None) else 'N/A', 
+                    'Machine Name': getattr(report, 'machine_name', 'N/A') or 'N/A', 
+                    'Machine No': getattr(report, 'machine_no', 'N/A') or 'N/A', 
+                    'Location': getattr(report, 'location', 'N/A') or 'N/A', 
+                    'Specification': getattr(report, 'specification', 'N/A') or 'N/A', 
+                    'Maint. Personnel': getattr(report, 'maintenance_personnel', 'N/A') or 'N/A', 
+                    'Prepared By': getattr(report, 'prepared_by', 'N/A') or 'N/A', 
+                    'Checked By': getattr(report, 'checked_by', 'N/A') or 'N/A',
+                }
+                checkpoint_list = getattr(report, 'checkpoints', [])
+                if isinstance(checkpoint_list, str):
+                    try: checkpoint_list = json.loads(checkpoint_list)
+                    except:
+                        try: checkpoint_list = ast.literal_eval(checkpoint_list)
+                        except: checkpoint_list = []
+                elif isinstance(checkpoint_list, dict):
+                    checkpoint_list = checkpoint_list.get('data', [])
+
+                if isinstance(checkpoint_list, list) and len(checkpoint_list) > 0:
+                    for i, cp in enumerate(checkpoint_list):
+                        if isinstance(cp, dict):
+                            raw_after = cp.get('after_maintenance', cp.get('after', cp.get('status', cp.get('is_ok', cp.get('value')))))
+                            cp_status = 'OK' if (raw_after is True or str(raw_after).upper() in ['OK', 'YES']) else ('NOT OK' if (raw_after is False or str(raw_after).upper() in ['NG', 'NOT OK', 'NO']) else str(raw_after or 'N/A'))
+                            data.append({
+                                **base_data, 
+                                'Sr.': str(cp.get('sr_no', cp.get('id', i+1))), 
+                                'Check Points': cp.get('check_point', cp.get('point', cp.get('checkPoint', 'N/A'))), 
+                                'Checking Parameter': cp.get('parameter', cp.get('specification', cp.get('Specification', cp.get('Checking Parameter', cp.get('checking_parameter', 'N/A'))))), 
+                                'Method': cp.get('checking_method', cp.get('method', 'N/A')), 
+                                'Before Maint.': cp.get('before_maintenance', cp.get('before', 'N/A')), 
+                                'After Maint': cp_status, 
+                                'Remarks': cp.get('remarks', cp.get('remark', cp.get('Remarks', cp.get('Remark', '')))) or 'N/A'
+                            })
+                        else:
+                            data.append({**base_data, 'Sr.': str(i+1), 'Check Points': str(cp), 'Checking Parameter': 'N/A', 'Method': 'N/A', 'Before Maint.': 'N/A', 'After Maint': 'N/A', 'Remarks': 'N/A'})
+                else:
+                    row_data = base_data.copy()
+                    row_data.update({'Sr.': 'N/A', 'Check Points': 'No checkpoints recorded', 'Checking Parameter': 'N/A', 'Method': 'N/A', 'Before Maint.': 'N/A', 'After Maint': 'N/A', 'Remarks': 'N/A'})
+                    data.append(row_data)
+            return JsonResponse({'data': data})
+
+        # ── 23. SERVO PRESS ──
+        elif form_key == 'servo_press':
+            base_query = ServoPressMaintenance.objects.all()
+            reports = apply_date_filter(base_query, 'date').order_by('-date', '-created_at')
+            data = []
+            for report in reports:
+                base_data = {
+                    'Date': str(report.date) if getattr(report, 'date', None) else 'N/A', 
+                    'Machine Name': getattr(report, 'machine_name', 'N/A') or 'N/A', 
+                    'Machine No': getattr(report, 'machine_no', 'N/A') or 'N/A', 
+                    'Location': getattr(report, 'location', 'N/A') or 'N/A', 
+                    'Specification': getattr(report, 'specification', 'N/A') or 'N/A', 
+                    'Maint. Personnel': getattr(report, 'maintenance_personnel', 'N/A') or 'N/A', 
+                    'Prepared By': getattr(report, 'prepared_by', 'N/A') or 'N/A', 
+                    'Checked By': getattr(report, 'checked_by', 'N/A') or 'N/A',
+                }
+                checkpoint_list = getattr(report, 'checkpoints', [])
+                if isinstance(checkpoint_list, str):
+                    try: checkpoint_list = json.loads(checkpoint_list)
+                    except:
+                        try: checkpoint_list = ast.literal_eval(checkpoint_list)
+                        except: checkpoint_list = []
+                elif isinstance(checkpoint_list, dict):
+                    checkpoint_list = checkpoint_list.get('data', [])
+
+                if isinstance(checkpoint_list, list) and len(checkpoint_list) > 0:
+                    for i, cp in enumerate(checkpoint_list):
+                        if isinstance(cp, dict):
+                            raw_after = cp.get('after_maintenance', cp.get('after', cp.get('status', cp.get('is_ok', cp.get('value')))))
+                            cp_status = 'OK' if (raw_after is True or str(raw_after).upper() in ['OK', 'YES']) else ('NOT OK' if (raw_after is False or str(raw_after).upper() in ['NG', 'NOT OK', 'NO']) else str(raw_after or 'N/A'))
+                            data.append({
+                                **base_data, 
+                                'Sr.': str(cp.get('sr_no', cp.get('id', i+1))), 
+                                'Check Points': cp.get('check_point', cp.get('point', cp.get('checkPoint', 'N/A'))), 
+                                'Checking Parameter': cp.get('parameter', cp.get('specification', cp.get('Specification', cp.get('Checking Parameter', cp.get('checking_parameter', 'N/A'))))), 
+                                'Method': cp.get('checking_method', cp.get('method', 'N/A')), 
+                                'Before Maint.': cp.get('before_maintenance', cp.get('before', 'N/A')), 
+                                'After Maint': cp_status, 
+                                'Remarks': cp.get('remarks', cp.get('remark', cp.get('Remarks', cp.get('Remark', '')))) or 'N/A'
+                            })
+                        else:
+                            data.append({**base_data, 'Sr.': str(i+1), 'Check Points': str(cp), 'Checking Parameter': 'N/A', 'Method': 'N/A', 'Before Maint.': 'N/A', 'After Maint': 'N/A', 'Remarks': 'N/A'})
+                else:
+                    row_data = base_data.copy()
+                    row_data.update({'Sr.': 'N/A', 'Check Points': 'No checkpoints recorded', 'Checking Parameter': 'N/A', 'Method': 'N/A', 'Before Maint.': 'N/A', 'After Maint': 'N/A', 'Remarks': 'N/A'})
+                    data.append(row_data)
+            return JsonResponse({'data': data})
+
+        # ── 24. PROJECTION WELD (WEEKLY) ──
         elif form_key == 'projection_weld':
             base_query = ProjectionWeldingPMCheckSheet.objects.all()
             reports = apply_date_filter(base_query, 'date').order_by('-date', '-created_at')
             data = []
             for report in reports:
                 base_data = {
-                    'Date': str(report.date) if report.date else '—', 
-                    'Machine Name': report.machine_name or '—', 
-                    'Machine No': report.machine_no or '—', 
-                    'Location': report.location or '—', 
-                    'Specification': report.specification or '—', 
-                    'Maint. Personnel': report.maintenance_personnel or '—', 
-                    'Prepared By': report.prepared_by or '—', 
-                    'Checked By': report.checked_by or '—',
+                    'Date': str(report.date) if getattr(report, 'date', None) else 'N/A', 
+                    'Machine Name': getattr(report, 'machine_name', 'N/A') or 'N/A', 
+                    'Machine No': getattr(report, 'machine_no', 'N/A') or 'N/A', 
+                    'Location': getattr(report, 'location', 'N/A') or 'N/A', 
+                    'Specification': getattr(report, 'specification', 'N/A') or 'N/A', 
+                    'Maint. Personnel': getattr(report, 'maintenance_personnel', 'N/A') or 'N/A', 
+                    'Prepared By': getattr(report, 'prepared_by', 'N/A') or 'N/A', 
+                    'Checked By': getattr(report, 'checked_by', 'N/A') or 'N/A',
                 }
-                
-                checkpoint_list = report.checkpoints
+                checkpoint_list = getattr(report, 'checkpoints', [])
                 if isinstance(checkpoint_list, str):
                     try: checkpoint_list = json.loads(checkpoint_list)
-                    except: 
+                    except:
                         try: checkpoint_list = ast.literal_eval(checkpoint_list)
                         except: checkpoint_list = []
                 elif isinstance(checkpoint_list, dict):
@@ -1281,48 +1821,47 @@ def maintenance_data_view(request, form_key):
 
                 if isinstance(checkpoint_list, list) and len(checkpoint_list) > 0:
                     for i, cp in enumerate(checkpoint_list):
-                        show_base = (i == 0)
                         if isinstance(cp, dict):
-                            is_ok_val = cp.get('status', cp.get('is_ok', cp.get('value', cp.get('after'))))
-                            cp_status = 'OK' if (is_ok_val is True or str(is_ok_val).upper() in ['OK', 'YES']) else ('NOT OK' if (is_ok_val is False or str(is_ok_val).upper() in ['NG', 'NOT OK', 'NO']) else str(is_ok_val or '—'))
-                            
+                            raw_after = cp.get('after_maintenance', cp.get('after', cp.get('status', cp.get('is_ok', cp.get('value')))))
+                            cp_status = 'OK' if (raw_after is True or str(raw_after).upper() in ['OK', 'YES']) else ('NOT OK' if (raw_after is False or str(raw_after).upper() in ['NG', 'NOT OK', 'NO']) else str(raw_after or 'N/A'))
                             data.append({
-                                **{k: (v if show_base else '') for k, v in base_data.items()}, 
-                                'Sr.': cp.get('id', str(i+1)), 
-                                'Check Point': cp.get('point', cp.get('checkPoint', cp.get('Check Point', '—'))), 
-                                'Parameter': cp.get('parameter', cp.get('specification', '—')), 
-                                'Method': cp.get('method', cp.get('checkingMethod', '—')), 
-                                'Before': cp.get('observed_value', cp.get('observedValue', cp.get('before', '—'))), 
-                                'After': cp_status, 
-                                'Remarks': cp.get('remarks', '—')
+                                **base_data, 
+                                'Sr.': str(cp.get('sr_no', cp.get('id', i+1))), 
+                                'Check Points': cp.get('check_point', cp.get('point', cp.get('checkPoint', cp.get('Check Point', 'N/A')))), 
+                                'Checking Parameter': cp.get('parameter', cp.get('specification', cp.get('Specification', cp.get('Checking Parameter', cp.get('checking_parameter', 'N/A'))))), 
+                                'Method': cp.get('checking_method', cp.get('method', cp.get('checkingMethod', 'N/A'))), 
+                                'Before Maint.': cp.get('before_maintenance', cp.get('before', cp.get('observed_value', cp.get('observedValue', 'N/A')))), 
+                                'After Maint': cp_status, 
+                                'Remarks': cp.get('remarks', cp.get('remark', cp.get('Remarks', cp.get('Remark', '')))) or 'N/A'
                             })
+                        else:
+                            data.append({**base_data, 'Sr.': str(i+1), 'Check Points': str(cp), 'Checking Parameter': 'N/A', 'Method': 'N/A', 'Before Maint.': 'N/A', 'After Maint': 'N/A', 'Remarks': 'N/A'})
                 else:
                     row_data = base_data.copy()
-                    row_data.update({'Sr.': '—', 'Check Point': 'No checkpoints recorded', 'Parameter': '—', 'Method': '—', 'Before': '—', 'After': '—', 'Remarks': '—'})
+                    row_data.update({'Sr.': 'N/A', 'Check Points': 'No checkpoints recorded', 'Checking Parameter': 'N/A', 'Method': 'N/A', 'Before Maint.': 'N/A', 'After Maint': 'N/A', 'Remarks': 'N/A'})
                     data.append(row_data)
             return JsonResponse({'data': data})
 
-        # ── 25. VMM (Vertical Milling Machine) ──
+        # ── 25. VMM (WEEKLY) ──
         elif form_key == 'vmm':
             base_query = VerticalMillingMachineCheckSheet.objects.all()
             reports = apply_date_filter(base_query, 'date').order_by('-date', '-created_at')
             data = []
             for report in reports:
                 base_data = {
-                    'Date': str(report.date) if report.date else '—', 
-                    'Machine Name': report.machine_name or '—', 
-                    'Machine No': report.machine_no or '—', 
-                    'Location': report.location or '—', 
-                    'Specification': report.specification or '—', 
-                    'Maint. Personnel': report.maintenance_personnel or '—', 
-                    'Prepared By': report.prepared_by or '—', 
-                    'Checked By': report.checked_by or '—',
+                    'Date': str(report.date) if getattr(report, 'date', None) else 'N/A', 
+                    'Machine Name': getattr(report, 'machine_name', 'N/A') or 'N/A', 
+                    'Machine No': getattr(report, 'machine_no', 'N/A') or 'N/A', 
+                    'Location': getattr(report, 'location', 'N/A') or 'N/A', 
+                    'Specification': getattr(report, 'specification', 'N/A') or 'N/A', 
+                    'Maint. Personnel': getattr(report, 'maintenance_personnel', 'N/A') or 'N/A', 
+                    'Prepared By': getattr(report, 'prepared_by', 'N/A') or 'N/A', 
+                    'Checked By': getattr(report, 'checked_by', 'N/A') or 'N/A',
                 }
-                
-                checkpoint_list = report.checkpoints
+                checkpoint_list = getattr(report, 'checkpoints', [])
                 if isinstance(checkpoint_list, str):
                     try: checkpoint_list = json.loads(checkpoint_list)
-                    except: 
+                    except:
                         try: checkpoint_list = ast.literal_eval(checkpoint_list)
                         except: checkpoint_list = []
                 elif isinstance(checkpoint_list, dict):
@@ -1330,48 +1869,48 @@ def maintenance_data_view(request, form_key):
 
                 if isinstance(checkpoint_list, list) and len(checkpoint_list) > 0:
                     for i, cp in enumerate(checkpoint_list):
-                        show_base = (i == 0)
                         if isinstance(cp, dict):
-                            is_ok_val = cp.get('status', cp.get('is_ok', cp.get('value', cp.get('after'))))
-                            cp_status = 'OK' if (is_ok_val is True or str(is_ok_val).upper() in ['OK', 'YES']) else ('NOT OK' if (is_ok_val is False or str(is_ok_val).upper() in ['NG', 'NOT OK', 'NO']) else str(is_ok_val or '—'))
+                            raw_after = cp.get('after_maintenance', cp.get('after', cp.get('status', cp.get('is_ok', cp.get('value')))))
+                            cp_status = 'OK' if (raw_after is True or str(raw_after).upper() in ['OK', 'YES']) else ('NOT OK' if (raw_after is False or str(raw_after).upper() in ['NG', 'NOT OK', 'NO']) else str(raw_after or 'N/A'))
                             data.append({
-                                **{k: (v if show_base else '') for k, v in base_data.items()}, 
-                                'Sr.': cp.get('id', str(i+1)), 
-                                'Check Point': cp.get('point', cp.get('checkPoint', cp.get('Check Point', '—'))), 
-                                'Parameter': cp.get('parameter', cp.get('specification', '—')), 
-                                'Method': cp.get('method', cp.get('checkingMethod', '—')), 
-                                'Before': cp.get('observed_value', cp.get('observedValue', cp.get('before', '—'))), 
-                                'After': cp_status, 
-                                'Remarks': cp.get('remarks', '—')
+                                **base_data, 
+                                'Sr.': str(cp.get('sr_no', cp.get('id', i+1))), 
+                                'Check Points': cp.get('check_point', cp.get('point', cp.get('checkPoint', cp.get('Check Point', 'N/A')))), 
+                                'Checking Parameter': cp.get('parameter', cp.get('specification', cp.get('Specification', cp.get('Checking Parameter', cp.get('checking_parameter', 'N/A'))))), 
+                                'Method': cp.get('checking_method', cp.get('method', cp.get('checkingMethod', 'N/A'))), 
+                                'Before Maint.': cp.get('before_maintenance', cp.get('before', cp.get('observed_value', cp.get('observedValue', 'N/A')))), 
+                                'After Maint': cp_status, 
+                                'Remarks': cp.get('remarks', cp.get('remark', cp.get('Remarks', cp.get('Remark', '')))) or 'N/A'
                             })
+                        else:
+                            data.append({**base_data, 'Sr.': str(i+1), 'Check Points': str(cp), 'Checking Parameter': 'N/A', 'Method': 'N/A', 'Before Maint.': 'N/A', 'After Maint': 'N/A', 'Remarks': 'N/A'})
                 else:
                     row_data = base_data.copy()
-                    row_data.update({'Sr.': '—', 'Check Point': 'No checkpoints recorded', 'Parameter': '—', 'Method': '—', 'Before': '—', 'After': '—', 'Remarks': '—'})
+                    row_data.update({'Sr.': 'N/A', 'Check Points': 'No checkpoints recorded', 'Checking Parameter': 'N/A', 'Method': 'N/A', 'Before Maint.': 'N/A', 'After Maint': 'N/A', 'Remarks': 'N/A'})
                     data.append(row_data)
             return JsonResponse({'data': data})
 
-        # ── 26. CNC (Notice: Model uses 'checklist' instead of 'checkpoints') ──
+        # ── 26. CNC (WEEKLY) ──
         elif form_key == 'cnc':
             base_query = CNCMaintenanceReport.objects.all()
             reports = apply_date_filter(base_query, 'date').order_by('-date', '-created_at')
             data = []
             for report in reports:
                 base_data = {
-                    'Date': str(report.date) if report.date else '—', 
-                    'Machine Name': report.machine_name or '—', 
-                    'Machine No': report.machine_no or '—', 
-                    'Location': report.location or '—', 
-                    'Specification': report.specification or '—', 
-                    'Maint. Personnel': report.maintenance_personnel or '—',
-                    'Prepared By': '—', # Missing in model
-                    'Checked By': '—',  # Missing in model
+                    'Date': str(report.date) if getattr(report, 'date', None) else 'N/A', 
+                    'Machine Name': getattr(report, 'machine_name', 'N/A') or 'N/A', 
+                    'Machine No': getattr(report, 'machine_no', 'N/A') or 'N/A', 
+                    'Location': getattr(report, 'location', 'N/A') or 'N/A', 
+                    'Specification': getattr(report, 'specification', 'N/A') or 'N/A', 
+                    'Maint. Personnel': getattr(report, 'maintenance_personnel', 'N/A') or 'N/A', 
+                    'Prepared By': getattr(report, 'prepared_by', 'N/A') or 'N/A', 
+                    'Checked By': getattr(report, 'checked_by', 'N/A') or 'N/A',
                 }
-                
-                # USING 'checklist' as defined in your CNC model
-                checkpoint_list = report.checklist 
+                # 🔥 CNC uses "checklist" primarily
+                checkpoint_list = getattr(report, 'checklist', getattr(report, 'checkpoints', []))
                 if isinstance(checkpoint_list, str):
                     try: checkpoint_list = json.loads(checkpoint_list)
-                    except: 
+                    except:
                         try: checkpoint_list = ast.literal_eval(checkpoint_list)
                         except: checkpoint_list = []
                 elif isinstance(checkpoint_list, dict):
@@ -1379,47 +1918,47 @@ def maintenance_data_view(request, form_key):
 
                 if isinstance(checkpoint_list, list) and len(checkpoint_list) > 0:
                     for i, cp in enumerate(checkpoint_list):
-                        show_base = (i == 0)
                         if isinstance(cp, dict):
-                            is_ok_val = cp.get('status', cp.get('is_ok', cp.get('value', cp.get('after'))))
-                            cp_status = 'OK' if (is_ok_val is True or str(is_ok_val).upper() in ['OK', 'YES']) else ('NOT OK' if (is_ok_val is False or str(is_ok_val).upper() in ['NG', 'NOT OK', 'NO']) else str(is_ok_val or '—'))
+                            raw_after = cp.get('after_maintenance', cp.get('after', cp.get('status', cp.get('is_ok', cp.get('value')))))
+                            cp_status = 'OK' if (raw_after is True or str(raw_after).upper() in ['OK', 'YES']) else ('NOT OK' if (raw_after is False or str(raw_after).upper() in ['NG', 'NOT OK', 'NO']) else str(raw_after or 'N/A'))
                             data.append({
-                                **{k: (v if show_base else '') for k, v in base_data.items()}, 
-                                'Sr.': cp.get('id', str(i+1)), 
-                                'Check Point': cp.get('point', cp.get('checkPoint', cp.get('Check Point', '—'))), 
-                                'Parameter': cp.get('parameter', cp.get('specification', '—')), 
-                                'Method': cp.get('method', cp.get('checkingMethod', '—')), 
-                                'Before': cp.get('observed_value', cp.get('observedValue', cp.get('before', '—'))), 
-                                'After': cp_status, 
-                                'Remarks': cp.get('remarks', '—')
+                                **base_data, 
+                                'Sr.': str(cp.get('sr_no', cp.get('id', i+1))), 
+                                'Check Points': cp.get('check_point', cp.get('point', cp.get('checkPoint', cp.get('Check Point', 'N/A')))), 
+                                'Checking Parameter': cp.get('parameter', cp.get('specification', cp.get('Specification', cp.get('Checking Parameter', cp.get('checking_parameter', 'N/A'))))), 
+                                'Method': cp.get('checking_method', cp.get('method', cp.get('checkingMethod', 'N/A'))), 
+                                'Before Maint.': cp.get('before_maintenance', cp.get('before', cp.get('observed_value', cp.get('observedValue', 'N/A')))), 
+                                'After Maint': cp_status, 
+                                'Remarks': cp.get('remarks', cp.get('remark', cp.get('Remarks', cp.get('Remark', '')))) or 'N/A'
                             })
+                        else:
+                            data.append({**base_data, 'Sr.': str(i+1), 'Check Points': str(cp), 'Checking Parameter': 'N/A', 'Method': 'N/A', 'Before Maint.': 'N/A', 'After Maint': 'N/A', 'Remarks': 'N/A'})
                 else:
                     row_data = base_data.copy()
-                    row_data.update({'Sr.': '—', 'Check Point': 'No checkpoints recorded', 'Parameter': '—', 'Method': '—', 'Before': '—', 'After': '—', 'Remarks': '—'})
+                    row_data.update({'Sr.': 'N/A', 'Check Points': 'No checkpoints recorded', 'Checking Parameter': 'N/A', 'Method': 'N/A', 'Before Maint.': 'N/A', 'After Maint': 'N/A', 'Remarks': 'N/A'})
                     data.append(row_data)
             return JsonResponse({'data': data})
 
-        # ── 27. HYDRAULIC MIG ──
+        # ── 27. HYDRAULIC MIG (WEEKLY) ──
         elif form_key == 'hydraulic_mig':
             base_query = HydraulicPMCheckSheet.objects.all()
             reports = apply_date_filter(base_query, 'date').order_by('-date', '-created_at')
             data = []
             for report in reports:
                 base_data = {
-                    'Date': str(report.date) if report.date else '—', 
-                    'Machine Name': report.machine_name or '—', 
-                    'Machine No': report.machine_no or '—', 
-                    'Location': report.location or '—', 
-                    'Specification': report.specification or '—', 
-                    'Maint. Personnel': report.maintenance_personnel or '—', 
-                    'Prepared By': report.prepared_by or '—', 
-                    'Checked By': report.checked_by or '—',
+                    'Date': str(report.date) if getattr(report, 'date', None) else 'N/A', 
+                    'Machine Name': getattr(report, 'machine_name', 'N/A') or 'N/A', 
+                    'Machine No': getattr(report, 'machine_no', 'N/A') or 'N/A', 
+                    'Location': getattr(report, 'location', 'N/A') or 'N/A', 
+                    'Specification': getattr(report, 'specification', 'N/A') or 'N/A', 
+                    'Maint. Personnel': getattr(report, 'maintenance_personnel', 'N/A') or 'N/A', 
+                    'Prepared By': getattr(report, 'prepared_by', 'N/A') or 'N/A', 
+                    'Checked By': getattr(report, 'checked_by', 'N/A') or 'N/A',
                 }
-                
-                checkpoint_list = report.checkpoints
+                checkpoint_list = getattr(report, 'checkpoints', [])
                 if isinstance(checkpoint_list, str):
                     try: checkpoint_list = json.loads(checkpoint_list)
-                    except: 
+                    except:
                         try: checkpoint_list = ast.literal_eval(checkpoint_list)
                         except: checkpoint_list = []
                 elif isinstance(checkpoint_list, dict):
@@ -1427,47 +1966,47 @@ def maintenance_data_view(request, form_key):
 
                 if isinstance(checkpoint_list, list) and len(checkpoint_list) > 0:
                     for i, cp in enumerate(checkpoint_list):
-                        show_base = (i == 0)
                         if isinstance(cp, dict):
-                            is_ok_val = cp.get('status', cp.get('is_ok', cp.get('value', cp.get('after'))))
-                            cp_status = 'OK' if (is_ok_val is True or str(is_ok_val).upper() in ['OK', 'YES']) else ('NOT OK' if (is_ok_val is False or str(is_ok_val).upper() in ['NG', 'NOT OK', 'NO']) else str(is_ok_val or '—'))
+                            raw_after = cp.get('after_maintenance', cp.get('after', cp.get('status', cp.get('is_ok', cp.get('value')))))
+                            cp_status = 'OK' if (raw_after is True or str(raw_after).upper() in ['OK', 'YES']) else ('NOT OK' if (raw_after is False or str(raw_after).upper() in ['NG', 'NOT OK', 'NO']) else str(raw_after or 'N/A'))
                             data.append({
-                                **{k: (v if show_base else '') for k, v in base_data.items()}, 
-                                'Sr.': cp.get('id', str(i+1)), 
-                                'Check Point': cp.get('point', cp.get('checkPoint', cp.get('Check Point', '—'))), 
-                                'Parameter': cp.get('parameter', cp.get('specification', '—')), 
-                                'Method': cp.get('method', cp.get('checkingMethod', '—')), 
-                                'Before': cp.get('observed_value', cp.get('observedValue', cp.get('before', '—'))), 
-                                'After': cp_status, 
-                                'Remarks': cp.get('remarks', '—')
+                                **base_data, 
+                                'Sr.': str(cp.get('sr_no', cp.get('id', i+1))), 
+                                'Check Points': cp.get('check_point', cp.get('point', cp.get('checkPoint', cp.get('Check Point', 'N/A')))), 
+                                'Checking Parameter': cp.get('parameter', cp.get('specification', cp.get('Specification', cp.get('Checking Parameter', cp.get('checking_parameter', 'N/A'))))), 
+                                'Method': cp.get('checking_method', cp.get('method', cp.get('checkingMethod', 'N/A'))), 
+                                'Before Maint.': cp.get('before_maintenance', cp.get('before', cp.get('observed_value', cp.get('observedValue', 'N/A')))), 
+                                'After Maint': cp_status, 
+                                'Remarks': cp.get('remarks', cp.get('remark', cp.get('Remarks', cp.get('Remark', '')))) or 'N/A'
                             })
+                        else:
+                            data.append({**base_data, 'Sr.': str(i+1), 'Check Points': str(cp), 'Checking Parameter': 'N/A', 'Method': 'N/A', 'Before Maint.': 'N/A', 'After Maint': 'N/A', 'Remarks': 'N/A'})
                 else:
                     row_data = base_data.copy()
-                    row_data.update({'Sr.': '—', 'Check Point': 'No checkpoints recorded', 'Parameter': '—', 'Method': '—', 'Before': '—', 'After': '—', 'Remarks': '—'})
+                    row_data.update({'Sr.': 'N/A', 'Check Points': 'No checkpoints recorded', 'Checking Parameter': 'N/A', 'Method': 'N/A', 'Before Maint.': 'N/A', 'After Maint': 'N/A', 'Remarks': 'N/A'})
                     data.append(row_data)
             return JsonResponse({'data': data})
 
-        # ── 28. WEEKLY POWER PRESS (Notice: Model misses maint_personnel, prepared_by, checked_by) ──
+        # ── 28. POWER PRESS (WEEKLY) ──
         elif form_key == 'power_press':
             base_query = PowerPressPMCheckSheet.objects.all()
             reports = apply_date_filter(base_query, 'date').order_by('-date', '-created_at')
             data = []
             for report in reports:
                 base_data = {
-                    'Date': str(report.date) if report.date else '—', 
-                    'Machine Name': report.machine_name or '—', 
-                    'Machine No': report.machine_no or '—', 
-                    'Location': report.location or '—', 
-                    'Specification': report.specification or '—',
-                    'Maint. Personnel': '—', # Missing in model
-                    'Prepared By': '—',      # Missing in model
-                    'Checked By': '—',       # Missing in model
+                    'Date': str(report.date) if getattr(report, 'date', None) else 'N/A', 
+                    'Machine Name': getattr(report, 'machine_name', 'N/A') or 'N/A', 
+                    'Machine No': getattr(report, 'machine_no', 'N/A') or 'N/A', 
+                    'Location': getattr(report, 'location', 'N/A') or 'N/A', 
+                    'Specification': getattr(report, 'specification', 'N/A') or 'N/A', 
+                    'Maint. Personnel': getattr(report, 'maintenance_personnel', 'N/A') or 'N/A', 
+                    'Prepared By': getattr(report, 'prepared_by', 'N/A') or 'N/A', 
+                    'Checked By': getattr(report, 'checked_by', 'N/A') or 'N/A',
                 }
-                
-                checkpoint_list = report.checkpoints
+                checkpoint_list = getattr(report, 'checkpoints', [])
                 if isinstance(checkpoint_list, str):
                     try: checkpoint_list = json.loads(checkpoint_list)
-                    except: 
+                    except:
                         try: checkpoint_list = ast.literal_eval(checkpoint_list)
                         except: checkpoint_list = []
                 elif isinstance(checkpoint_list, dict):
@@ -1475,47 +2014,47 @@ def maintenance_data_view(request, form_key):
 
                 if isinstance(checkpoint_list, list) and len(checkpoint_list) > 0:
                     for i, cp in enumerate(checkpoint_list):
-                        show_base = (i == 0)
                         if isinstance(cp, dict):
-                            is_ok_val = cp.get('status', cp.get('is_ok', cp.get('value', cp.get('after'))))
-                            cp_status = 'OK' if (is_ok_val is True or str(is_ok_val).upper() in ['OK', 'YES']) else ('NOT OK' if (is_ok_val is False or str(is_ok_val).upper() in ['NG', 'NOT OK', 'NO']) else str(is_ok_val or '—'))
+                            raw_after = cp.get('after_maintenance', cp.get('after', cp.get('status', cp.get('is_ok', cp.get('value')))))
+                            cp_status = 'OK' if (raw_after is True or str(raw_after).upper() in ['OK', 'YES']) else ('NOT OK' if (raw_after is False or str(raw_after).upper() in ['NG', 'NOT OK', 'NO']) else str(raw_after or 'N/A'))
                             data.append({
-                                **{k: (v if show_base else '') for k, v in base_data.items()}, 
-                                'Sr.': cp.get('id', str(i+1)), 
-                                'Check Point': cp.get('point', cp.get('checkPoint', cp.get('Check Point', '—'))), 
-                                'Parameter': cp.get('parameter', cp.get('specification', '—')), 
-                                'Method': cp.get('method', cp.get('checkingMethod', '—')), 
-                                'Before': cp.get('observed_value', cp.get('observedValue', cp.get('before', '—'))), 
-                                'After': cp_status, 
-                                'Remarks': cp.get('remarks', '—')
+                                **base_data, 
+                                'Sr.': str(cp.get('sr_no', cp.get('id', i+1))), 
+                                'Check Points': cp.get('check_point', cp.get('point', cp.get('checkPoint', cp.get('Check Point', 'N/A')))), 
+                                'Checking Parameter': cp.get('parameter', cp.get('specification', cp.get('Specification', cp.get('Checking Parameter', cp.get('checking_parameter', 'N/A'))))), 
+                                'Method': cp.get('checking_method', cp.get('method', cp.get('checkingMethod', 'N/A'))), 
+                                'Before Maint.': cp.get('before_maintenance', cp.get('before', cp.get('observed_value', cp.get('observedValue', 'N/A')))), 
+                                'After Maint': cp_status, 
+                                'Remarks': cp.get('remarks', cp.get('remark', cp.get('Remarks', cp.get('Remark', '')))) or 'N/A'
                             })
+                        else:
+                            data.append({**base_data, 'Sr.': str(i+1), 'Check Points': str(cp), 'Checking Parameter': 'N/A', 'Method': 'N/A', 'Before Maint.': 'N/A', 'After Maint': 'N/A', 'Remarks': 'N/A'})
                 else:
                     row_data = base_data.copy()
-                    row_data.update({'Sr.': '—', 'Check Point': 'No checkpoints recorded', 'Parameter': '—', 'Method': '—', 'Before': '—', 'After': '—', 'Remarks': '—'})
+                    row_data.update({'Sr.': 'N/A', 'Check Points': 'No checkpoints recorded', 'Checking Parameter': 'N/A', 'Method': 'N/A', 'Before Maint.': 'N/A', 'After Maint': 'N/A', 'Remarks': 'N/A'})
                     data.append(row_data)
             return JsonResponse({'data': data})
 
-        # ── 29. MACHINE PREVENTIVE MAINTENANCE / VMC (Notice: Model misses prepared_by, checked_by) ──
-        elif form_key == 'vmc': 
+        # ── 29. VMC (WEEKLY) ──
+        elif form_key == 'vmc':
             base_query = MachinePreventiveMaintenance.objects.all()
             reports = apply_date_filter(base_query, 'date').order_by('-date', '-created_at')
             data = []
             for report in reports:
                 base_data = {
-                    'Date': str(report.date) if report.date else '—', 
-                    'Machine Name': report.machine_name or '—', 
-                    'Machine No': report.machine_no or '—', 
-                    'Location': report.location or '—', 
-                    'Specification': report.specification or '—', 
-                    'Maint. Personnel': report.maintenance_personnel or '—',
-                    'Prepared By': '—', # Missing in model
-                    'Checked By': '—',  # Missing in model
+                    'Date': str(report.date) if getattr(report, 'date', None) else 'N/A', 
+                    'Machine Name': getattr(report, 'machine_name', 'N/A') or 'N/A', 
+                    'Machine No': getattr(report, 'machine_no', 'N/A') or 'N/A', 
+                    'Location': getattr(report, 'location', 'N/A') or 'N/A', 
+                    'Specification': getattr(report, 'specification', 'N/A') or 'N/A', 
+                    'Maint. Personnel': getattr(report, 'maintenance_personnel', 'N/A') or 'N/A', 
+                    'Prepared By': getattr(report, 'prepared_by', 'N/A') or 'N/A', 
+                    'Checked By': getattr(report, 'checked_by', 'N/A') or 'N/A',
                 }
-                
-                checkpoint_list = report.checkpoints
+                checkpoint_list = getattr(report, 'checkpoints', [])
                 if isinstance(checkpoint_list, str):
                     try: checkpoint_list = json.loads(checkpoint_list)
-                    except: 
+                    except:
                         try: checkpoint_list = ast.literal_eval(checkpoint_list)
                         except: checkpoint_list = []
                 elif isinstance(checkpoint_list, dict):
@@ -1523,24 +2062,71 @@ def maintenance_data_view(request, form_key):
 
                 if isinstance(checkpoint_list, list) and len(checkpoint_list) > 0:
                     for i, cp in enumerate(checkpoint_list):
-                        show_base = (i == 0)
                         if isinstance(cp, dict):
-                            is_ok_val = cp.get('status', cp.get('is_ok', cp.get('value', cp.get('after'))))
-                            cp_status = 'OK' if (is_ok_val is True or str(is_ok_val).upper() in ['OK', 'YES']) else ('NOT OK' if (is_ok_val is False or str(is_ok_val).upper() in ['NG', 'NOT OK', 'NO']) else str(is_ok_val or '—'))
+                            raw_after = cp.get('after_maintenance', cp.get('after', cp.get('status', cp.get('is_ok', cp.get('value')))))
+                            cp_status = 'OK' if (raw_after is True or str(raw_after).upper() in ['OK', 'YES']) else ('NOT OK' if (raw_after is False or str(raw_after).upper() in ['NG', 'NOT OK', 'NO']) else str(raw_after or 'N/A'))
                             data.append({
-                                **{k: (v if show_base else '') for k, v in base_data.items()}, 
-                                'Sr.': cp.get('id', str(i+1)), 
-                                'Check Point': cp.get('point', cp.get('checkPoint', cp.get('Check Point', '—'))), 
-                                'Parameter': cp.get('parameter', cp.get('specification', '—')), 
-                                'Method': cp.get('method', cp.get('checkingMethod', '—')), 
-                                'Before': cp.get('observed_value', cp.get('observedValue', cp.get('before', '—'))), 
-                                'After': cp_status, 
-                                'Remarks': cp.get('remarks', '—')
+                                **base_data, 
+                                'Sr.': str(cp.get('sr_no', cp.get('id', i+1))), 
+                                'Check Points': cp.get('check_point', cp.get('point', cp.get('checkPoint', cp.get('Check Point', 'N/A')))), 
+                                'Checking Parameter': cp.get('parameter', cp.get('specification', cp.get('Specification', cp.get('Checking Parameter', cp.get('checking_parameter', 'N/A'))))), 
+                                'Method': cp.get('checking_method', cp.get('method', cp.get('checkingMethod', 'N/A'))), 
+                                'Before Maint.': cp.get('before_maintenance', cp.get('before', cp.get('observed_value', cp.get('observedValue', 'N/A')))), 
+                                'After Maint': cp_status, 
+                                'Remarks': cp.get('remarks', cp.get('remark', cp.get('Remarks', cp.get('Remark', '')))) or 'N/A'
                             })
+                        else:
+                            data.append({**base_data, 'Sr.': str(i+1), 'Check Points': str(cp), 'Checking Parameter': 'N/A', 'Method': 'N/A', 'Before Maint.': 'N/A', 'After Maint': 'N/A', 'Remarks': 'N/A'})
                 else:
                     row_data = base_data.copy()
-                    row_data.update({'Sr.': '—', 'Check Point': 'No checkpoints recorded', 'Parameter': '—', 'Method': '—', 'Before': '—', 'After': '—', 'Remarks': '—'})
+                    row_data.update({'Sr.': 'N/A', 'Check Points': 'No checkpoints recorded', 'Checking Parameter': 'N/A', 'Method': 'N/A', 'Before Maint.': 'N/A', 'After Maint': 'N/A', 'Remarks': 'N/A'})
                     data.append(row_data)
+            return JsonResponse({'data': data})
+
+        # ── 30. WELDING FIXTURE MAINTENANCE ──
+        elif form_key in ['welding_fixture', 'weekly_pm_welding_fixture']:
+            # Aapke exact FixtureMaintenanceRecord model ka use
+            base_query = FixtureMaintenanceRecord.objects.all()
+            
+            # done_on_date field ka istemal
+            reports = apply_date_filter(base_query, 'done_on_date').order_by('-done_on_date', '-created_at')
+            data = []
+            
+            for report in reports:
+                base_data = {
+                    'Date': str(report.done_on_date) if report.done_on_date else 'N/A',
+                    'Part Name': report.part_name or 'N/A',
+                    'Part No': report.part_no or 'N/A',
+                    'Fixture No': report.fixture_no or 'N/A',
+                    'Operation': report.operation_name or 'N/A',
+                    'Inspected By': report.inspected_by or 'N/A',
+                }
+                
+                # Naye model ki checklist_data field
+                checkpoint_list = report.checklist_data
+                
+               
+                if isinstance(checkpoint_list, list) and len(checkpoint_list) > 0:
+                    for i, cp in enumerate(checkpoint_list):
+                        if isinstance(cp, dict):
+                            raw_status = cp.get('status', 'N/A')
+                            cp_status = 'OK' if (raw_status is True or str(raw_status).upper() in ['OK', 'YES']) else ('NOT OK' if (raw_status is False or str(raw_status).upper() in ['NG', 'NOT OK', 'NO']) else str(raw_status or 'N/A'))
+                            
+                            data.append({
+                                **base_data,
+                                'Sr.': str(i + 1),
+                                'Check Points': cp.get('parameter', 'N/A'),
+                                'Status': cp_status,
+                                'Remarks': cp.get('remarks', 'N/A'),
+                                'Corrective Action': cp.get('correctiveAction', cp.get('corrective_action', 'N/A'))
+                            })
+                        else:
+                            data.append({**base_data, 'Sr.': str(i+1), 'Check Points': str(cp), 'Status': 'N/A', 'Remarks': 'N/A', 'Corrective Action': 'N/A'})
+                else:
+                    row_data = base_data.copy()
+                    row_data.update({'Sr.': 'N/A', 'Check Points': 'No checkpoints recorded', 'Status': 'N/A', 'Remarks': 'N/A', 'Corrective Action': 'N/A'})
+                    data.append(row_data)
+                    
             return JsonResponse({'data': data})
 
         else:
@@ -1550,10 +2136,6 @@ def maintenance_data_view(request, form_key):
         print(f"⚠️ Maintenance View Error: {e}")
         traceback.print_exc()
         return JsonResponse({'data': [], 'error': str(e)}, status=500)
-    
-    
-
-
 class SaveFixtureMaintenanceView(APIView):
     @transaction.atomic
     def post(self, request):
