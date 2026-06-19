@@ -17,7 +17,7 @@ from .views import (
 from .views import get_machine_history
 from django.contrib import admin
 from .views import CustomLoginView, ChangePasswordView , DirectPasswordResetView
-
+from .views import CurrentUserProfileView
 
 urlpatterns = [
     # Dashboard APIs
@@ -86,6 +86,7 @@ urlpatterns = [
     path('customers/', views.get_unique_customers, name='get_customers'),
     path('parts/<str:customer_name>/', views.get_parts_by_customer, name='get_parts'),
     path('qa-notifications/<str:username>/', GetQANotificationsView.as_view(), name='api_get_qa_notifications'),
-    
+    path('log-report/', views.SaveReportLogView.as_view(), name='api_log_report'),
+    path('api/profile/me/', CurrentUserProfileView.as_view(), name='current-user-profile'),
 ]
 

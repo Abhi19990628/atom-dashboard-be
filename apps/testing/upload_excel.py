@@ -1,190 +1,264 @@
 import os
+import sys
+import re
 import django
 import pandas as pd
-import numpy as np
 
-# ==========================================
-# 1. DJANGO ENVIRONMENT SETUP
-# ==========================================
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", "operator_app.settings") 
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(BASE_DIR)
+
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "operator_app.settings")
 django.setup()
 
-from api.models import L1_PartInfoMaster, L2_ProcessReportMaster, L3_ParameterDetailMaster
+from django.db import connection
 
-def aggressive_search(df, search_terms):
-    """Poore excel sheet mein ghum kar exact value nikalega"""
-    for r in range(min(25, len(df))):  # Top 25 rows tak scan karega
-        for c in range(len(df.columns) - 1):
-            cell_val = str(df.iloc[r, c]).strip().upper()
-            
-            if any(term in cell_val for term in search_terms):
-                for offset in range(1, 5):
+from api.models import (
+    L1_PartInfoMaster,
+    L2_ProcessReportMaster,
+    L3_ParameterDetailMaster,
+)
+
+FOLDER_PATH = r"C:\Users\Dell\Desktop\Updated Gestamp CP"
+
+POSSIBLE_FILES = [
+    "REINFORCEMENT A-PILLAR TOP HINGE-LHRH.xlsx",
+
+]
+
+FILE_PATH = None
+FILE_NAME = None
+
+for file in POSSIBLE_FILES:
+    path = os.path.join(FOLDER_PATH, file)
+    if os.path.exists(path):
+        FILE_PATH = path
+        FILE_NAME = file
+        break
+
+
+def clean(value):
+    if pd.isna(value):
+        return ""
+
+    value = str(value).replace("\n", " ").strip()
+    value = re.sub(r"\s+", " ", value)
+
+    if value.lower() in ["nan", "none", "null", "-", "--", ""]:
+        return ""
+
+    return value
+
+
+def filename_to_part_name(file_name):
+    name = os.path.splitext(file_name)[0]
+    name = re.sub(r"\(\d+\)$", "", name).strip()
+    return name
+
+
+def find_right_value(df, keywords, max_rows=25):
+    for r in range(min(max_rows, len(df))):
+        for c in range(len(df.columns)):
+            cell = clean(df.iloc[r, c]).upper()
+
+            if any(k.upper() in cell for k in keywords):
+                for offset in range(1, 10):
                     if c + offset < len(df.columns):
-                        val = str(df.iloc[r, c + offset]).strip()
-                        if val and val.lower() not in ['nan', 'none', '-', ':', '']:
+                        val = clean(df.iloc[r, c + offset])
+                        if val:
                             return val
-                
-                if r + 1 < len(df):
-                    val_below = str(df.iloc[r+1, c]).strip()
-                    if val_below and val_below.lower() not in ['nan', 'none', '-', ':', '']:
-                        return val_below
-    return "Unknown"
+    return ""
 
-def import_master_data(file_path, sheet_name):
-    print(f"\n=====================================================")
-    print(f"📂 Loading File: {os.path.basename(file_path)} | Sheet: {sheet_name}")
-    
+
+def is_valid_process_no(value):
+    value = clean(value)
+    if not value:
+        return False
+
     try:
-        df_raw = pd.read_excel(file_path, sheet_name=sheet_name, header=None)
-    except Exception as e:
-        print(f"❌ ERROR: File ya Sheet padhne mein dikkat aayi: {e}")
-        return
-    
-    # ==========================================
-    # 2. EXTRACT L1 (PART INFO MASTER)
-    # ==========================================
-    part_name = aggressive_search(df_raw, ["PART NAME"])
-    customer = aggressive_search(df_raw, ["CUSTOMER"])
-    part_number = aggressive_search(df_raw, ["PART NO.", "PART NO"])
-    model_name = aggressive_search(df_raw, ["MODEL"])
-    
-    print(f"✅ L1 Data: Customer: {customer} | Part: {part_name} | Model: {model_name} | Part No: {part_number}")
-    
-    if part_name == "Unknown" and part_number == "Unknown":
-        print("⚠️ Warning: Is sheet mein Part Name nahi mila, isko skip kar rahe hain.")
+        float(value)
+        return True
+    except ValueError:
+        return False
+
+
+def delete_old_l2_l3_data(part_obj):
+    l2_table = L2_ProcessReportMaster._meta.db_table
+    l3_table = L3_ParameterDetailMaster._meta.db_table
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"""
+            DELETE FROM "{l3_table}"
+            WHERE process_report_id IN (
+                SELECT id FROM "{l2_table}"
+                WHERE part_info_id = %s
+            )
+            """,
+            [part_obj.id],
+        )
+
+        cursor.execute(
+            f"""
+            DELETE FROM "{l2_table}"
+            WHERE part_info_id = %s
+            """,
+            [part_obj.id],
+        )
+
+
+def upload_excel():
+    print("FILE PATH:", FILE_PATH)
+    print("FILE EXISTS:", FILE_PATH is not None and os.path.exists(FILE_PATH))
+
+    if not FILE_PATH:
+        print("File not found. Check exact file name.")
         return
 
-    part_obj, created = L1_PartInfoMaster.objects.get_or_create(
-        customer_name=customer,
+    xls = pd.ExcelFile(FILE_PATH)
+    print("SHEETS:", xls.sheet_names)
+
+    sheet_name = xls.sheet_names[0]
+    print("SHEET USED:", sheet_name)
+
+    df = pd.read_excel(FILE_PATH, sheet_name=sheet_name, header=None)
+
+    customer_name = "GESTAMP"
+    part_name = filename_to_part_name(FILE_NAME)
+
+    part_no = find_right_value(df, ["PART NO", "PART NO.", "PART NO / REV NO"]) or "UNKNOWN"
+    model_name = find_right_value(df, ["MODEL", "MODEL NAME"]) or "UNKNOWN"
+
+    part_obj, _ = L1_PartInfoMaster.objects.update_or_create(
+        customer_name=customer_name,
         part_name=part_name,
-        part_no=part_number,
-        defaults={'model_name': model_name}
+        part_no=part_no,
+        defaults={"model_name": model_name},
     )
 
-    # ==========================================
-    # 3. STRICT COLUMN MAPPING FOR L2 & L3
-    # ==========================================
-    col_idx = {
-        'process_name': -1, 'sr_no': -1, 'product_char': -1, 
-        'process_char': -1, 'spec': -1, 'instrument': -1
-    }
-    
-    data_start_row = 10 
+    delete_old_l2_l3_data(part_obj)
 
-    for r in range(5, 15):
-        row_vals = [str(x).strip().upper() for x in df_raw.iloc[r, :]]
-        
-        if any("SPECIFICATION" in x for x in row_vals) or any("TOLERANCE" in x for x in row_vals):
-            data_start_row = r + 1 
-            
-            for c in range(len(df_raw.columns)):
-                val = str(df_raw.iloc[r, c]).strip().upper()
-                val_above = str(df_raw.iloc[r-1, c]).strip().upper() if r > 0 else ""
-                combined = val + " " + val_above 
-                
-                # 🔥 FIX: Lock System - Agar pehle mil gaya toh doobara overwrite nahi hoga 🔥
-                # 🔥 FIX: Instrument me se "METHOD" word nikal diya hai taaki Control Method pick na kare 🔥
-                if col_idx['process_name'] == -1 and ("PROCESS NAME" in combined or "OPERATION DESCRIPTION" in combined):
-                    col_idx['process_name'] = c
-                    
-                elif col_idx['spec'] == -1 and ("SPECIFICATION" in combined or "TOLERANCE" in combined):
-                    col_idx['spec'] = c
-                    
-                elif col_idx['instrument'] == -1 and ("EVALUATION" in combined or "TECHNIQUE" in combined or "MEASUREMENT" in combined):
-                    col_idx['instrument'] = c
-                    
-                elif col_idx['product_char'] == -1 and ("PRODUCT" in combined and "SPEC" not in combined):
-                    col_idx['product_char'] = c
-                    
-                elif col_idx['process_char'] == -1 and ("PROCESS" in combined and "SPEC" not in combined and "NAME" not in combined):
-                    col_idx['process_char'] = c
-                    
-                elif col_idx['sr_no'] == -1 and (val == "NO." or val == "NO" or "CHARACTERISTICS NO" in combined):
-                    col_idx['sr_no'] = c
+    current_process = None
+    l2_count = 0
+    l3_count = 0
+    storage_count = 0
+
+    skip_words = [
+        "CONTROL PLAN",
+        "PART/PROCESS NO",
+        "PROCESS NAME",
+        "OPERATION DESCRIPTION",
+        "MACHINE/JIG/FIXTURE",
+        "CHARACTERISTICS",
+        "PRODUCT/ PROCESS SPECIFICATION",
+        "EVALUATION",
+        "INSP. TECHNIQUE",
+        "CHECKING METHOD",
+        "SAMPLE",
+        "METHOD",
+        "REACTION PLAN",
+        "DOC NO",
+        "REVISION NO",
+        "PAGE NO",
+        "PREPARED BY",
+        "APPROVED BY",
+        "CUSTOMER",
+        "CORE TEAM",
+        "SUPPLER NAME",
+        "SUPPLIER NAME",
+    ]
+
+    for i in range(len(df)):
+        process_no = clean(df.iloc[i, 1]) if df.shape[1] > 1 else ""
+        operation_desc = clean(df.iloc[i, 2]) if df.shape[1] > 2 else ""
+        machine = clean(df.iloc[i, 3]) if df.shape[1] > 3 else ""
+
+        parameter_no = clean(df.iloc[i, 4]) if df.shape[1] > 4 else ""
+        process_char = clean(df.iloc[i, 5]) if df.shape[1] > 5 else ""
+        product_char = clean(df.iloc[i, 6]) if df.shape[1] > 6 else ""
+        special_char = clean(df.iloc[i, 7]) if df.shape[1] > 7 else ""
+        specification = clean(df.iloc[i, 8]) if df.shape[1] > 8 else ""
+        instrument = clean(df.iloc[i, 9]) if df.shape[1] > 9 else ""
+
+        joined = " ".join([
+            process_no,
+            operation_desc,
+            machine,
+            parameter_no,
+            process_char,
+            product_char,
+            special_char,
+            specification,
+            instrument,
+        ]).upper()
+
+        if any(word in joined for word in skip_words):
+            continue
+
+        stop_after_this_row = False
+
+        if is_valid_process_no(process_no) and operation_desc:
+            report_name = operation_desc.strip()
+
+            if report_name.upper() == "STORAGE":
+                storage_count += 1
+
+                if storage_count == 2:
+                    report_name = "STORAGE TWO"
+                elif storage_count == 3:
+                    report_name = "STORAGE THREE"
+
+            current_process = L2_ProcessReportMaster.objects.create(
+                part_info=part_obj,
+                report_name=report_name,
+            )
+
+            l2_count += 1
+
+            if "DISPATCH" in report_name.upper() or "DESPATCH" in report_name.upper():
+                stop_after_this_row = True
+
+        if not current_process:
+            continue
+
+        category = ""
+        parameter_name = ""
+
+        if product_char:
+            category = "PRODUCT"
+            parameter_name = product_char
+        elif process_char:
+            category = "PROCESS"
+            parameter_name = process_char
+        elif special_char:
+            category = "SPECIAL"
+            parameter_name = special_char
+
+       
+        if parameter_name or specification or instrument:
+            L3_ParameterDetailMaster.objects.create(
+                process_report=current_process,
+                category=category,
+                parameter_name=parameter_name,
+                specification=specification,
+                instrument=instrument,
+            )
+            l3_count += 1
+
+        if stop_after_this_row:
             break
 
-    print(f"🔍 Mapped Columns -> Process Name: Col {col_idx['process_name']}, Spec: Col {col_idx['spec']}, Instrument: Col {col_idx['instrument']}")
+    print("================================")
+    print("UPLOAD COMPLETED SUCCESSFULLY")
+    print("File:", FILE_NAME)
+    print("Part Name:", part_name)
+    print("Part No:", part_no)
+    print("Model:", model_name)
+    print("L1 ID:", part_obj.id)
+    print("Old L2/L3 deleted and new data inserted")
+    print("L2 inserted:", l2_count)
+    print("L3 inserted:", l3_count)
+    print("================================")
 
-    # ==========================================
-    # 4. EXTRACT DATA & SAVE TO DB
-    # ==========================================
-    df_data = df_raw.iloc[data_start_row:].copy()
-    
-    if col_idx['process_name'] != -1:
-        df_data.iloc[:, col_idx['process_name']] = df_data.iloc[:, col_idx['process_name']].replace(['', 'nan', 'NaN'], np.nan).ffill()
-
-    print("⏳ Extracting Process and Parameters...")
-    
-    L2_ProcessReportMaster.objects.filter(part_info=part_obj).delete()
-
-    count_l2 = 0
-    count_l3 = 0
-
-    for index, row in df_data.iterrows():
-        process_name = str(row.iloc[col_idx['process_name']]).strip() if col_idx['process_name'] != -1 and pd.notna(row.iloc[col_idx['process_name']]) else ""
-        process_char = str(row.iloc[col_idx['process_char']]).strip() if col_idx['process_char'] != -1 and pd.notna(row.iloc[col_idx['process_char']]) else ""
-        product_char = str(row.iloc[col_idx['product_char']]).strip() if col_idx['product_char'] != -1 and pd.notna(row.iloc[col_idx['product_char']]) else ""
-        spec = str(row.iloc[col_idx['spec']]).strip() if col_idx['spec'] != -1 and pd.notna(row.iloc[col_idx['spec']]) else ""
-        instrument = str(row.iloc[col_idx['instrument']]).strip() if col_idx['instrument'] != -1 and pd.notna(row.iloc[col_idx['instrument']]) else ""
-
-        if not process_name or process_name.lower() in ['nan', 'none', '']:
-            continue
-        if process_char.lower() in ['', '-', 'nan'] and product_char.lower() in ['', '-', 'nan']:
-            continue
-        if "REV. NO" in process_name.upper() or "PREPARED BY" in process_name.upper():
-            break 
-
-        process_obj, p_created = L2_ProcessReportMaster.objects.get_or_create(
-            part_info=part_obj,
-            report_name=process_name
-        )
-        if p_created:
-            count_l2 += 1
-
-        param_name = ""
-        category = ""
-        
-        if process_char and process_char.lower() not in ['-', 'nan', '']:
-            category = 'PROCESS'
-            param_name = process_char
-        elif product_char and product_char.lower() not in ['-', 'nan', '']:
-            category = 'PRODUCT'
-            param_name = product_char
-        else:
-            continue 
-
-        # Prevent 'nan' from being saved as string
-        spec = "" if spec.lower() == 'nan' else spec
-        instrument = "" if instrument.lower() == 'nan' else instrument
-
-        if spec or instrument:
-            L3_ParameterDetailMaster.objects.create(
-                process_report=process_obj,
-                category=category,
-                parameter_name=param_name,
-                specification=spec,
-                instrument=instrument
-            )
-            count_l3 += 1
-
-    print(f"🎉 {count_l2} Processes & {count_l3} Parameters Saved for {part_name}")
-    print("=====================================================\n")
 
 if __name__ == "__main__":
- 
-    excel_file = r"C:\control plan\TENNECO CP\6. SENSOR BRACKET.xlsx"
-    
-    try:
-        # Excel file open karke saari sheets ke naam nikalega
-        xls = pd.ExcelFile(excel_file)
-        sheet_names = xls.sheet_names
-        print(f"✅ File Mili! Isme {len(sheet_names)} sheets hain: {sheet_names}")
-        
-        # Ek-ek karke saari sheets ka data upload karega
-        for sheet in sheet_names:
-            import_master_data(excel_file, sheet_name=sheet)
-            
-    except FileNotFoundError:
-        print(f"❌ ERROR: File nahi mili! Kripya path check karein: {excel_file}")
-    except Exception as e:
-        print(f"❌ ERROR: {e}")
+    upload_excel()

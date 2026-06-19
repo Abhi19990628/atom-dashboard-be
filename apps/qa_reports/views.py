@@ -501,89 +501,89 @@ class GetInspectionReportView(APIView):
              return Response({"message": "No report found for given filters"}, status=status.HTTP_404_NOT_FOUND)
 
 
-# ==============================================================================
-# 🏭 PURE & STRICT DYNAMIC ROUTING (UPDATED FOR NEW FIELDS: location)
-# ==============================================================================
-class SaveReportLogView(APIView):
-    permission_classes = [] 
+# # ==============================================================================
+# # 🏭 PURE & STRICT DYNAMIC ROUTING (UPDATED FOR NEW FIELDS: location)
+# # ==============================================================================
+# class SaveReportLogView(APIView):
+#     permission_classes = [] 
     
-    def post(self, request):
-        username = request.data.get('username')
-        report_name = request.data.get('report_name')
-        record_id = request.data.get('record_id') 
+#     def post(self, request):
+#         username = request.data.get('username')
+#         report_name = request.data.get('report_name')
+#         record_id = request.data.get('record_id') 
 
-        if not username or not report_name:
-            return Response({"error": "Username and report_name are required fields."}, status=status.HTTP_400_BAD_REQUEST)
+#         if not username or not report_name:
+#             return Response({"error": "Username and report_name are required fields."}, status=status.HTTP_400_BAD_REQUEST)
 
-        try:
-            user_obj = User.objects.get(username=username)
-        except User.DoesNotExist:
-            return Response({"error": f"System Error: User '{username}' not found in database."}, status=status.HTTP_404_NOT_FOUND)
+#         try:
+#             user_obj = User.objects.get(username=username)
+#         except User.DoesNotExist:
+#             return Response({"error": f"System Error: User '{username}' not found in database."}, status=status.HTTP_404_NOT_FOUND)
 
-        # ── 1. STRICT PROFILE EXTRACTION (NEW FIELD 'location' SE CHECK KAREGA) ──
-        submitter_location = None
+#         # ── 1. STRICT PROFILE EXTRACTION (NEW FIELD 'location' SE CHECK KAREGA) ──
+#         submitter_location = None
         
-        try:
-            profile = getattr(user_obj, 'userprofile', getattr(user_obj, 'profile', None))
-            # 🔥 FIX: 'department_name' hata kar 'location' laga diya!
-            if profile and getattr(profile, 'location', None):
-                submitter_location = str(profile.location).strip()
-        except Exception as e:
-            print(f"⚠️ Profile check exception for {username}: {e}")
+#         try:
+#             profile = getattr(user_obj, 'userprofile', getattr(user_obj, 'profile', None))
+#             # 🔥 FIX: 'department_name' hata kar 'location' laga diya!
+#             if profile and getattr(profile, 'location', None):
+#                 submitter_location = str(profile.location).strip()
+#         except Exception as e:
+#             print(f"⚠️ Profile check exception for {username}: {e}")
 
-        # 🔥 STRICT GATE: Agar location (Plant 1/2) nahi mila toh form yahin ruk jayega!
-        if not submitter_location:
-            return Response({
-                "error": f"Validation Error: User '{username}' does not have a valid Location assigned in Django Admin. Please map the user to Plant 1 or Plant 2."
-            }, status=status.HTTP_400_BAD_REQUEST)
+#         # 🔥 STRICT GATE: Agar location (Plant 1/2) nahi mila toh form yahin ruk jayega!
+#         if not submitter_location:
+#             return Response({
+#                 "error": f"Validation Error: User '{username}' does not have a valid Location assigned in Django Admin. Please map the user to Plant 1 or Plant 2."
+#             }, status=status.HTTP_400_BAD_REQUEST)
 
-        # Routing ke liye clean format (e.g., "Plant 1" -> "plant1")
-        submitter_plant_code = submitter_location.replace(" ", "").lower()
+#         # Routing ke liye clean format (e.g., "Plant 1" -> "plant1")
+#         submitter_plant_code = submitter_location.replace(" ", "").lower()
 
-        # ── 2. LOG THE ENTRY ──
-        log = ReportActivityLog.objects.create(
-            username=username, 
-            department_name=submitter_location, # Database logs mein ab Plant 1 / Plant 2 save hoga
-            report_name=report_name, 
-            record_id=record_id 
-        )
+#         # ── 2. LOG THE ENTRY ──
+#         log = ReportActivityLog.objects.create(
+#             username=username, 
+#             department_name=submitter_location, # Database logs mein ab Plant 1 / Plant 2 save hoga
+#             report_name=report_name, 
+#             record_id=record_id 
+#         )
         
-        # ── 3. STRICT NOTIFICATION ROUTING ──
-        local_time = localtime(log.timestamp).strftime('%I:%M %p')
-        date_str = localtime(log.timestamp).strftime('%d-%b-%Y')
-        msg = f"{username} submitted {report_name} on {date_str} at {local_time}."
+#         # ── 3. STRICT NOTIFICATION ROUTING ──
+#         local_time = localtime(log.timestamp).strftime('%I:%M %p')
+#         date_str = localtime(log.timestamp).strftime('%d-%b-%Y')
+#         msg = f"{username} submitted {report_name} on {date_str} at {local_time}."
         
-        print(f"🚀 ROUTING START | Submitter: {username} -> Extracted Plant: {submitter_plant_code}")
+#         print(f"🚀 ROUTING START | Submitter: {username} -> Extracted Plant: {submitter_plant_code}")
 
-        approvers = User.objects.filter(groups__name='QA_Approvers')
-        notifs_sent = 0
+#         approvers = User.objects.filter(groups__name='QA_Approvers')
+#         notifs_sent = 0
         
-        for approver in approvers:
-            try:
-                # 🔥 FIX: Approver ke liye bhi 'location' field check karega
-                approver_profile = getattr(approver, 'userprofile', getattr(approver, 'profile', None))
-                if approver_profile and getattr(approver_profile, 'location', None):
-                    approver_location = str(approver_profile.location).strip()
-                    approver_plant_code = approver_location.replace(" ", "").lower()
+#         for approver in approvers:
+#             try:
+#                 # 🔥 FIX: Approver ke liye bhi 'location' field check karega
+#                 approver_profile = getattr(approver, 'userprofile', getattr(approver, 'profile', None))
+#                 if approver_profile and getattr(approver_profile, 'location', None):
+#                     approver_location = str(approver_profile.location).strip()
+#                     approver_plant_code = approver_location.replace(" ", "").lower()
                     
-                    print(f"   -> Checking Approver: {approver.username} -> Extracted Plant: {approver_plant_code}")
+#                     print(f"   -> Checking Approver: {approver.username} -> Extracted Plant: {approver_plant_code}")
                     
-                    # 🔥 100% STRICT MATCH ONLY (plant1 == plant1, plant2 == plant2)
-                    if submitter_plant_code == approver_plant_code:
-                        QANotification.objects.create(user=approver, message=msg, report_log=log)
-                        notifs_sent += 1
-                        print(f"      ✅ MATCHED! Notification sent to {approver.username}")
-                    else:
-                        print(f"      ❌ BLOCKED! Submitter({submitter_plant_code}) != Approver({approver_plant_code})")
-                else:
-                    print(f"   -> ❌ SKIP: Approver {approver.username} has no location configured.")
-            except Exception:
-                pass
+#                     # 🔥 100% STRICT MATCH ONLY (plant1 == plant1, plant2 == plant2)
+#                     if submitter_plant_code == approver_plant_code:
+#                         QANotification.objects.create(user=approver, message=msg, report_log=log)
+#                         notifs_sent += 1
+#                         print(f"      ✅ MATCHED! Notification sent to {approver.username}")
+#                     else:
+#                         print(f"      ❌ BLOCKED! Submitter({submitter_plant_code}) != Approver({approver_plant_code})")
+#                 else:
+#                     print(f"   -> ❌ SKIP: Approver {approver.username} has no location configured.")
+#             except Exception:
+#                 pass
 
-        return Response({
-            "message": "Activity log saved and strictly routed successfully!", 
-            "log_id": log.id
-        }, status=status.HTTP_201_CREATED)
+#         return Response({
+#             "message": "Activity log saved and strictly routed successfully!", 
+#             "log_id": log.id
+#         }, status=status.HTTP_201_CREATED)
         
 # ==============================================================================
 # 🔥 ALL FORMS FETCH API (For View/Approve Mode)

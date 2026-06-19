@@ -31,5 +31,9 @@ urlpatterns = [
     path('save-process-validation/', views.SaveProcessValidationView.as_view(), name='save_process_validation'),
 
     # Production Data Fetch View
+    path('get-single-production-report/<str:form_key>/<int:report_id>/', views.get_single_production_report_view, name='get-single-production-report'),
+
+    #  Main Data Fetch View -> YE SABSE ZAROORI HAI TABLE DIKHANE KE LIYE
     path('production-data/<str:form_key>/', views.production_data_view, name='production_data_view'),
+
 ]

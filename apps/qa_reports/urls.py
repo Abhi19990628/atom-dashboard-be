@@ -31,7 +31,7 @@ urlpatterns = [
     
     path('get-single-report/<str:form_key>/<int:report_id>/', views.get_single_report_view, name='get-single-report'),
 
-    path('log-report/', views.SaveReportLogView.as_view(), name='api_log_report'),
+    # path('log-report/', views.SaveReportLogView.as_view(), name='api_log_report'),
     
   
    

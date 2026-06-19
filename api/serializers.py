@@ -745,3 +745,47 @@ class IncomingMaterialInspectionSerializer(serializers.ModelSerializer):
     class Meta:
         model = IncomingMaterialInspection
         fields = '__all__'
+        
+
+from rest_framework import serializers
+from django.contrib.auth.models import User
+from .models import UserProfile # ✅ Correct class name import kiya
+
+class UserProfileSerializer(serializers.ModelSerializer):
+    # Base user model fields
+    name = serializers.SerializerMethodField()
+    first_name = serializers.CharField(source='user.first_name', write_only=True, required=False)
+    last_name = serializers.CharField(source='user.last_name', write_only=True, required=False)
+    email = serializers.EmailField(source='user.email', read_only=True)
+    
+    # Profile fields mapping
+    phone = serializers.CharField(source='mobile_no', required=False)
+    
+    class Meta:
+        model = UserProfile # ✅ Correct class name yahan bhi
+        fields = ['name', 'first_name', 'last_name', 'email', 'department', 'location', 'phone']
+
+    def get_name(self, obj):
+        return f"{obj.user.first_name} {obj.user.last_name}".strip() or obj.user.username
+
+    def update(self, instance, validated_data):
+        user_data = validated_data.pop('user', {})
+        user = instance.user
+        
+        # Auth_user table update
+        if 'first_name' in user_data:
+            user.first_name = user_data['first_name']
+        if 'last_name' in user_data:
+            user.last_name = user_data['last_name']
+        user.save()
+
+        # UserProfile table update
+        if 'mobile_no' in validated_data:
+            instance.mobile_no = validated_data['mobile_no']
+        if 'location' in validated_data:
+            instance.location = validated_data['location']
+        if 'department' in validated_data:
+            instance.department = validated_data['department']
+            
+        instance.save()
+        return instance
