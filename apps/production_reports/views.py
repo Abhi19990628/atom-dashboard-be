@@ -766,6 +766,8 @@ def production_data_view(request, form_key):
             records = apply_date_filter(base_query, 'plan_date').order_by('-plan_date', '-created_at')
             data = [{
                 'Date': str(r.plan_date),
+                'created_at': r.created_at.isoformat() if r.created_at else None,  
+                'updated_at': r.updated_at.isoformat() if r.updated_at else None,
                 'Plant': r.plant or '',
                 'Machine No': r.machine_no or '—',
                 'Shift': r.shift or '—',

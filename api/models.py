@@ -80,6 +80,7 @@ class Plant2HourlyIdletime(models.Model):
     shift = models.CharField(max_length=5)
     
     class Meta:
+        managed = False
         db_table = 'Plant2_hourly_idle'
         unique_together = [('timestamp', 'machine_no')]
         indexes = [
@@ -843,16 +844,16 @@ class FourMChangeRecord(models.Model):
     # --- Retroactive Section ---
     retro_qty_checked = models.IntegerField(null=True, blank=True)
     retro_entry_qty = models.IntegerField(null=True, blank=True)
-    retro_qty_ok = models.CharField(max_length=20) # OK/Not OK
-    retro_rw = models.CharField(max_length=20)
-    retro_scrap = models.CharField(max_length=20)
+    retro_qty_ok = models.CharField(max_length=20, null=True, blank=True) 
+    retro_rw = models.CharField(max_length=20, null=True, blank=True)
+    retro_scrap = models.CharField(max_length=20, null=True, blank=True)
 
     # --- Containment Suspected Section ---
     cont_qty_checked = models.IntegerField(null=True, blank=True)
     cont_entry_qty = models.IntegerField(null=True, blank=True)
-    cont_qty_ok = models.CharField(max_length=20)
-    cont_rw = models.CharField(max_length=20)
-    cont_scrap = models.CharField(max_length=20)
+    cont_qty_ok = models.CharField(max_length=20, null=True, blank=True)
+    cont_rw = models.CharField(max_length=20, null=True, blank=True)
+    cont_scrap = models.CharField(max_length=20, null=True, blank=True)
 
     # --- Dispatch Detail ---
     customer = models.CharField(max_length=255)
