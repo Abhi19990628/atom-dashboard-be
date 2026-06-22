@@ -1022,10 +1022,6 @@ def get_machine_history(request):
         return Response({"success": False, "error": str(e)}, status=500)
     
   
-from rest_framework.decorators import api_view
-from rest_framework.response import Response
-from django.views.decorators.cache import never_cache
-
 @never_cache
 @api_view(['GET'])
 def plant2_live(request):
@@ -1033,6 +1029,7 @@ def plant2_live(request):
     Plant 2 - LIVE DASHBOARD DATA
     🌟 FINAL FIX: JSON Heartbeat Reset Bug Fixed. Continuous Idle Timer.
     🌟 FIX 2: Shut Height logic improved to ensure UI visibility.
+    🌟 FIX 3: Timezone Offset & Last Hour Cumulative Count Bug Fixed.
     """
     try:
         from apps.machines.machine_state import MACHINE_STATE
@@ -1070,13 +1067,19 @@ def plant2_live(request):
         bulk_cumulative = {}
         bulk_shift_idle = {}
 
+        # 🌟 FIX APPLIED HERE: Strip timezone info to match your 'timestamp without time zone' DB column
+        naive_current_hour = current_hour.replace(tzinfo=None)
+        naive_previous_hour_start = previous_hour_start.replace(tzinfo=None)
+
         try:
             with connection.cursor() as cursor:
+                # 🌟 FIX APPLIED HERE: Use MAX(cumulative) - MIN(cumulative) for accurate last hour count
                 cursor.execute("""
-                    SELECT machine_no, COALESCE(SUM(count), 0) FROM Plant2_data 
+                    SELECT machine_no, COALESCE((MAX(cumulative_count) - MIN(cumulative_count)), 0) 
+                    FROM Plant2_data 
                     WHERE timestamp >= %s AND timestamp < %s
                     GROUP BY machine_no
-                """, [previous_hour_start, current_hour])
+                """, [naive_previous_hour_start, naive_current_hour])
                 for row in cursor.fetchall():
                     bulk_last_hour[str(row[0]).strip()] = int(row[1])
 
@@ -1361,7 +1364,6 @@ def plant2_live(request):
         import traceback
         traceback.print_exc()
         return Response({"success": False, "error": str(e), "machines": [], "plant": 2}, status=500)
-
 
 
 @api_view(['GET'])
@@ -3235,16 +3237,39 @@ class SaveReportLogView(APIView):
         
         
         
-from rest_framework import generics
+from rest_framework.views import APIView
+from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
-from .serializers import UserProfileSerializer
-from .models import UserProfile # ✅ Correct import
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
-class CurrentUserProfileView(generics.RetrieveUpdateAPIView):
-    serializer_class = UserProfileSerializer
+from .models import UserProfile
+from .serializers import UserDepartmentProfileSerializer
+
+
+class CurrentUserProfileView(APIView):
     permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
-    def get_object(self):
-        
-        profile, created = UserProfile.objects.get_or_create(user=self.request.user)
-        return profile
+    def get(self, request):
+        profile = UserProfile.objects.get(user=request.user)
+        serializer = UserDepartmentProfileSerializer(
+            profile,
+            context={"request": request}
+        )
+        return Response(serializer.data)
+
+    def patch(self, request):
+        profile = UserProfile.objects.get(user=request.user)
+
+        serializer = UserDepartmentProfileSerializer(
+            profile,
+            data=request.data,
+            partial=True,
+            context={"request": request}
+        )
+
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+
+        return Response(serializer.errors, status=400)

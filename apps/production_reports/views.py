@@ -765,6 +765,7 @@ def production_data_view(request, form_key):
             base_query = DailyProductionPlan.objects.all()
             records = apply_date_filter(base_query, 'plan_date').order_by('-plan_date', '-created_at')
             data = [{
+                'id': r.id,
                 'Date': str(r.plan_date),
                 'created_at': r.created_at.isoformat() if r.created_at else None,  
                 'updated_at': r.updated_at.isoformat() if r.updated_at else None,
@@ -862,12 +863,12 @@ def production_data_view(request, form_key):
                     ('Approval & Training', 'Setup Approval', r.setup_approval or ''),
                     ('Approval & Training', 'Training Provided', getattr(r, 'training_provided', '') or ''),
                     ('Retroactive', 'Qty Checked', getattr(r, 'retro_qty_checked', '') if getattr(r, 'retro_qty_checked', None) is not None else ''),
-                    ('Retroactive', 'Entry Qty', getattr(r, 'retro_entry_qty', '') if getattr(r, 'retro_entry_qty', None) is not None else ''),
+                    # ('Retroactive', 'Entry Qty', getattr(r, 'retro_entry_qty', '') if getattr(r, 'retro_entry_qty', None) is not None else ''),
                     ('Retroactive', 'Qty OK', getattr(r, 'retro_qty_ok', '') or ''),
                     ('Retroactive', 'R/W', getattr(r, 'retro_rw', '') or ''),
                     ('Retroactive', 'Scrap', getattr(r, 'retro_scrap', '') or ''),
                     ('Containment', 'Qty Checked', getattr(r, 'cont_qty_checked', '') if getattr(r, 'cont_qty_checked', None) is not None else ''),
-                    ('Containment', 'Entry Qty', getattr(r, 'cont_entry_qty', '') if getattr(r, 'cont_entry_qty', None) is not None else ''),
+                    # ('Containment', 'Entry Qty', getattr(r, 'cont_entry_qty', '') if getattr(r, 'cont_entry_qty', None) is not None else ''),
                     ('Containment', 'Qty OK', getattr(r, 'cont_qty_ok', '') or ''),
                     ('Containment', 'R/W', getattr(r, 'cont_rw', '') or ''),
                     ('Containment', 'Scrap', getattr(r, 'cont_scrap', '') or ''),
@@ -1386,7 +1387,3 @@ def production_data_view(request, form_key):
             return JsonResponse({'data': data})
         except Exception as e:
             print("❌ Backend Error in four-m-summary:", str(e))
-            return JsonResponse({'data': [], 'error': str(e)}, status=500)
-
-    # Agar koi galat form_key aati hai
-    return JsonResponse({'data': [], 'error': 'Production form type not supported'}, status=400)

@@ -843,14 +843,14 @@ class FourMChangeRecord(models.Model):
 
     # --- Retroactive Section ---
     retro_qty_checked = models.IntegerField(null=True, blank=True)
-    retro_entry_qty = models.IntegerField(null=True, blank=True)
+    # retro_entry_qty = models.IntegerField(null=True, blank=True)
     retro_qty_ok = models.CharField(max_length=20, null=True, blank=True) 
     retro_rw = models.CharField(max_length=20, null=True, blank=True)
     retro_scrap = models.CharField(max_length=20, null=True, blank=True)
 
     # --- Containment Suspected Section ---
     cont_qty_checked = models.IntegerField(null=True, blank=True)
-    cont_entry_qty = models.IntegerField(null=True, blank=True)
+    # cont_entry_qty = models.IntegerField(null=True, blank=True)
     cont_qty_ok = models.CharField(max_length=20, null=True, blank=True)
     cont_rw = models.CharField(max_length=20, null=True, blank=True)
     cont_scrap = models.CharField(max_length=20, null=True, blank=True)
@@ -2059,3 +2059,47 @@ class QANotification(models.Model):
 
     def __str__(self):
         return f"QA Alert for {self.user.username}: {self.report_log.report_name}"
+
+
+from django.db import models
+from django.contrib.auth.models import User
+from django.db.models.signals import post_save
+from django.dispatch import receiver
+
+# ==============================================================================
+# 🏭 ENTERPRISE USER PROFILE MASTER
+# ==============================================================================
+class UserProfile(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
+    
+    # 📌 Nayi Fields Jo Aapne Maangi Thi
+    employee_id = models.CharField(max_length=50, unique=True, null=True, blank=True, help_text="Unique Employee Code")
+    mobile_no = models.CharField(max_length=15, null=True, blank=True)
+    contact_email = models.EmailField(null=True, blank=True, help_text="Alternate/Direct Email")
+    full_name = models.CharField(max_length=100, null=True, blank=True, help_text="Full Name of the User")
+    designation = models.CharField(max_length=100, null=True, blank=True, help_text="Designation of the User")
+    profile_image = models.ImageField(upload_to="profile_images/", blank=True, null=True)
+    # 📌 Location (Konsa Plant Hai)
+    LOCATION_CHOICES = (
+        ('Plant 1', 'Plant 1'),
+        ('Plant 2', 'Plant 2'),
+        ('HQ', 'Headquarters'),
+    )
+    location = models.CharField(max_length=50, choices=LOCATION_CHOICES, default='Plant 1')
+
+    # 📌 Department
+    DEPARTMENT_CHOICES = (
+        ('QA', 'Quality Assurance (QA)'),
+        ('Production', 'Production'),
+        ('Maintenance', 'Maintenance'),
+        ('Management', 'Management'),
+    )
+    department = models.CharField(max_length=50, choices=DEPARTMENT_CHOICES, default='QA')
+
+    class Meta:
+        db_table = "user_department_profiles"
+
+    def __str__(self):
+        emp_code = self.employee_id if self.employee_id else "NO-ID"
+        return f"{self.user.username} | ID: {emp_code} | {self.location} - {self.department}"
+    

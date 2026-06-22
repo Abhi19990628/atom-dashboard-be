@@ -746,46 +746,36 @@ class IncomingMaterialInspectionSerializer(serializers.ModelSerializer):
         model = IncomingMaterialInspection
         fields = '__all__'
         
-
 from rest_framework import serializers
-from django.contrib.auth.models import User
-from .models import UserProfile # ✅ Correct class name import kiya
+from .models import UserProfile
 
-class UserProfileSerializer(serializers.ModelSerializer):
-    # Base user model fields
-    name = serializers.SerializerMethodField()
-    first_name = serializers.CharField(source='user.first_name', write_only=True, required=False)
-    last_name = serializers.CharField(source='user.last_name', write_only=True, required=False)
-    email = serializers.EmailField(source='user.email', read_only=True)
-    
-    # Profile fields mapping
-    phone = serializers.CharField(source='mobile_no', required=False)
-    
+class UserDepartmentProfileSerializer(serializers.ModelSerializer):
+    username = serializers.CharField(source="user.username", read_only=True)
+    email = serializers.EmailField(source="user.email", read_only=True)
+    role = serializers.SerializerMethodField()
+    profile_image = serializers.ImageField(required=False, allow_null=True)
     class Meta:
-        model = UserProfile # ✅ Correct class name yahan bhi
-        fields = ['name', 'first_name', 'last_name', 'email', 'department', 'location', 'phone']
+        model = UserProfile
+        fields = [
+            "id",
+            "user",
+            "username",
+            "email",
+            "employee_id",
+            "mobile_no",
+            "contact_email",
+            "full_name",
+            "location",
+            "department",
+            "designation",
+            "profile_image",
+            "role",
+        ]
+        read_only_fields = ["id", "user", "username", "email", "role" ]
 
-    def get_name(self, obj):
-        return f"{obj.user.first_name} {obj.user.last_name}".strip() or obj.user.username
-
-    def update(self, instance, validated_data):
-        user_data = validated_data.pop('user', {})
-        user = instance.user
-        
-        # Auth_user table update
-        if 'first_name' in user_data:
-            user.first_name = user_data['first_name']
-        if 'last_name' in user_data:
-            user.last_name = user_data['last_name']
-        user.save()
-
-        # UserProfile table update
-        if 'mobile_no' in validated_data:
-            instance.mobile_no = validated_data['mobile_no']
-        if 'location' in validated_data:
-            instance.location = validated_data['location']
-        if 'department' in validated_data:
-            instance.department = validated_data['department']
-            
-        instance.save()
-        return instance
+    def get_role(self, obj):
+        if obj.user.is_superuser:
+            return "Admin"
+        if obj.user.is_staff:
+            return "Staff"
+        return "User"

@@ -87,6 +87,6 @@ urlpatterns = [
     path('parts/<str:customer_name>/', views.get_parts_by_customer, name='get_parts'),
     path('qa-notifications/<str:username>/', GetQANotificationsView.as_view(), name='api_get_qa_notifications'),
     path('log-report/', views.SaveReportLogView.as_view(), name='api_log_report'),
-    path('api/profile/me/', CurrentUserProfileView.as_view(), name='current-user-profile'),
+    path('profile/me/', CurrentUserProfileView.as_view(), name='current-user-profile'),
 ]
 
