@@ -58,6 +58,7 @@ from .models import (
     ProjectionWeldingPMCheckSheet,
     PowerPressPMCheckSheet,
     HydraulicPMCheckSheet,FourMDisplay,FourMSummary, FixtureMaintenanceRecord,IncomingMaterialInspection
+    ,FourMInformationSheet
 )
 
 # ==========================================
@@ -307,7 +308,12 @@ class FourMDisplaySerializer(serializers.ModelSerializer):
 class FourMSummarySerializer(serializers.ModelSerializer):
     class Meta:
         model = FourMSummary
-        fields = '__all__'       
+        fields = '__all__' 
+
+class FourMInformationSheetSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = FourMInformationSheet
+        fields = '__all__'      
 ###################################
 #
 #       Prodcution monthly 

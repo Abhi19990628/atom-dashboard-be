@@ -16,7 +16,7 @@ urlpatterns = [
     path('save-4m-record/', views.SaveFourMChangeRecordView.as_view(), name='save-4m-record'),
     path('save-4m-display/', views.SaveFourMDisplayView.as_view(), name='save_4m_display'),
     path('save-4m-summary/', views.SaveFourMSummaryView.as_view(), name='save-4m-summary'),
-
+    path('save-4m-information-sheet/', views.SaveFourMInformationSheetView.as_view(), name='save-4m-information-sheet'),
     
 
     # Production Monthly URLs
@@ -28,7 +28,7 @@ urlpatterns = [
     path('save-spot-welder/', views.SaveSpotWelderView.as_view(), name='save_spot_welder'),
     path('save-tig-mig-welder/', views.SaveTigMigWelderView.as_view(), name='save_tig_mig_welder'),
     path('save-process-validation/', views.SaveProcessValidationView.as_view(), name='save_process_validation'),
-
+    
 
     # Update API 
     path('update-daily-production/<int:pk>/', views.UpdateDailyProductionPlanView.as_view(), name='update_daily_production'),
