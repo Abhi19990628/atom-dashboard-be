@@ -11,13 +11,14 @@ from .views import (
     realtime_dashboard,
     monthly_summary,
     machine_wise,
-    machine_analysis
+    machine_analysis,
+
 )
 
 from .views import get_machine_history
 from django.contrib import admin
 from .views import CustomLoginView, ChangePasswordView , DirectPasswordResetView
-from .views import CurrentUserProfileView
+from .views import CurrentUserProfileView,get_department_stats
 
 urlpatterns = [
     # Dashboard APIs
@@ -74,6 +75,8 @@ urlpatterns = [
     path('plant1-live/', views.plant1_live, name='plant1_live'),
     path('machine-history/', get_machine_history, name='machine_history'),
     
+
+    path('department-stats/', get_department_stats, name='department_stats'),
     # Data Saving
     path('save-hourly-snapshot/', views.save_hourly_snapshot, name='save_hourly_snapshot'),
     path('machine-changes/', views.get_machine_changes_from_db, name='machine_changes_db'),

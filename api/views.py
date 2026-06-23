@@ -3250,6 +3250,7 @@ class CurrentUserProfileView(APIView):
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
+
     def get(self, request):
         profile = UserProfile.objects.get(user=request.user)
         serializer = UserDepartmentProfileSerializer(
@@ -3273,3 +3274,132 @@ class CurrentUserProfileView(APIView):
             return Response(serializer.data)
 
         return Response(serializer.errors, status=400)
+
+    def get_object(self):
+        
+        profile, created = UserProfile.objects.get_or_create(user=self.request.user)
+        return profile
+
+
+@api_view(['GET'])
+def get_department_stats(request):
+     # ── 1. GET THE USERNAME OF THE VIEWER FROM FRONTEND ──
+    viewer_username = request.GET.get('username')
+    
+    if not viewer_username:
+        return Response({"error": "Username is required to fetch stats."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        user_obj = User.objects.get(username=viewer_username)
+    except User.DoesNotExist:
+        return Response({"error": f"User '{viewer_username}' not found in database."}, status=status.HTTP_404_NOT_FOUND)
+
+     # ── 2. EXTRACT PLANT FROM THE VIEWER'S PROFILE ──
+    user_location = None
+    user_department = None
+    
+    try:
+        profile = getattr(user_obj, 'userprofile', getattr(user_obj, 'profile', None))
+        if profile:
+            user_location = str(getattr(profile, 'location', '')).strip()
+            user_department = str(getattr(profile, 'department', '')).strip()
+    except Exception as e:
+        print(f" Profile check exception for {viewer_username}: {e}")
+
+    if not user_location or not user_department:
+        return Response({
+            "error": f"Validation Error: User '{viewer_username}' lacks valid Location or Department in Admin."
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+      # ── 3. ROLE-BASED ACCESS CONTROL (Admin vs Head vs Engineer) ──
+    print(f" DEBUG: Checking roles for user -> {viewer_username}")
+    
+    # Case A: Admin (Superuser ya All access)
+    if user_obj.is_superuser or user_department.lower() == 'all' or user_location.lower() == 'all':
+        print(f" STATUS: {viewer_username} is an ADMIN (Showing Everything)")
+        logs = ReportActivityLog.objects.all()
+        
+      # Case B: Head/Approver (If the user belongs to any Approver group)
+    elif user_obj.groups.filter(name__icontains='Approvers').exists():
+        target_department = f"{user_location} ({user_department})"
+        print(f" STATUS: {viewer_username} is a HEAD for {target_department}")
+        logs = ReportActivityLog.objects.filter(department_name__icontains=target_department)
+        
+    # Case C: Engineer
+    else:
+        print(f" STATUS: {viewer_username} is an ENGINEER (Showing only own data)")
+        #  MAIN FIX: Sirf us operator ka khud ka data nikalenge
+        logs = ReportActivityLog.objects.filter(username=viewer_username)
+
+    # ── 4. DATA FORMATTING & DYNAMIC HEAD DETECTION ──
+    user_data_dict = {}
+    dynamic_head_cache = {}
+
+    for log in logs:
+        raw_username = log.username 
+        db_department = log.department_name 
+        
+        # Dynamic Head Detection
+        if db_department not in dynamic_head_cache:
+            head_name = 'Admin (Head)' 
+            try:
+                if '(' in db_department and ')' in db_department:
+                    loc_part = db_department.split('(')[0].strip() 
+                    dept_part = db_department.split('(')[1].replace(')', '').strip() 
+                    
+                    target_group = f"{dept_part}_Approvers" 
+                    target_loc_code = loc_part.replace(" ", "").lower() 
+                    
+                    approvers = User.objects.filter(groups__name=target_group)
+                    
+                    for approver in approvers:
+                        profile = getattr(approver, 'userprofile', getattr(approver, 'profile', None))
+                        if profile and getattr(profile, 'location', None):
+                            approver_loc_code = str(profile.location).strip().replace(" ", "").lower()
+                            
+                            if approver_loc_code == target_loc_code:
+                                head_name = f"{approver.username.split('@')[0]} (Head)"
+                                break 
+            except Exception as e:
+                pass
+            
+            dynamic_head_cache[db_department] = head_name
+
+        actual_head_name = dynamic_head_cache[db_department]
+
+        # Formatting user dict (Removing '@')
+        if raw_username not in user_data_dict:
+            user_data_dict[raw_username] = {
+                'user_id': raw_username, 
+                'username': raw_username.split('@')[0], 
+                'filled': 0,
+                'approved': 0,
+                'pending': 0,
+                'head': actual_head_name, 
+                'reportsList': []
+            }
+
+        db_status = log.status.strip().lower() if log.status else "in progress"
+        
+        if 'approved' in db_status:
+            display_status = 'Approved'
+            user_data_dict[raw_username]['approved'] += 1
+        else:
+            display_status = 'Pending'
+            user_data_dict[raw_username]['pending'] += 1
+
+        user_data_dict[raw_username]['filled'] += 1
+
+        report_display_id = str(log.record_id) if log.record_id else "N/A"
+        formatted_date = log.timestamp.strftime('%d-%b-%Y') if log.timestamp else ""
+
+        user_data_dict[raw_username]['reportsList'].append({
+            'id': report_display_id,
+            'name': log.report_name,
+            'date': formatted_date, 
+            'status': display_status
+        })
+
+    response_data = list(user_data_dict.values())
+    return Response(response_data)
+

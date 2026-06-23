@@ -2103,3 +2103,49 @@ class UserProfile(models.Model):
         emp_code = self.employee_id if self.employee_id else "NO-ID"
         return f"{self.user.username} | ID: {emp_code} | {self.location} - {self.department}"
     
+
+class FourMInformationSheet(models.Model):
+
+    # Tracking row order from frontend
+
+    s_no = models.IntegerField(blank=True, null=True)
+
+    # Specifically added for the Information Sheet form
+
+    time = models.TimeField(blank=True, null=True) 
+
+    # Basic Machine & Operator Details
+
+    machine_no = models.CharField(max_length=100, blank=True, null=True)
+    operator_name = models.CharField(max_length=100, blank=True, null=True)
+
+
+    # 4M Details (Expects "Change" or "No Change")
+
+    man = models.CharField(max_length=50, blank=True, null=True)
+    machine = models.CharField(max_length=50, blank=True, null=True)
+    material = models.CharField(max_length=50, blank=True, null=True)
+    method = models.CharField(max_length=50, blank=True, null=True)
+
+    # Description of the change
+
+    change_description = models.TextField(blank=True, null=True)
+
+    # Person who prepared/submitted the report
+
+    prepared_by = models.CharField(max_length=100, blank=True, null=True)
+
+    # Tracking Dates
+
+    date_filled = models.DateField(auto_now_add=True)      # Only the date
+
+    created_at = models.DateTimeField(auto_now_add=True)   # Date AND exact time
+
+    class Meta:
+
+        db_table = 'four_m_information_sheet'
+
+    def __str__(self):
+
+        return f"{self.machine_no} - {self.operator_name} ({self.date_filled})"
+    

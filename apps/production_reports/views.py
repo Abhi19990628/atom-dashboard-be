@@ -23,12 +23,12 @@ from api.models import (
     DailyProductionPlan, FourMChangeInspection, FourMChangeRecord,
     MonthlyProductionPlan, OperatorObservanceChecklist, OperatorObservancePlan,
     PMChecklistMHE, ProjectionWelderQual, SpotWelderQual, TigMigWelderQual, ProcessValidation, FourMDisplay, FourMSummary,
-    ReportActivityLog  # 🔥 Import for dynamic routing/fetching
+    ReportActivityLog,FourMInformationSheet ,FourMInformationSheet
 )
 
 from api.serializers import (
     TipChangeDressingSerializer, DailyProductionPlanSerializer,
-    FourMChangeInspectionSerializer, FourMChangeRecordSerializer, FourMSummarySerializer
+    FourMChangeInspectionSerializer, FourMChangeRecordSerializer, FourMSummarySerializer,FourMInformationSheetSerializer
 )
 
 try:
@@ -514,7 +514,62 @@ class SaveProcessValidationView(APIView):
             return Response({"success": True, "message": "Process Validation Data Saved!", "record_id": validation.id}, status=status.HTTP_201_CREATED)
         except Exception as e:
             return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+class SaveFourMInformationSheetView(APIView):
+    @transaction.atomic
+    def post(self, request):
+        try:
+            data = request.data
+            entries = data.get('entries', [])
+            
+            # Retrieve 'preparedBy' from the frontend payload
+            # Checking both camelCase and snake_case just to be safe
+            prepared_by_val = data.get('preparedBy', data.get('prepared_by', ''))
+            
+            last_id = None
 
+            for entry in entries:
+                # 1. Handle empty time strings from the frontend by setting them to None
+                # This prevents Django from throwing a ValidationError for TimeField
+                if not entry.get('time'):
+                    entry['time'] = None
+                
+                # 2. Inject 'prepared_by' into each entry dictionary 
+                # This ensures the serializer receives it and maps it to the database column
+                entry['prepared_by'] = prepared_by_val
+
+                # 3. Pass the data to the Serializer
+                serializer = FourMInformationSheetSerializer(data=entry)
+                
+                # 4. Validate the data against the Model's constraints
+                if serializer.is_valid():
+                    # If the data is valid, save the record to the database
+                    saved_instance = serializer.save()
+                    
+                    # Keep track of the last inserted ID (useful for activity logging in React)
+                    last_id = saved_instance.id
+                else:
+                    # If validation fails (e.g., incorrect format, exceeding max_length), 
+                    # return a 400 Bad Request with the specific serializer errors
+                    return Response({
+                        "success": False, 
+                        "error": str(serializer.errors)
+                    }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # 5. Return a success response back to the React frontend
+            return Response({
+                "success": True, 
+                "message": "Information Sheet Saved Successfully!", 
+                "record_id": last_id
+            }, status=status.HTTP_201_CREATED)
+        
+        except Exception as e:
+            # Catch any unexpected server errors and prevent the app from crashing
+            print(f"Information Sheet Error: {str(e)}")
+            return Response({
+                "success": False, 
+                "error": str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 # ==============================================================================
 # 🔥 NEW: SINGLE REPORT FETCH API (For View/Approve Mode in Production Hub)
 # ==============================================================================
@@ -1366,7 +1421,6 @@ def production_data_view(request, form_key):
             base_query = FourMSummary.objects.all()
             records = apply_date_filter(base_query, 'date').order_by('-created_at')
             data = [{
-                # 'S.No': r.s_no if r.s_no is not None else '',
                 'Date': str(r.date) if r.date else '',
                 'Customer': r.customer or '',
                 'Part Name & No': r.part_name_no or '',
@@ -1387,3 +1441,32 @@ def production_data_view(request, form_key):
             return JsonResponse({'data': data})
         except Exception as e:
             print("❌ Backend Error in four-m-summary:", str(e))
+            print("❌ Backend Error in four-m-summary:", str(e))
+            return JsonResponse({'data': [], 'error': str(e)}, status=500)
+
+    # ── 17. 4M INFORMATION SHEET ──────────────────────────────────
+    elif form_key == 'four-m-information':
+        try:
+            base_query = FourMInformationSheet.objects.all()
+            records = apply_date_filter(base_query, 'date_filled').order_by('-created_at')
+            data = [{
+                'S.No': r.s_no if r.s_no is not None else '',
+                'Time': str(r.time) if r.time else '',
+                'Machine No': r.machine_no or '',
+                'Operator Name': r.operator_name or '',
+                'Man': r.man or '',
+                'Machine': r.machine or '',
+                'Material': r.material or '',
+                'Method': r.method or '',
+                'Change Description': r.change_description or '',
+                'Prepared By': r.prepared_by or '',
+                'Date': str(r.date_filled) if r.date_filled else '',
+                'created_at': r.created_at.isoformat() if r.created_at else None,
+            } for r in records]
+            return JsonResponse({'data': data})
+        except Exception as e:
+            print("❌ Backend Error in four-m-information:", str(e))
+            return JsonResponse({'data': [], 'error': str(e)}, status=500)
+
+    # Agar koi galat form_key aati hai
+    return JsonResponse({'data': [], 'error': 'Production form type not supported'}, status=400)
