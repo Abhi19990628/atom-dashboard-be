@@ -57,6 +57,242 @@ def clean_date(val):
     except ValueError:
         return val      
 
+
+
+# ==============================================================================
+# ✅ QA HUB ROUTE MAPPING + AUTO ACTIVITY LOG & NOTIFICATION ROUTER
+# =================================================================================================
+
+def normalize_report_name(value):
+    return str(value or "").strip().lower()
+
+
+QA_REPORT_ROUTE_MAP = {
+    normalize_report_name("Deviation Approval Form"): {
+        "form_key": "deviation",
+        "hub": "qa-hub",
+        "target_group": "Quality_Approvers",
+    },
+    normalize_report_name("Redbin Approval Form"): {
+        "form_key": "redbin",
+        "hub": "qa-hub",
+        "target_group": "Quality_Approvers",
+    },
+    normalize_report_name("Red Bin Attendance"): {
+        "form_key": "redbin-attendance",
+        "hub": "qa-hub",
+        "target_group": "Quality_Approvers",
+    },
+    normalize_report_name("Incoming Inspection"): {
+        "form_key": "incoming",
+        "hub": "qa-hub",
+        "target_group": "Quality_Approvers",
+    },
+    normalize_report_name("Incoming Material Inspection"): {
+        "form_key": "incoming",
+        "hub": "qa-hub",
+        "target_group": "Quality_Approvers",
+    },
+    normalize_report_name("Inspection Report"): {
+        "form_key": "inspection",
+        "hub": "qa-hub",
+        "target_group": "Quality_Approvers",
+    },
+    normalize_report_name("Inspection"): {
+        "form_key": "inspection",
+        "hub": "qa-hub",
+        "target_group": "Quality_Approvers",
+    },
+    normalize_report_name("Scrap Note"): {
+        "form_key": "scrap",
+        "hub": "qa-hub",
+        "target_group": "Quality_Approvers",
+    },
+    normalize_report_name("Poka Yoke"): {
+        "form_key": "poka-yoke",
+        "hub": "qa-hub",
+        "target_group": "Quality_Approvers",
+    },
+    normalize_report_name("PDI"): {
+        "form_key": "pdi",
+        "hub": "qa-hub",
+        "target_group": "Quality_Approvers",
+    },
+    normalize_report_name("QA Rework Report"): {
+        "form_key": "rework",
+        "hub": "qa-hub",
+        "target_group": "Quality_Approvers",
+    },
+    normalize_report_name("Sample Inspection"): {
+        "form_key": "sample-inspection",
+        "hub": "qa-hub",
+        "target_group": "Quality_Approvers",
+    },
+    normalize_report_name("Good Receipt"): {
+        "form_key": "good-receipt",
+        "hub": "qa-hub",
+        "target_group": "Quality_Approvers",
+    },
+    normalize_report_name("Material Requisition Slip"): {
+        "form_key": "good-receipt",
+        "hub": "qa-hub",
+        "target_group": "Quality_Approvers",
+    },
+    normalize_report_name("RM Quality"): {
+        "form_key": "rm-quality-plan",
+        "hub": "qa-hub",
+        "target_group": "Quality_Approvers",
+    },
+    normalize_report_name("Raw Material"): {
+        "form_key": "rm-quality-plan",
+        "hub": "qa-hub",
+        "target_group": "Quality_Approvers",
+    },
+    normalize_report_name("Process Audit"): {
+        "form_key": "process-audit",
+        "hub": "qa-hub",
+        "target_group": "Quality_Approvers",
+    },
+    normalize_report_name("Coherence"): {
+        "form_key": "coherence",
+        "hub": "qa-hub",
+        "target_group": "Quality_Approvers",
+    },
+    normalize_report_name("Coherence Checklist"): {
+        "form_key": "coherence",
+        "hub": "qa-hub",
+        "target_group": "Quality_Approvers",
+    },
+    normalize_report_name("Layout Inspection"): {
+        "form_key": "layout-inspection",
+        "hub": "qa-hub",
+        "target_group": "Quality_Approvers",
+    },
+    normalize_report_name("Product Audit"): {
+        "form_key": "product-audit-plan",
+        "hub": "qa-hub",
+        "target_group": "Quality_Approvers",
+    },
+    normalize_report_name("Product Audit Plan"): {
+        "form_key": "product-audit-plan",
+        "hub": "qa-hub",
+        "target_group": "Quality_Approvers",
+    },
+    normalize_report_name("Customer Complaint"): {
+        "form_key": "customer-complaint",
+        "hub": "qa-hub",
+        "target_group": "Quality_Approvers",
+    },
+    normalize_report_name("Customer Satisfaction"): {
+        "form_key": "customer-satisfaction",
+        "hub": "qa-hub",
+        "target_group": "Quality_Approvers",
+    },
+    normalize_report_name("Warranty Claim"): {
+        "form_key": "warranty-claim",
+        "hub": "qa-hub",
+        "target_group": "Quality_Approvers",
+    },
+    normalize_report_name("MOM"): {
+        "form_key": "mom",
+        "hub": "qa-hub",
+        "target_group": "Quality_Approvers",
+    },
+    normalize_report_name("Meeting"): {
+        "form_key": "mom",
+        "hub": "qa-hub",
+        "target_group": "Quality_Approvers",
+    },
+}
+
+
+DEFAULT_QA_ROUTE_CONFIG = {
+    "form_key": "inspection",
+    "hub": "qa-hub",
+    "target_group": "Quality_Approvers",
+}
+
+
+def get_qa_route_config(report_name):
+    return QA_REPORT_ROUTE_MAP.get(
+        normalize_report_name(report_name),
+        DEFAULT_QA_ROUTE_CONFIG,
+    )
+
+
+def auto_log_report(username, report_name, record_id, form_key=None, hub=None, target_group=None):
+    if not username:
+        username = "Unknown User"
+
+    try:
+        route_config = get_qa_route_config(report_name)
+
+        final_form_key = form_key or route_config["form_key"]
+        final_hub = hub or route_config["hub"]
+        final_target_group = target_group or route_config["target_group"]
+
+        user_obj = User.objects.filter(username=username).first()
+
+        dept_name = final_hub
+        submitter_location_code = ""
+
+        if user_obj:
+            profile = getattr(user_obj, "userprofile", getattr(user_obj, "profile", None))
+
+            if profile:
+                loc = str(getattr(profile, "location", "") or "").strip()
+                dept = str(getattr(profile, "department", "") or "").strip()
+
+                if loc or dept:
+                    dept_name = f"{loc} ({dept})".strip()
+
+                submitter_location_code = loc.replace(" ", "").lower()
+
+        log = ReportActivityLog.objects.create(
+            username=username,
+            department_name=dept_name,
+            report_name=report_name,
+            record_id=record_id,
+            form_key=final_form_key,
+            hub=final_hub,
+        )
+
+        approvers = User.objects.filter(groups__name=final_target_group)
+
+        date_str = timezone.localtime().strftime("%d-%b-%Y")
+        time_str = timezone.localtime().strftime("%I:%M %p")
+        msg = f"{username} submitted {report_name} on {date_str} at {time_str}."
+
+        for approver in approvers:
+            approver_profile = getattr(
+                approver,
+                "userprofile",
+                getattr(approver, "profile", None),
+            )
+
+            # If both submitter and approver have location, send only same plant/location.
+            # If submitter has no location, notification will go to all Quality_Approvers.
+            if submitter_location_code and approver_profile and getattr(approver_profile, "location", None):
+                approver_location_code = str(
+                    approver_profile.location
+                ).strip().replace(" ", "").lower()
+
+                if submitter_location_code != approver_location_code:
+                    continue
+
+            QANotification.objects.create(
+                user=approver,
+                message=msg,
+                report_log=log,
+            )
+
+        return log
+
+    except Exception as e:
+        print(f"🔥 QA Auto Log Failed for {report_name}: {str(e)}")
+        traceback.print_exc()
+        return None
+
 class TrackedAPIView(APIView):
     report_name = "General Report"
     def finalize_response(self, request, response, *args, **kwargs):
@@ -501,90 +737,47 @@ class GetInspectionReportView(APIView):
              return Response({"message": "No report found for given filters"}, status=status.HTTP_404_NOT_FOUND)
 
 
-# # ==============================================================================
-# # 🏭 PURE & STRICT DYNAMIC ROUTING (UPDATED FOR NEW FIELDS: location)
-# # ==============================================================================
-# class SaveReportLogView(APIView):
-#     permission_classes = [] 
-    
-#     def post(self, request):
-#         username = request.data.get('username')
-#         report_name = request.data.get('report_name')
-#         record_id = request.data.get('record_id') 
 
-#         if not username or not report_name:
-#             return Response({"error": "Username and report_name are required fields."}, status=status.HTTP_400_BAD_REQUEST)
+# ==============================================================================
+# ✅ QA HUB LOG REPORT API
+# =================================================================================================
+class SaveReportLogView(APIView):
+    permission_classes = []
 
-#         try:
-#             user_obj = User.objects.get(username=username)
-#         except User.DoesNotExist:
-#             return Response({"error": f"System Error: User '{username}' not found in database."}, status=status.HTTP_404_NOT_FOUND)
+    def post(self, request):
+        username = request.data.get("username")
+        report_name = request.data.get("report_name")
+        record_id = request.data.get("record_id")
 
-#         # ── 1. STRICT PROFILE EXTRACTION (NEW FIELD 'location' SE CHECK KAREGA) ──
-#         submitter_location = None
-        
-#         try:
-#             profile = getattr(user_obj, 'userprofile', getattr(user_obj, 'profile', None))
-#             # 🔥 FIX: 'department_name' hata kar 'location' laga diya!
-#             if profile and getattr(profile, 'location', None):
-#                 submitter_location = str(profile.location).strip()
-#         except Exception as e:
-#             print(f"⚠️ Profile check exception for {username}: {e}")
+        if not username or not report_name:
+            return Response(
+                {"error": "username and report_name are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-#         # 🔥 STRICT GATE: Agar location (Plant 1/2) nahi mila toh form yahin ruk jayega!
-#         if not submitter_location:
-#             return Response({
-#                 "error": f"Validation Error: User '{username}' does not have a valid Location assigned in Django Admin. Please map the user to Plant 1 or Plant 2."
-#             }, status=status.HTTP_400_BAD_REQUEST)
+        log = auto_log_report(
+            username=username,
+            report_name=report_name,
+            record_id=record_id,
+        )
 
-#         # Routing ke liye clean format (e.g., "Plant 1" -> "plant1")
-#         submitter_plant_code = submitter_location.replace(" ", "").lower()
+        if not log:
+            return Response(
+                {"error": "Activity log failed. Check backend console."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
-#         # ── 2. LOG THE ENTRY ──
-#         log = ReportActivityLog.objects.create(
-#             username=username, 
-#             department_name=submitter_location, # Database logs mein ab Plant 1 / Plant 2 save hoga
-#             report_name=report_name, 
-#             record_id=record_id 
-#         )
-        
-#         # ── 3. STRICT NOTIFICATION ROUTING ──
-#         local_time = localtime(log.timestamp).strftime('%I:%M %p')
-#         date_str = localtime(log.timestamp).strftime('%d-%b-%Y')
-#         msg = f"{username} submitted {report_name} on {date_str} at {local_time}."
-        
-#         print(f"🚀 ROUTING START | Submitter: {username} -> Extracted Plant: {submitter_plant_code}")
+        return Response(
+            {
+                "success": True,
+                "message": "QA activity log and notification created successfully.",
+                "log_id": log.id,
+                "form_key": log.form_key,
+                "hub": log.hub,
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
-#         approvers = User.objects.filter(groups__name='QA_Approvers')
-#         notifs_sent = 0
-        
-#         for approver in approvers:
-#             try:
-#                 # 🔥 FIX: Approver ke liye bhi 'location' field check karega
-#                 approver_profile = getattr(approver, 'userprofile', getattr(approver, 'profile', None))
-#                 if approver_profile and getattr(approver_profile, 'location', None):
-#                     approver_location = str(approver_profile.location).strip()
-#                     approver_plant_code = approver_location.replace(" ", "").lower()
-                    
-#                     print(f"   -> Checking Approver: {approver.username} -> Extracted Plant: {approver_plant_code}")
-                    
-#                     # 🔥 100% STRICT MATCH ONLY (plant1 == plant1, plant2 == plant2)
-#                     if submitter_plant_code == approver_plant_code:
-#                         QANotification.objects.create(user=approver, message=msg, report_log=log)
-#                         notifs_sent += 1
-#                         print(f"      ✅ MATCHED! Notification sent to {approver.username}")
-#                     else:
-#                         print(f"      ❌ BLOCKED! Submitter({submitter_plant_code}) != Approver({approver_plant_code})")
-#                 else:
-#                     print(f"   -> ❌ SKIP: Approver {approver.username} has no location configured.")
-#             except Exception:
-#                 pass
-
-#         return Response({
-#             "message": "Activity log saved and strictly routed successfully!", 
-#             "log_id": log.id
-#         }, status=status.HTTP_201_CREATED)
-        
 # ==============================================================================
 # 🔥 ALL FORMS FETCH API (For View/Approve Mode)
 # ==============================================================================
@@ -727,6 +920,38 @@ def get_single_report_view(request, form_key, report_id):
                 "plant_location": report.plant_location, "date": str(report.inspection_date), "operator": report.operator_name,
                 "machine": report.machine_number, "inspection_data": report.inspection_data, "submitted_by": submitted_user
             }
+            return Response({"success": True, "data": data}, status=200)
+        
+        elif form_key in ['rework-view', 'rework']:
+            report = get_object_or_404(ReworkEntry, id=rec_id)
+
+            details = report.dynamic_details or {}
+            status_val = details.get('status', '')
+            observations = details.get('observations', [])
+
+            if status_val == 'ok':
+                final_status = 'OK'
+            elif status_val == 'notok':
+                final_status = 'NOT OK'
+            else:
+                final_status = '—'
+
+            data = {
+                "Date": str(report.date),
+                "Part Name": report.part_name,
+                "Part No": report.part_no,
+                "Spec": report.spec,
+                "Non Conformance": report.non_conformance,
+                "Rework Qty": report.rework_qty,
+                "Status": final_status,
+                "Inspected By": report.inspected_by or "—",
+                "Remark": report.remark or "—",
+                "submitted_by": submitted_user,
+            }
+
+            for i, val in enumerate(observations):
+                data[f"Obs {i + 1}"] = val if val else "—"
+
             return Response({"success": True, "data": data}, status=200)
 
         else:

@@ -43,6 +43,8 @@ INSTALLED_APPS = [
     'rest_framework',
     'rest_framework_simplejwt',  # 🔥 NAYA CODE: JWT App add kiya hai
     'api',
+    'django_extensions',
+      
 ]
 
 MIDDLEWARE = [
@@ -80,7 +82,7 @@ CORS_ALLOW_CREDENTIALS = True
 # (Inko hardcode chhod sakte hain kyunki frontend URLs mostly standard hote hain)
 CSRF_TRUSTED_ORIGINS = [
     'http://localhost',          # 🔥 NAYA ADD KIYA: Android Capacitor default origin
-    'https://localhost',         # 🔥 NAYA ADD KIYA: Android Capacitor secure origin
+    'http://localhost',         # 🔥 NAYA ADD KIYA: Android Capacitor secure origin
     'http://localhost:3000',
     'http://localhost:3001',
     'http://192.168.0.34:3000',
@@ -137,7 +139,7 @@ DATABASES = {
         'PASSWORD': os.getenv('DB_PASSWORD', 'postgres'),
         'HOST': os.getenv('DB_HOST', 'localhost'),  
         'PORT': os.getenv('DB_PORT', '5432'),
-       
+        
         'OPTIONS': {
             'options': '-c search_path=production,quality,machine_maintenance,tool_maintenance,live_data,master_data,public -c default_transaction_isolation=serializable -c timezone=Asia/Kolkata'
         },
@@ -173,4 +175,5 @@ MEDIA_ROOT = BASE_DIR / "media"
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 
-# #py manage.py runserver 0.0.0.0:8000
+# HTTPS par chalane ke liye terminal command:
+# py manage.py runsslserver 192.168.0.34:8000

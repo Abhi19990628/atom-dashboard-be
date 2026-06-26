@@ -7,7 +7,6 @@ from datetime import datetime, timedelta
 from apps.mqtt.mqtt_client import PLANT1_TOPICS, PLANT2_TOPICS
 from django.views.decorators.cache import cache_control, never_cache
 from apps.machines.machine_map import COUNT52_GROUP
-from django.views.decorators.cache import never_cache
 from apps.machines.machine_state import MACHINE_STATE
 from .models import Plant2HourlyIdletime 
 from apps.mqtt.simple_plant2 import EXACT_REQUIREMENT_STATE
@@ -440,43 +439,10 @@ def plant2_raw(request):
             'raw_messages': []
         })
         
-from django.views.decorators.cache import never_cache, cache_control
-from rest_framework.decorators import api_view
-from rest_framework.response import Response
-from .models import Operator, OperatorAssignment
+from .models import Operator
 from django.utils import timezone
-from datetime import datetime
-import pytz
 
 
-def get_tool_info_from_tid_map(tool_id):
-    """Get tool information from TID mapping - Plant 1 version"""
-    try:
-        from apps.tool_mapping.tid_map import TID_MAP
-        
-        if tool_id and tool_id in TID_MAP:
-            return TID_MAP[tool_id]
-        
-        return {
-            'customer': 'N/A',
-            'model': 'N/A',
-            'part_name': 'N/A',
-            'tool_name': 'N/A',
-            'part_number': 'N/A',
-            'tpm': 0,
-            'epc': 'N/A'
-        }
-    except Exception as e:
-        print(f"⚠️ TID_MAP lookup error: {e}")
-        return {
-            'customer': 'N/A',
-            'model': 'N/A',
-            'part_name': 'N/A',
-            'tool_name': 'N/A',
-            'part_number': 'N/A',
-            'tpm': 0,
-            'epc': 'N/A'
-        }
 
 
 @never_cache
@@ -675,71 +641,6 @@ def plant1_live(request):
 # backend/api/views.py
 
 # 🔥 HELPER FUNCTION - Define this FIRST (before plant2_live)
-def get_tool_info_from_tid_map(tool_id):
-    """
-    Query tid_map table and return tool information if EPC matches tool_id.
-    Returns dict with tool details or empty values if not found.
-    """
-    try:
-        if not tool_id or tool_id == 'NULL' or tool_id.startswith('PLANT2_M'):
-            print(f"⚠️ Skipping invalid/placeholder tool_id: {tool_id}")
-            return {}
-        
-        # Clean tool_id (first 24 characters matching EPC format)
-        clean_tool_id = tool_id[:24] if len(tool_id) >= 24 else tool_id
-        
-        print(f"🔍 Searching tid_map for EPC: {clean_tool_id}")
-        
-        with connection.cursor() as cursor:
-            cursor.execute("""
-                SELECT 
-                    customer,
-                    model,
-                    part_name,
-                    tool_name,
-                    epc,
-                    part_number,
-                    tpm
-                FROM public.tid_map
-                WHERE epc = %s
-                LIMIT 1
-            """, [clean_tool_id])
-            
-            result = cursor.fetchone()
-            
-            if result:
-                print(f"✅ FOUND in tid_map: {result[0]} - {result[2]} (Tool: {result[3]})")
-                return {
-                    'customer': result[0] or 'N/A',
-                    'model': result[1] or 'N/A',
-                    'part_name': result[2] or 'N/A',
-                    'tool_name': result[3] or 'N/A',
-                    'epc': result[4] or 'N/A',
-                    'part_number': result[5] or 'N/A',
-                    'tpm': int(result[6]) if result[6] else 0
-                }
-            else:
-                print(f"❌ NOT FOUND in tid_map: {clean_tool_id}")
-                
-                # Optional: Check if similar EPCs exist
-                cursor.execute("""
-                    SELECT epc, customer, part_name 
-                    FROM public.tid_map 
-                    WHERE epc LIKE %s 
-                    LIMIT 3
-                """, [f"{clean_tool_id[:10]}%"])
-                
-                similar = cursor.fetchall()
-                if similar:
-                    print(f"💡 Similar EPCs found: {[f'{s[0][:20]}... ({s[1]})' for s in similar]}")
-                
-                return {}
-                
-    except Exception as e:
-        print(f"❌ Database error fetching tool info for {tool_id}: {e}")
-        import traceback
-        traceback.print_exc()
-        return {}
 
 
 # backend/api/views.py
@@ -823,203 +724,6 @@ def get_tool_info_from_tid_map(tool_id):
         print(f"❌ ERROR: {e}")
         return {}
 
-@api_view(['GET'])
-def get_machine_history(request):
-    """
-    🌟 ADVANCED STORY BUILDER API 🌟
-    Returns exact chronological nodes for the frontend 'Production Journey Timeline'.
-    ✅ STRICTLY relies on Database events (No fake 8:30 AM inference).
-    ✅ Pure Professional English strings.
-    """
-    try:
-        from django.db import connection
-        import pytz
-        from datetime import datetime, timedelta
-        
-        plant_no = int(request.GET.get('plant_no', 2))
-        machine_no = str(request.GET.get('machine_no', '')).strip()
-        date_str = request.GET.get('date', '').strip() 
-        
-        ist_tz = pytz.timezone('Asia/Kolkata')
-        if not date_str:
-            date_str = datetime.now(ist_tz).strftime('%Y-%m-%d')
-            
-        if not machine_no:
-            return Response({"success": False, "error": "machine_no is required"}, status=400)
-
-        target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
-        now_ist = datetime.now(ist_tz)
-        
-        # Shift Boundaries
-        shift_a_start = ist_tz.localize(datetime.combine(target_date, datetime.strptime("08:30:00", "%H:%M:%S").time()))
-        shift_a_end = shift_a_start + timedelta(hours=12) # 20:30 (8:30 PM)
-        
-        start_str = shift_a_start.strftime('%Y-%m-%d %H:%M:%S')
-        end_str = shift_a_end.strftime('%Y-%m-%d %H:%M:%S')
-
-        events = []
-        
-        # 1️⃣ SHIFT START NODE (Reference point)
-        events.append({
-            "timestamp": shift_a_start.timestamp(),
-            "time_str": shift_a_start.strftime('%I:%M %p'),
-            "type": "SHIFT_START",
-            "title": "Shift Started",
-            "details": "Shift officially started at 08:30 AM",
-            "raw_time": start_str,
-            "shift": "A"
-        })
-
-        with connection.cursor() as cursor:
-            # 2️⃣ FETCH EXACT MACHINE EVENTS (ON, OFF, SHUT HEIGHT, TOOL CHANGE)
-            cursor.execute("""
-                SELECT event_type, timestamp, shift, details
-                FROM "Machine_Event_Logs"
-                WHERE plant_no = %s AND machine_no = %s 
-                  AND timestamp >= %s AND timestamp <= %s
-            """, [plant_no, machine_no, start_str, end_str])
-            
-            for row in cursor.fetchall():
-                evt_type = row[0]
-                ts_obj = row[1]
-                shift = row[2]
-                details = row[3]
-                
-                if ts_obj.tzinfo is None:
-                    ts_obj = ist_tz.localize(ts_obj)
-                else:
-                    ts_obj = ts_obj.astimezone(ist_tz)
-                
-                # Pure English Titles
-                title = evt_type
-                if evt_type == 'ON': title = "Machine Powered ON"
-                elif evt_type == 'OFF': title = "Machine Offline"
-                elif evt_type == 'SHUT_HEIGHT_CHANGE': title = "Shut Height Adjusted"
-                elif evt_type == 'TOOL_CHANGE': title = "Tool Changed"
-                
-                events.append({
-                    "timestamp": ts_obj.timestamp(),
-                    "time_str": ts_obj.strftime('%I:%M %p'),
-                    "type": evt_type,
-                    "title": title,
-                    "details": details,
-                    "raw_time": ts_obj.strftime('%Y-%m-%d %H:%M:%S'),
-                    "shift": shift
-                })
-
-            # 3️⃣ FETCH FIRST PRODUCTION COUNT
-            cursor.execute("""
-                SELECT MIN(timestamp) FROM Plant2_data
-                WHERE machine_no = %s AND count > 0 AND timestamp >= %s AND timestamp <= %s
-            """, [machine_no, start_str, end_str])
-            
-            first_count_ts = cursor.fetchone()[0]
-            
-            if first_count_ts:
-                if first_count_ts.tzinfo is None:
-                    first_count_ts = ist_tz.localize(first_count_ts)
-                else:
-                    first_count_ts = first_count_ts.astimezone(ist_tz)
-
-                events.append({
-                    "timestamp": first_count_ts.timestamp(),
-                    "time_str": first_count_ts.strftime('%I:%M %p'),
-                    "type": "FIRST_COUNT",
-                    "title": "First Production Count",
-                    "details": "Machine started producing parts",
-                    "raw_time": first_count_ts.strftime('%Y-%m-%d %H:%M:%S'),
-                    "shift": "A"
-                })
-
-            # 4️⃣ CALCULATE HOURLY PRODUCTION SUMMARIES
-            hour_boundaries = [shift_a_start]
-            for hr in range(9, 21): 
-                hour_boundaries.append(shift_a_start.replace(hour=hr, minute=0, second=0))
-            hour_boundaries.append(shift_a_end)
-            
-            for i in range(len(hour_boundaries)-1):
-                t1 = hour_boundaries[i]
-                t2 = hour_boundaries[i+1]
-                
-                if t2 > now_ist: # Skip future boundaries
-                    break
-                    
-                t1_str = t1.strftime('%Y-%m-%d %H:%M:%S')
-                t2_str = t2.strftime('%Y-%m-%d %H:%M:%S')
-                
-                cursor.execute("""
-                    SELECT COALESCE(SUM(count), 0) FROM Plant2_data
-                    WHERE machine_no = %s AND timestamp > %s AND timestamp <= %s
-                """, [machine_no, t1_str, t2_str])
-                
-                hr_count = cursor.fetchone()[0] or 0
-                
-                events.append({
-                    "timestamp": t2.timestamp() - 1,
-                    "time_str": t2.strftime('%I:%M %p'),
-                    "type": "HOUR_CHANGE",
-                    "title": f"Hourly Production Summary ({t2.strftime('%I %p')})",
-                    "details": f"Total production in this hour: {hr_count} pieces",
-                    "raw_time": t2_str,
-                    "shift": "A",
-                    "count": hr_count
-                })
-
-        # 5️⃣ ADD LUNCH TIME (12:15 PM - 12:45 PM)
-        lunch_start = ist_tz.localize(datetime.combine(target_date, datetime.strptime("12:15:00", "%H:%M:%S").time()))
-        lunch_end = ist_tz.localize(datetime.combine(target_date, datetime.strptime("12:45:00", "%H:%M:%S").time()))
-        
-        if now_ist >= lunch_start:
-            events.append({
-                "timestamp": lunch_start.timestamp(),
-                "time_str": lunch_start.strftime('%I:%M %p'),
-                "type": "LUNCH_START",
-                "title": "Lunch Break Started",
-                "details": "Machine tracking paused for lunch (12:15 PM)",
-                "raw_time": lunch_start.strftime('%Y-%m-%d %H:%M:%S'),
-                "shift": "A"
-            })
-        if now_ist >= lunch_end:
-            events.append({
-                "timestamp": lunch_end.timestamp(),
-                "time_str": lunch_end.strftime('%I:%M %p'),
-                "type": "LUNCH_END",
-                "title": "Lunch Break Ended",
-                "details": "Production Tracking Resumed (12:45 PM)",
-                "raw_time": lunch_end.strftime('%Y-%m-%d %H:%M:%S'),
-                "shift": "A"
-            })
-
-        # 6️⃣ SORT ALL EVENTS CHRONOLOGICALLY
-        events.sort(key=lambda x: x['timestamp'])
-
-        final_events = []
-        for e in events:
-            if e['timestamp'] <= now_ist.timestamp():
-                final_events.append({
-                    "type": e['type'],
-                    "time": e['time_str'],
-                    "title": e['title'],
-                    "details": e['details'],
-                    "timestamp": e['timestamp'],
-                    "raw_time": e['raw_time'],
-                    "shift": e['shift'],
-                    "count": e.get('count', 0)
-                })
-
-        return Response({
-            "success": True,
-            "plant_no": plant_no,
-            "machine_no": machine_no,
-            "date": date_str,
-            "total_events": len(final_events),
-            "events": final_events
-        })
-        
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return Response({"success": False, "error": str(e)}, status=500)
     
   
 @never_cache
@@ -2945,7 +2649,6 @@ def log_idle_reason(request):
 
 import json
 from django.http import JsonResponse
-from django.views.decorators.csrf import csrf_exempt
 from .models import PartMaster
 
 @csrf_exempt  # Testing ke liye CSRF disable kiya hai taaki Postman se request directly chali jaye
@@ -2977,8 +2680,6 @@ def bulk_insert_parts(request):
             
     return JsonResponse({'error': 'Only POST method is allowed'}, status=405)    
 
-from django.http import JsonResponse
-from .models import PartMaster
 
 # 1. Sirf unique Customers ki list laane ke liye
 def get_unique_customers(request):
@@ -2995,78 +2696,181 @@ def get_parts_by_customer(request, customer_name):
     return JsonResponse({'parts': parts})
 
 
+## --- AUTHENTICATION & SECURITY APIs ---
+import random
 from rest_framework.permissions import IsAuthenticated
-from rest_framework import status
-# Agar CustomTokenObtainPairSerializer same file mein hai toh upar ke imports mein inko add kar lena
+from django.contrib.auth import get_user_model
+from django.core.cache import cache
+from django.core.mail import send_mail
+from django.conf import settings
 
+# 🔥 Import your actual model connected to your database table here
+from .models import UserProfile 
+
+User = get_user_model()
+
+# ==========================================
+# 1. FOR LOGGED-IN USERS (Profile Settings)
+# ==========================================
 class ChangePasswordView(APIView):
-    # Is permission se ensure hoga ki bina valid token ke koi ye API hit na kar paye
+    # This permission ensures the API cannot be accessed without a valid token
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
         user = request.user
+
+        # 🚨 ADMIN SECURITY LOCK: Admins cannot change their password via this API even when logged in
+        if user.is_superuser:
+            return Response(
+                {"error": "Admin passwords cannot be changed via API. Please contact the System Administrator."}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
+
         old_password = request.data.get("old_password")
         new_password = request.data.get("new_password")
 
-        # Validation 1: Check karo dono fields aayi hain ya nahi
         if not old_password or not new_password:
             return Response(
-                {"error": "Old aur new dono password dena zaroori hai."}, 
+                {"error": "Both old and new passwords are required."}, 
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Validation 2: Check karo purana password sahi hai ya nahi
         if not user.check_password(old_password):
             return Response(
-                {"error": "Purana password galat hai."}, 
+                {"error": "Incorrect old password."}, 
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Action: Naya password set karo aur database mein save karo
-        # set_password() automatically hash (encrypt) kar deta hai password ko
         user.set_password(new_password)
         user.save()
 
         return Response(
-            {"message": "Password successfully update ho gaya!"}, 
+            {"message": "Password updated successfully!"}, 
             status=status.HTTP_200_OK
         )
 
 
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
-from django.contrib.auth import get_user_model
+# ==========================================
+# 2. FORGOT PASSWORD - OTP REQUEST (Send to Head)
+# ==========================================
+# Format: ('department', 'location'): 'Head_Email'
+HEAD_MAPPING = {
+    ('Production', 'Plant 1'): 'abhishek.kumar@atomone.in',
+    ('Production', 'Plant 2'): 'ashok.reddy@atomone.in', 
+    ('QA', 'Plant 1'): 'Rajesh.dhiman@atomone.in',       
+    ('QA', 'Plant 2'): 'head.plant2.qa@atomone.in',
+}
 
-User = get_user_model()
-
-class DirectPasswordResetView(APIView):
-    # 🔥 Yahan permission_classes khali rakhi hai taaki bina login (token) ke access ho sake
+class RequestPasswordResetOTPView(APIView):
     permission_classes = [] 
 
     def post(self, request):
         username = request.data.get("username")
-        new_password = request.data.get("new_password")
 
-        # 1. Check karo details aayi hain ya nahi
-        if not username or not new_password:
-            return Response({"error": "Username aur Naya password dono zaroori hain."}, status=status.HTTP_400_BAD_REQUEST)
+        if not username:
+            return Response({"error": "Username is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # 2. Database mein user dhoondo
         try:
             user = User.objects.get(username=username)
         except User.DoesNotExist:
-            return Response({"error": "Ye username system mein exist nahi karta."}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "This username does not exist."}, status=status.HTTP_404_NOT_FOUND)
 
-        # 3. Naya password set karo aur save kar do
+        # 🚨 ADMIN SECURITY LOCK
+        if user.is_superuser:
+            return Response(
+                {"error": "Admin passwords cannot be changed via API. Access Denied."}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # Fetch User Profile from the database
+        try:
+            # Use user_id or whatever the relational field is named in your model
+            user_profile =  UserProfile.objects.get(user_id=user.id) 
+        except UserProfile.DoesNotExist:
+            return Response(
+                {"error": "User profile not found in the database."}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        user_dept = user_profile.department
+        user_plant = user_profile.location 
+
+        if not user_dept or not user_plant:
+            return Response(
+                {"error": f"Department or location is not set for user '{username}'."}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        head_email = HEAD_MAPPING.get((user_dept, user_plant))
+
+        if not head_email:
+            return Response(
+                {"error": f"Head email for {user_dept} and {user_plant} is not configured in the system."}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        otp = str(random.randint(100000, 999999))
+        cache_key = f"pwd_reset_otp_{username}"
+        cache.set(cache_key, otp, timeout=600) # 10 mins
+
+        subject = f"🚨 SECURITY: Password Reset Request for {username}"
+        message = (
+            f"Hello Head,\n\n"
+            f"User '{username}' from your department ({user_dept} - {user_plant}) has requested a password reset.\n\n"
+            f"🔑 OTP: {otp}\n"
+            f"(This OTP is valid for 10 minutes.)\n\n"
+            f"If you approve this request, please provide this OTP to the user."
+        )
+        
+        send_mail(subject, message, settings.EMAIL_HOST_USER, [head_email], fail_silently=False)
+
+        return Response(
+            {"message": f"OTP has been successfully sent to your department head ({head_email})."}, 
+            status=status.HTTP_200_OK
+        )
+
+
+# ==========================================
+# 3. FORGOT PASSWORD - VERIFY OTP & RESET
+# ==========================================
+class VerifyOTPAndResetPasswordView(APIView):
+    permission_classes = []
+
+    def post(self, request):
+        username = request.data.get("username")
+        otp_entered = request.data.get("otp")
+        new_password = request.data.get("new_password")
+
+        if not all([username, otp_entered, new_password]):
+            return Response({"error": "Username, OTP, and New Password are all required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            user = User.objects.get(username=username)
+        except User.DoesNotExist:
+            return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # 🚨 ADMIN SECURITY LOCK
+        if user.is_superuser:
+            return Response({"error": "Action Denied."}, status=status.HTTP_403_FORBIDDEN)
+
+        cache_key = f"pwd_reset_otp_{username}"
+        saved_otp = cache.get(cache_key)
+
+        if not saved_otp:
+            return Response({"error": "OTP has expired or is invalid. Please request a new OTP."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if str(saved_otp) != str(otp_entered):
+            return Response({"error": "Invalid OTP!"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Set new password if OTP matches
         user.set_password(new_password)
         user.save()
 
-        return Response({"message": "Password successfully update ho gaya! Ab aap login kar sakte hain."}, status=status.HTTP_200_OK)
+        # Security check: remove OTP from cache after one-time use
+        cache.delete(cache_key)
+
+        return Response({"message": "Password updated successfully! You can now log in."}, status=status.HTTP_200_OK)
     
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
 from django.contrib.auth.models import User
 from django.utils.timezone import localtime
 from .models import ReportActivityLog, QANotification
@@ -3106,29 +2910,53 @@ class ApproveReportView(APIView):
         
         
 class GetQANotificationsView(APIView):
-    permission_classes = []
-
     def get(self, request, username):
         try:
-            # Jo user login hai, sirf usko database mein dhundo
             user = User.objects.get(username=username)
-            
-            # Sirf is specific user ki UNREAD notifications nikalo
-            notifications = QANotification.objects.filter(user=user, is_read=False).order_by('-created_at')
-            
-            notif_list = []
+
+            notifications = QANotification.objects.filter(
+                user=user,
+                is_read=False
+            ).select_related("report_log").order_by("-created_at")
+
+            notifications_data = []
+
             for n in notifications:
-                notif_list.append({
+                log = n.report_log
+
+                notifications_data.append({
                     "id": n.id,
                     "message": n.message,
-                    "time": localtime(n.created_at).strftime('%d-%b %I:%M %p'),
-                    "report_log_id": n.report_log.id if n.report_log else None
+                    "time": timezone.localtime(n.created_at).strftime("%d-%b-%Y %I:%M %p"),
+
+                    "report_log_id": log.id if log else None,
+                    "report_name": log.report_name if log else "",
+
+                    # ✅ Most important for frontend routing
+                    "formRoute": log.form_key if log else "",
+                    "hub": log.hub if log else "",
+
+                    "submitted_by": log.username if log else "",
                 })
-                
-            return Response({"notifications": notif_list}, status=status.HTTP_200_OK)
+
+            return Response({
+                "success": True,
+                "notifications": notifications_data
+            }, status=200)
+
         except User.DoesNotExist:
-            return Response({"error": "User nahi mila"}, status=status.HTTP_404_NOT_FOUND)
-        
+            return Response({
+                "success": False,
+                "error": "User not found",
+                "notifications": []
+            }, status=404)
+
+        except Exception as e:
+            return Response({
+                "success": False,
+                "error": str(e),
+                "notifications": []
+            }, status=500)
         
         
         
@@ -3144,6 +2972,8 @@ class SaveReportLogView(APIView):
         username = request.data.get('username')
         report_name = request.data.get('report_name')
         record_id = request.data.get('record_id') 
+        final_form_key = request.data.get('form_key')
+        final_hub = request.data.get('hub') 
 
         if not username or not report_name:
             return Response({"error": "Username and report_name are required fields."}, status=status.HTTP_400_BAD_REQUEST)
@@ -3191,7 +3021,9 @@ class SaveReportLogView(APIView):
             username=username, 
             department_name=f"{submitter_location} ({submitter_department})", # E.g., "Plant 1 (Production)"
             report_name=report_name, 
-            record_id=record_id 
+            record_id=record_id,
+            form_key=final_form_key,
+            hub=final_hub, 
         )
         
         # ── 4. STRICT NOTIFICATION ROUTING ──
@@ -3237,12 +3069,8 @@ class SaveReportLogView(APIView):
         
         
         
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
-from .models import UserProfile
 from .serializers import UserDepartmentProfileSerializer
 
 
@@ -3279,8 +3107,6 @@ class CurrentUserProfileView(APIView):
         
         profile, created = UserProfile.objects.get_or_create(user=self.request.user)
         return profile
-
-
 @api_view(['GET'])
 def get_department_stats(request):
      # ── 1. GET THE USERNAME OF THE VIEWER FROM FRONTEND ──
@@ -3395,6 +3221,8 @@ def get_department_stats(request):
 
         user_data_dict[raw_username]['reportsList'].append({
             'id': report_display_id,
+            'record_id': report_display_id,       # 🔥 Safety ke liye purani key
+            'activity_log_id': log.id,            # 🔥 NAYI KEY: Backend ab properly 308 (Log ID) bhejega
             'name': log.report_name,
             'date': formatted_date, 
             'status': display_status
@@ -3403,3 +3231,121 @@ def get_department_stats(request):
     response_data = list(user_data_dict.values())
     return Response(response_data)
 
+#by aman pal
+
+def normalize_report_name(value):
+    return str(value or "").strip().lower()
+
+
+REPORT_ROUTE_MAP = {
+    # =========================
+    # PRODUCTION HUB
+    # =========================
+    normalize_report_name("Daily Prod Form"): {
+        "form_key": "daily-prod-plan",
+        "hub": "production-hub",
+        "target_group": "Production_Approvers",
+    },
+    normalize_report_name("Bin Trolley Form"): {
+        "form_key": "bin-trolley",
+        "hub": "production-hub",
+        "target_group": "Production_Approvers",
+    },
+    normalize_report_name("Tip Change Monitor Form"): {
+        "form_key": "tip-change",
+        "hub": "production-hub",
+        "target_group": "Production_Approvers",
+    },
+    normalize_report_name("4M Change Inspection"): {
+        "form_key": "four-m-inspection",
+        "hub": "production-hub",
+        "target_group": "Production_Approvers",
+    },
+    normalize_report_name("4M Tracking Record"): {
+        "form_key": "four-m-record",
+        "hub": "production-hub",
+        "target_group": "Production_Approvers",
+    },
+    normalize_report_name("4M Display Board"): {
+        "form_key": "four-m-display",
+        "hub": "production-hub",
+        "target_group": "Production_Approvers",
+    },
+    normalize_report_name("4M Summary Sheet"): {
+        "form_key": "four-m-summary",
+        "hub": "production-hub",
+        "target_group": "Production_Approvers",
+    },
+   normalize_report_name("4M Information Sheet"): {
+    "form_key": "four-m-information",
+    "hub": "production-hub",
+    "target_group": "Production_Approvers",
+},
+
+    # =========================
+    # QUALITY / QA HUB
+    # =========================
+    normalize_report_name("Deviation Report"): {
+        "form_key": "deviation",
+        "hub": "qa-hub",
+        "target_group": "Quality_Approvers",  # change if your group name is QA_Approvers
+    },
+    normalize_report_name("Redbin Approval Form"): {
+        "form_key": "redbin",
+        "hub": "qa-hub",
+        "target_group": "Quality_Approvers",
+    },
+    normalize_report_name("Red Bin Attendance"): {
+        "form_key": "redbin-attendance",
+        "hub": "qa-hub",
+        "target_group": "Quality_Approvers",
+    },
+    normalize_report_name("Incoming Inspection"): {
+        "form_key": "incoming",
+        "hub": "qa-hub",
+        "target_group": "Quality_Approvers",
+    },
+    normalize_report_name("Scrap Note"): {
+        "form_key": "scrap",
+        "hub": "qa-hub",
+        "target_group": "Quality_Approvers",
+    },
+
+    # =========================
+    # MAINTENANCE HUB
+    # =========================
+    normalize_report_name("Machine Breakdown Form"): {
+        "form_key": "machine-breakdown",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Machine Preventive Maintenance"): {
+        "form_key": "preventive-maintenance",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Tool Breakdown Form"): {
+        "form_key": "tool-breakdown",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Tool Preventive Maintenance"): {
+        "form_key": "tool-preventive-maintenance",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+}
+
+
+DEFAULT_ROUTE_CONFIG = {
+    "form_key": "daily-prod-plan",
+    "hub": "production-hub",
+    "target_group": "Production_Approvers",
+}
+
+
+def get_route_config(report_name):
+    return REPORT_ROUTE_MAP.get(
+        normalize_report_name(report_name),
+        DEFAULT_ROUTE_CONFIG
+    )

@@ -2029,6 +2029,8 @@ class ReportActivityLog(models.Model):
     department_name = models.CharField(max_length=100) 
     report_name = models.CharField(max_length=255)
     record_id = models.IntegerField(null=True, blank=True)
+    form_key = models.CharField(max_length=100, blank=True, null=True)
+    hub = models.CharField(max_length=100, blank=True, null=True)
     timestamp = models.DateTimeField(auto_now_add=True)
     status = models.CharField(max_length=255, default="In Progress") 
 

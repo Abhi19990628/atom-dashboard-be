@@ -13,6 +13,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.decorators import api_view
+from django.contrib.auth.models import User
 
 # ==============================================================================
 # IMPORTS FROM MAIN API APP
@@ -23,7 +24,7 @@ from api.models import (
     DailyProductionPlan, FourMChangeInspection, FourMChangeRecord,
     MonthlyProductionPlan, OperatorObservanceChecklist, OperatorObservancePlan,
     PMChecklistMHE, ProjectionWelderQual, SpotWelderQual, TigMigWelderQual, ProcessValidation, FourMDisplay, FourMSummary,
-    ReportActivityLog,FourMInformationSheet ,FourMInformationSheet
+    ReportActivityLog, FourMInformationSheet, QANotification
 )
 
 from api.serializers import (
@@ -42,9 +43,213 @@ except ImportError:
 def clean_val(val, default=None):
     return val if val != '' and val is not None else default
 
+# ==============================================================================
+# ✅ PRODUCTION HUB ROUTE MAPPING + AUTO ACTIVITY LOG & NOTIFICATION ROUTER
+# ==============================================================================
+
+def normalize_report_name(value):
+    return str(value or "").strip().lower()
+
+
+REPORT_ROUTE_MAP = {
+    # =========================
+    # PRODUCTION HUB
+    # =========================
+    normalize_report_name("Daily Prod Form"): {
+        "form_key": "daily-prod-plan",
+        "hub": "production-hub",
+        "target_group": "Production_Approvers",
+    },
+    normalize_report_name("Bin Trolley Form"): {
+        "form_key": "bin-trolley",
+        "hub": "production-hub",
+        "target_group": "Production_Approvers",
+    },
+    normalize_report_name("Machine Checksheet"): {
+        "form_key": "machine-checksheet",
+        "hub": "production-hub",
+        "target_group": "Production_Approvers",
+    },
+    normalize_report_name("Tip Change Monitor Form"): {
+        "form_key": "tip-change",
+        "hub": "production-hub",
+        "target_group": "Production_Approvers",
+    },
+    normalize_report_name("Rework Report"): {
+        "form_key": "rework",
+        "hub": "production-hub",
+        "target_group": "Production_Approvers",
+    },
+    normalize_report_name("5S Checksheet"): {
+        "form_key": "five-s",
+        "hub": "production-hub",
+        "target_group": "Production_Approvers",
+    },
+    normalize_report_name("4M Change Inspection"): {
+        "form_key": "four-m-inspection",
+        "hub": "production-hub",
+        "target_group": "Production_Approvers",
+    },
+    normalize_report_name("4M Tracking Record"): {
+        "form_key": "four-m-record",
+        "hub": "production-hub",
+        "target_group": "Production_Approvers",
+    },
+    normalize_report_name("4M Display Board"): {
+        "form_key": "four-m-display",
+        "hub": "production-hub",
+        "target_group": "Production_Approvers",
+    },
+    normalize_report_name("4M Summary Sheet"): {
+        "form_key": "four-m-summary",
+        "hub": "production-hub",
+        "target_group": "Production_Approvers",
+    },
+    normalize_report_name("4M Information Sheet"): {
+        "form_key": "four-m-information",
+        "hub": "production-hub",
+        "target_group": "Production_Approvers",
+    },
+    normalize_report_name("Monthly Prod Plan"): {
+        "form_key": "monthly-prod-plan",
+        "hub": "production-hub",
+        "target_group": "Production_Approvers",
+    },
+    normalize_report_name("Operator Observance Checklist"): {
+        "form_key": "operator-observance-checklist",
+        "hub": "production-hub",
+        "target_group": "Production_Approvers",
+    },
+    normalize_report_name("Operator Observance Plan"): {
+        "form_key": "operator-observance-plan",
+        "hub": "production-hub",
+        "target_group": "Production_Approvers",
+    },
+    normalize_report_name("PM Checklist MHE"): {
+        "form_key": "pm-checklist-mhe",
+        "hub": "production-hub",
+        "target_group": "Production_Approvers",
+    },
+    normalize_report_name("Projection Welder"): {
+        "form_key": "projection-welder",
+        "hub": "production-hub",
+        "target_group": "Production_Approvers",
+    },
+    normalize_report_name("Spot Welder"): {
+        "form_key": "spot-welder",
+        "hub": "production-hub",
+        "target_group": "Production_Approvers",
+    },
+    normalize_report_name("TIG/MIG Welder"): {
+        "form_key": "tig-mig-welder",
+        "hub": "production-hub",
+        "target_group": "Production_Approvers",
+    },
+    normalize_report_name("Process Validation"): {
+        "form_key": "process-validation",
+        "hub": "production-hub",
+        "target_group": "Production_Approvers",
+    },
+
+}
+
+
+DEFAULT_ROUTE_CONFIG = {
+    "form_key": "daily-prod-plan",
+    "hub": "production-hub",
+    "target_group": "Production_Approvers",
+}
+
+
+def get_route_config(report_name):
+    return REPORT_ROUTE_MAP.get(
+        normalize_report_name(report_name),
+        DEFAULT_ROUTE_CONFIG
+    )
+
+
+def auto_log_report(
+    username,
+    report_name,
+    record_id,
+    form_key=None,
+    hub=None,
+    target_group=None,
+):
+    if not username:
+        username = "Unknown User"
+
+    try:
+        route_config = get_route_config(report_name)
+
+        final_form_key = form_key or route_config["form_key"]
+        final_hub = hub or route_config["hub"]
+        final_target_group = target_group or route_config["target_group"]
+
+        user_obj = User.objects.filter(username=username).first()
+
+        dept_name = final_hub
+        submitter_location_code = ""
+
+        if user_obj:
+            profile = getattr(user_obj, "userprofile", getattr(user_obj, "profile", None))
+
+            if profile:
+                loc = str(getattr(profile, "location", "") or "").strip()
+                dept = str(getattr(profile, "department", "") or "").strip()
+
+                if loc or dept:
+                    dept_name = f"{loc} ({dept})".strip()
+
+                submitter_location_code = loc.replace(" ", "").lower()
+
+        # ✅ Create activity log with route info
+        log = ReportActivityLog.objects.create(
+            username=username,
+            department_name=dept_name,
+            report_name=report_name,
+            record_id=record_id,
+            form_key=final_form_key,
+            hub=final_hub,
+        )
+
+        approvers = User.objects.filter(groups__name=final_target_group)
+
+        date_str = timezone.localtime().strftime("%d-%b-%Y")
+        time_str = timezone.localtime().strftime("%I:%M %p")
+
+        msg = f"{username} submitted {report_name} on {date_str} at {time_str}."
+
+        for approver in approvers:
+            approver_profile = getattr(
+                approver,
+                "userprofile",
+                getattr(approver, "profile", None)
+            )
+
+            # ✅ If both submitter and approver have location, send only same plant/location
+            if submitter_location_code and approver_profile and getattr(approver_profile, "location", None):
+                approver_location_code = str(
+                    approver_profile.location
+                ).strip().replace(" ", "").lower()
+
+                if submitter_location_code != approver_location_code:
+                    continue
+
+            QANotification.objects.create(
+                user=approver,
+                message=msg,
+                report_log=log,
+            )
+
+        return log
+
+    except Exception as e:
+        print(f"🔥 Auto Log Failed for {report_name}: {str(e)}")
+        return None
 
 # ==============================================================================
-# 🏭 DAILY PRODUCTION APIs (Save APIs Kept As-Is)
+# 🏭 DAILY PRODUCTION APIs (Save APIs updated with auto_log_report)
 # ==============================================================================
 
 class SaveBinTrolleyReportView(APIView):
@@ -59,6 +264,8 @@ class SaveBinTrolleyReportView(APIView):
                 cleaning_details=data.get('cleaning_details', {}),
                 maintenance_details=data.get('maintenance_details', {})
             )
+            # 🔥 AUTO LOG BANAO
+            auto_log_report(data.get('submitted_by'), "Bin Trolley Form", report.id)
             return Response({"success": True, "message": "✅ Bin Trolley Data Saved!", "record_id": report.id}, status=status.HTTP_201_CREATED)
         except Exception as e:
             return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -92,6 +299,8 @@ class SaveMachineChecksheetView(APIView):
             if observations:
                 MachineChecksheetObservation.objects.bulk_create(observations)
 
+            # 🔥 AUTO LOG BANAO
+            auto_log_report(data.get('submitted_by'), "Machine Checksheet", report.id)
             return Response({"success": True, "message": "✅ Daily Checksheet Saved Successfully!", "report_id": report.id, "record_id": report.id}, status=status.HTTP_201_CREATED)
 
         except Exception as e:
@@ -105,6 +314,8 @@ class SaveTipChangeView(APIView):
             serializer = TipChangeDressingSerializer(data=request.data)
             if serializer.is_valid():
                 obj = serializer.save()
+                # 🔥 AUTO LOG BANAO
+                auto_log_report(request.data.get('submitted_by'), "Tip Change Monitor Form", obj.id)
                 return Response({"success": True, "message": "✅ Tip Change & Dressing data saved successfully!", "data": serializer.data, "record_id": obj.id}, status=status.HTTP_201_CREATED)
             return Response({"success": False, "error": "Validation failed", "details": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -147,6 +358,8 @@ class SaveReworkReportView(APIView):
                 last_record = ReworkEntry.objects.last()
                 last_id = last_record.id if last_record else None
                 
+            # 🔥 AUTO LOG BANAO
+            auto_log_report(data.get('submitted_by'), "Rework Report", last_id)
             return Response({"success": True, "message": "✅ Rework Data Saved!", "record_id": last_id}, status=status.HTTP_201_CREATED)
         except Exception as e:
             return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -192,6 +405,8 @@ class SaveFiveSReportView(APIView):
             if obs_to_create:
                 FiveSChecksheetObservation.objects.bulk_create(obs_to_create)
                 
+            # 🔥 AUTO LOG BANAO
+            auto_log_report(data.get('submitted_by'), "5S Checksheet", report.id)
             return Response({"success": True, "message": "✅ 5S Checksheet Saved!", "record_id": report.id}, status=status.HTTP_201_CREATED)
             
         except Exception as e:
@@ -205,6 +420,8 @@ class SaveDailyProductionPlanView(TrackedAPIView):
             serializer = DailyProductionPlanSerializer(data=request.data)
             if serializer.is_valid():
                 obj = serializer.save()
+                # 🔥 AUTO LOG BANAO
+                auto_log_report(request.data.get('submitted_by'), "Daily Prod Form", obj.id)
                 return Response({"success": True, "message": "Daily Production Plan saved successfully!", "data": serializer.data, "record_id": obj.id}, status=status.HTTP_201_CREATED)
             return Response({"success": False, "error": "Validation failed", "details": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
@@ -251,6 +468,8 @@ class SaveFourMChangeInspectionView(APIView):
             serializer = FourMChangeInspectionSerializer(data=request.data)
             if serializer.is_valid():
                 obj = serializer.save()
+                # 🔥 AUTO LOG BANAO
+                auto_log_report(request.data.get('submitted_by'), "4M Change Inspection", obj.id)
                 return Response({"success": True, "message": " 4M Change Inspection data saved successfully!", "data": serializer.data, "record_id": obj.id}, status=status.HTTP_201_CREATED)
             return Response({"success": False, "error": "Validation failed", "details": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
@@ -264,6 +483,8 @@ class SaveFourMChangeRecordView(APIView):
             serializer = FourMChangeRecordSerializer(data=request.data)
             if serializer.is_valid():
                 obj = serializer.save() 
+                # 🔥 AUTO LOG BANAO
+                auto_log_report(request.data.get('submitted_by'), "4M Tracking Record", obj.id)
                 return Response({"success": True, "message": " 4M Change Record saved successfully!", "data": serializer.data, "record_id": obj.id}, status=status.HTTP_201_CREATED)
             return Response({"success": False, "error": "Validation failed", "details": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
@@ -292,6 +513,8 @@ class SaveFourMDisplayView(APIView):
             last_record = FourMDisplay.objects.last()
             last_id = last_record.id if last_record else None
             
+            # 🔥 AUTO LOG BANAO
+            auto_log_report(data.get('submitted_by'), "4M Display Board", last_id)
             return Response({"success": True, "message": " 4M Display Board Saved!", "record_id": last_id}, status=status.HTTP_201_CREATED)
         
         except Exception as e:
@@ -317,6 +540,8 @@ class SaveFourMSummaryView(APIView):
             if serializer.is_valid():
                 objs = serializer.save()
                 last_id = objs[-1].id if objs else None
+                # 🔥 AUTO LOG BANAO
+                auto_log_report(prepared_by, "4M Summary Sheet", last_id)
                 return Response(
                     {"success": True, "message": "4M Summary Sheet Saved Successfully!", "record_id": last_id}, 
                     status=status.HTTP_201_CREATED
@@ -335,7 +560,7 @@ class SaveFourMSummaryView(APIView):
             )
 
 # ==============================================================================
-# 📅 MONTHLY PRODUCTION APIs (Save APIs Kept As-Is)
+# 📅 MONTHLY PRODUCTION APIs (Save APIs updated with auto_log_report)
 # ==============================================================================
 
 class SaveMonthlyProdPlanView(APIView):
@@ -354,6 +579,8 @@ class SaveMonthlyProdPlanView(APIView):
                 prepared_by=data.get('preparedBy', ''),
                 approved_by=data.get('approvedBy', '')
             )
+            # 🔥 AUTO LOG BANAO
+            auto_log_report(data.get('preparedBy'), "Monthly Prod Plan", plan.id)
             return Response({"success": True, "message": " Monthly Production Plan Data Saved!", "record_id": plan.id}, status=status.HTTP_201_CREATED)
         except Exception as e:
             print(f"Monthly Prod Plan Error: {str(e)}")
@@ -373,6 +600,8 @@ class SaveOperatorObservanceChecklistView(APIView):
                 prepared_by=data.get('preparedBy', ''),
                 approved_by=data.get('approvedBy', '')
             )
+            # 🔥 AUTO LOG BANAO
+            auto_log_report(data.get('preparedBy'), "Operator Observance Checklist", checklist.id)
             return Response({"success": True, "message": " Operator Observance Checklist Saved!", "record_id": checklist.id}, status=status.HTTP_201_CREATED)
         except Exception as e:
             print(f"Observance Checklist Error: {str(e)}")
@@ -390,6 +619,8 @@ class SaveOperatorObservancePlanView(APIView):
                 prepared_by=data.get('preparedBy', ''),
                 approved_by=data.get('approvedBy', '')
             )
+            # 🔥 AUTO LOG BANAO
+            auto_log_report(data.get('preparedBy'), "Operator Observance Plan", plan.id)
             return Response({"success": True, "message": f" Operator Observance Plan Saved!", "record_id": plan.id}, status=status.HTTP_201_CREATED)
         except Exception as e:
             print(f"Observance Plan Error: {str(e)}")
@@ -410,6 +641,8 @@ class SavePMChecklistMHEView(APIView):
                 verified_by=data.get('verifiedBy', ''),
                 general_remarks=data.get('generalRemarks', '')
             )
+            # 🔥 AUTO LOG BANAO
+            auto_log_report(data.get('checkedBy'), "PM Checklist MHE", pm_form.id)
             return Response({"success": True, "message": " Preventive Maintenance MHE Data Saved!", "record_id": pm_form.id}, status=status.HTTP_201_CREATED)
         except Exception as e:
             print(f"PM Checklist MHE Error: {str(e)}")
@@ -433,6 +666,8 @@ class SaveProjectionWelderView(APIView):
                 verified_by=data.get('verifiedBy', ''),
                 qualification_status=data.get('qualificationStatus', '')
             )
+            # 🔥 AUTO LOG BANAO
+            auto_log_report(data.get('conductedBy'), "Projection Welder", welder.id)
             return Response({"success": True, "message": "Projection Welder Data Saved!", "record_id": welder.id}, status=status.HTTP_201_CREATED)
         except Exception as e:
             return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -456,6 +691,8 @@ class SaveSpotWelderView(APIView):
                 verified_by=data.get('verifiedBy', ''),
                 qualification_status=data.get('qualificationStatus', '')
             )
+            # 🔥 AUTO LOG BANAO
+            auto_log_report(data.get('conductedBy'), "Spot Welder", welder.id)
             return Response({"success": True, "message": "Spot Welder Data Saved!", "record_id": welder.id}, status=status.HTTP_201_CREATED)
         except Exception as e:
             return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -485,6 +722,8 @@ class SaveTigMigWelderView(APIView):
                 verified_by=data.get('verifiedBy', ''),
                 qualification_status=data.get('qualificationStatus', '')
             )
+            # 🔥 AUTO LOG BANAO
+            auto_log_report(data.get('conductedBy'), "TIG/MIG Welder", welder.id)
             return Response({"success": True, "message": "MIG/TIG Welder Data Saved!", "record_id": welder.id}, status=status.HTTP_201_CREATED)
         except Exception as e:
             return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -511,6 +750,8 @@ class SaveProcessValidationView(APIView):
                 prepared_by=data.get('preparedBy', ''),
                 approved_by=data.get('approvedBy', '')
             )
+            # 🔥 AUTO LOG BANAO
+            auto_log_report(data.get('preparedBy'), "Process Validation", validation.id)
             return Response({"success": True, "message": "Process Validation Data Saved!", "record_id": validation.id}, status=status.HTTP_201_CREATED)
         except Exception as e:
             return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -521,57 +762,31 @@ class SaveFourMInformationSheetView(APIView):
         try:
             data = request.data
             entries = data.get('entries', [])
-            
-            # Retrieve 'preparedBy' from the frontend payload
-            # Checking both camelCase and snake_case just to be safe
             prepared_by_val = data.get('preparedBy', data.get('prepared_by', ''))
             
             last_id = None
-
             for entry in entries:
-                # 1. Handle empty time strings from the frontend by setting them to None
-                # This prevents Django from throwing a ValidationError for TimeField
                 if not entry.get('time'):
                     entry['time'] = None
-                
-                # 2. Inject 'prepared_by' into each entry dictionary 
-                # This ensures the serializer receives it and maps it to the database column
                 entry['prepared_by'] = prepared_by_val
-
-                # 3. Pass the data to the Serializer
                 serializer = FourMInformationSheetSerializer(data=entry)
                 
-                # 4. Validate the data against the Model's constraints
                 if serializer.is_valid():
-                    # If the data is valid, save the record to the database
                     saved_instance = serializer.save()
-                    
-                    # Keep track of the last inserted ID (useful for activity logging in React)
                     last_id = saved_instance.id
                 else:
-                    # If validation fails (e.g., incorrect format, exceeding max_length), 
-                    # return a 400 Bad Request with the specific serializer errors
-                    return Response({
-                        "success": False, 
-                        "error": str(serializer.errors)
-                    }, status=status.HTTP_400_BAD_REQUEST)
+                    return Response({"success": False, "error": str(serializer.errors)}, status=status.HTTP_400_BAD_REQUEST)
             
-            # 5. Return a success response back to the React frontend
-            return Response({
-                "success": True, 
-                "message": "Information Sheet Saved Successfully!", 
-                "record_id": last_id
-            }, status=status.HTTP_201_CREATED)
+            # 🔥 AUTO LOG BANAO
+            auto_log_report(data.get('submitted_by') or prepared_by_val, "4M Information Sheet", last_id)
+            return Response({"success": True, "message": "Information Sheet Saved Successfully!", "record_id": last_id}, status=status.HTTP_201_CREATED)
         
         except Exception as e:
-            # Catch any unexpected server errors and prevent the app from crashing
             print(f"Information Sheet Error: {str(e)}")
-            return Response({
-                "success": False, 
-                "error": str(e)
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 # ==============================================================================
-# 🔥 NEW: SINGLE REPORT FETCH API (For View/Approve Mode in Production Hub)
+# 🔥 NEW CLEANED UP: SINGLE REPORT FETCH API (REGISTRY PATTERN)
 # ==============================================================================
 @api_view(['GET'])
 def get_single_production_report_view(request, form_key, report_id):
@@ -583,172 +798,69 @@ def get_single_production_report_view(request, form_key, report_id):
         if not rec_id:
             return Response({"success": False, "error": "No Record ID attached to this notification."}, status=404)
 
-        if form_key in ['daily-prod-plan']:
-            report = get_object_or_404(DailyProductionPlan, id=rec_id)
-            serializer = DailyProductionPlanSerializer(report)
-            data = serializer.data
-            data['submitted_by'] = submitted_user
-            return Response({"success": True, "data": data}, status=200)
-
-        elif form_key in ['four-m-inspection']:
-            report = get_object_or_404(FourMChangeInspection, id=rec_id)
-            serializer = FourMChangeInspectionSerializer(report)
-            data = serializer.data
-            data['submitted_by'] = submitted_user
-            return Response({"success": True, "data": data}, status=200)
-
-        elif form_key in ['four-m-record']:
-            report = get_object_or_404(FourMChangeRecord, id=rec_id)
-            serializer = FourMChangeRecordSerializer(report)
-            data = serializer.data
-            data['submitted_by'] = submitted_user
-            return Response({"success": True, "data": data}, status=200)
-
-        elif form_key in ['tip-change']:
-            report = get_object_or_404(TipChangeDressing, id=rec_id)
-            serializer = TipChangeDressingSerializer(report)
-            data = serializer.data
-            data['submitted_by'] = submitted_user
-            return Response({"success": True, "data": data}, status=200)
-
-        elif form_key in ['bin-trolley']:
-            report = get_object_or_404(BinTrolleyReport, id=rec_id)
-            data = {
-                "date": str(report.date), "week": report.week, "month": report.month,
-                "checkpoints": report.checkpoints, "cleaning_details": report.cleaning_details,
-                "maintenance_details": report.maintenance_details, "submitted_by": submitted_user
-            }
-            return Response({"success": True, "data": data}, status=200)
-
-        elif form_key in ['machine-checksheet']:
-            report = get_object_or_404(MachineChecksheetReport, id=rec_id)
-            obs = MachineChecksheetObservation.objects.filter(report=report)
+        # ── 🔥 CUSTOM FORMATTERS ──
+        def get_machine_checksheet(r):
+            obs = MachineChecksheetObservation.objects.filter(report=r)
             obs_data = [{"s_no": o.s_no, "poka_yoke_detail": o.poka_yoke_detail, "checking_method": o.checking_method, "reference_sop": o.reference_sop, "is_ok": o.is_ok, "remarks": o.remarks} for o in obs]
-            data = {
-                "date": str(report.date), "plant_name": report.plant_name, "machine_no": report.machine_no,
-                "checked_by_maintenance": report.checked_by_maintenance, "verified_by_production": report.verified_by_production,
-                "check_points": obs_data, "submitted_by": submitted_user
-            }
-            return Response({"success": True, "data": data}, status=200)
+            return {"date": str(r.date), "plant_name": r.plant_name, "machine_no": r.machine_no, "checked_by_maintenance": r.checked_by_maintenance, "verified_by_production": r.verified_by_production, "check_points": obs_data}
 
-        elif form_key in ['five-s-view', 'five-s']:
-            report = get_object_or_404(FiveSChecksheetReport, id=rec_id)
-            obs = FiveSChecksheetObservation.objects.filter(report=report)
+        def get_fives_checksheet(r):
+            obs = FiveSChecksheetObservation.objects.filter(report=r)
             obs_data = [{"s_category": o.s_category, "check_point": o.check_point, "status": o.status} for o in obs]
-            data = {
-                "area": report.area, "zoneLeader": report.zone_leader, "date": str(report.date),
-                "language": report.language, "totalChecks": report.total_checks, "okCount": report.ok_count, "ngCount": report.ng_count,
-                "observations": obs_data, "submitted_by": submitted_user
-            }
-            return Response({"success": True, "data": data}, status=200)
+            return {"area": r.area, "zoneLeader": r.zone_leader, "date": str(r.date), "language": r.language, "totalChecks": r.total_checks, "okCount": r.ok_count, "ngCount": r.ng_count, "observations": obs_data}
 
-        elif form_key in ['rework-view', 'rework']:
-            report = get_object_or_404(ReworkEntry, id=rec_id)
-            data = {
-                "date": str(report.date), "remark": report.remark, "part_name": report.part_name, "part_no": report.part_no,
-                "spec": report.spec, "non_conformance": report.non_conformance, "rework_qty": report.rework_qty,
-                "inspected_by": report.inspected_by, "dynamic_details": report.dynamic_details, "submitted_by": submitted_user
-            }
-            return Response({"success": True, "data": data}, status=200)
+        # ── 🔥 THE REGISTRY ──
+        FORM_REGISTRY = {
+            'daily-prod-plan': lambda r: DailyProductionPlanSerializer(r).data,
+            'four-m-inspection': lambda r: FourMChangeInspectionSerializer(r).data,
+            'four-m-record': lambda r: FourMChangeRecordSerializer(r).data,
+            'tip-change': lambda r: TipChangeDressingSerializer(r).data,
+            'four-m-summary': lambda r: FourMSummarySerializer(r).data,
+            'machine-checksheet': get_machine_checksheet,
+            'five-s': get_fives_checksheet,
+            'five-s-view': get_fives_checksheet,
+            'bin-trolley': lambda r: {"date": str(r.date), "week": r.week, "month": r.month, "checkpoints": r.checkpoints, "cleaning_details": r.cleaning_details, "maintenance_details": r.maintenance_details},
+            'rework': lambda r: {"date": str(r.date), "remark": r.remark, "part_name": r.part_name, "part_no": r.part_no, "spec": r.spec, "non_conformance": r.non_conformance, "rework_qty": r.rework_qty, "inspected_by": r.inspected_by, "dynamic_details": r.dynamic_details},
+            'rework-view': lambda r: {"date": str(r.date), "remark": r.remark, "part_name": r.part_name, "part_no": r.part_no, "spec": r.spec, "non_conformance": r.non_conformance, "rework_qty": r.rework_qty, "inspected_by": r.inspected_by, "dynamic_details": r.dynamic_details},
+            'monthly-prod-plan': lambda r: {"date": str(r.filled_date), "partName": r.part_name, "customer": r.customer_name, "openingStock": r.opening_stock, "scheduleQty": r.schedule_qty, "plannedQty": r.planned_qty, "remark": r.remark, "preparedBy": r.prepared_by, "approvedBy": r.approved_by},
+            'operator-observance-checklist': lambda r: {"recordDate": str(r.record_date), "operatorName": r.operator_name, "model": r.model, "partOperation": r.part_operation, "formData": r.checkpoints, "preparedBy": r.prepared_by, "approvedBy": r.approved_by},
+            'operator-observance-plan': lambda r: {"selectedYear": r.plan_year, "selectedMonth": r.plan_month, "operators": r.operators_data, "preparedBy": r.prepared_by, "approvedBy": r.approved_by},
+            'pm-checklist-mhe': lambda r: {"filledDate": str(r.filled_date), "partName": r.part_name, "trolleyNo": r.trolley_no, "pmFrequency": r.pm_frequency, "checkPoints": r.checkpoints, "checkedBy": r.checked_by, "verifiedBy": r.verified_by, "generalRemarks": r.general_remarks},
+            'projection-welder': lambda r: {"wpsNo": r.wps_no, "date": str(r.date), "weldingProcess": r.welding_process, "baseMetal": r.base_metal, "baseMetalThickness": r.base_metal_thickness, "machineNo": r.machine_no, "trials": r.trials, "welderName": r.welder_name, "conductedBy": r.conducted_by, "verifiedBy": r.verified_by, "qualificationStatus": r.qualification_status},
+            'spot-welder': lambda r: {"wpsNo": r.wps_no, "date": str(r.date), "weldingProcess": r.welding_process, "baseMetal": r.base_metal, "baseMetalThickness": r.base_metal_thickness, "machineNo": r.machine_no, "gunType": r.gun_type, "trials": r.trials, "welderName": r.welder_name, "conductedBy": r.conducted_by, "verifiedBy": r.verified_by, "qualificationStatus": r.qualification_status},
+            'tig-mig-welder': lambda r: {"wpsNo": r.wps_no, "testingDate": str(r.testing_date), "weldingProcess": r.welding_process, "machineNo": r.machine_no, "baseMetal": r.base_metal, "baseMetalThickness": r.base_metal_thickness, "baseMetalSize": r.base_metal_size, "weldingPosition": r.welding_position, "fillerMaterial": r.filler_material, "fillerMaterialSize": r.filler_material_size, "shieldingGas": r.shielding_gas, "wireFeedSpeed": r.wire_feed_speed, "trials": r.trials, "testResults": r.test_results, "welderName": r.welder_name, "conductedBy": r.conducted_by, "verifiedBy": r.verified_by, "qualificationStatus": r.qualification_status},
+            'process-validation': lambda r: {"validationDate": str(r.validation_date), "revalidationDate": str(r.revalidation_date), "processName": r.process_name, "materialDetails": r.material_details, "machineNo": r.machine_no, "processOwner": r.process_owner, "partName": r.part_name, "fixtureNo": r.fixture_no, "operators": r.operators, "parameters": r.parameters, "trials": r.trials, "finalParams": r.final_params, "conclusion": r.conclusion, "preparedBy": r.prepared_by, "approvedBy": r.approved_by},
+            'four-m-display': lambda r: {"s_no": r.s_no, "machine_no": r.machine_no, "operator_name": r.operator_name, "man": r.man, "machine": r.machine, "material": r.material, "method": r.method},
+            'information-sheet': lambda r: FourMInformationSheetSerializer(r).data,
+            'four-m-information': lambda r: FourMInformationSheetSerializer(r).data,
+        }
 
-        elif form_key in ['monthly-prod-plan']:
-            report = get_object_or_404(MonthlyProductionPlan, id=rec_id)
-            data = {
-                "date": str(report.filled_date), "partName": report.part_name, "customer": report.customer_name,
-                "openingStock": report.opening_stock, "scheduleQty": report.schedule_qty, "plannedQty": report.planned_qty,
-                "remark": report.remark, "preparedBy": report.prepared_by, "approvedBy": report.approved_by, "submitted_by": submitted_user
-            }
-            return Response({"success": True, "data": data}, status=200)
+        MODEL_REGISTRY = {
+            'daily-prod-plan': DailyProductionPlan, 'four-m-inspection': FourMChangeInspection,
+            'four-m-record': FourMChangeRecord, 'tip-change': TipChangeDressing,
+            'four-m-summary': FourMSummary, 'machine-checksheet': MachineChecksheetReport,
+            'five-s': FiveSChecksheetReport, 'five-s-view': FiveSChecksheetReport,
+            'bin-trolley': BinTrolleyReport, 'rework': ReworkEntry, 'rework-view': ReworkEntry,
+            'monthly-prod-plan': MonthlyProductionPlan, 'operator-observance-checklist': OperatorObservanceChecklist,
+            'operator-observance-plan': OperatorObservancePlan, 'pm-checklist-mhe': PMChecklistMHE,
+            'projection-welder': ProjectionWelderQual, 'spot-welder': SpotWelderQual,
+            'tig-mig-welder': TigMigWelderQual, 'process-validation': ProcessValidation,
+            'four-m-display': FourMDisplay,
+            'information-sheet': FourMInformationSheet,
+            'four-m-information': FourMInformationSheet,
+        }
 
-        elif form_key in ['operator-observance-checklist']:
-            report = get_object_or_404(OperatorObservanceChecklist, id=rec_id)
-            data = {
-                "recordDate": str(report.record_date), "operatorName": report.operator_name, "model": report.model,
-                "partOperation": report.part_operation, "formData": report.checkpoints,
-                "preparedBy": report.prepared_by, "approvedBy": report.approved_by, "submitted_by": submitted_user
-            }
-            return Response({"success": True, "data": data}, status=200)
-
-        elif form_key in ['operator-observance-plan']:
-            report = get_object_or_404(OperatorObservancePlan, id=rec_id)
-            data = {
-                "selectedYear": report.plan_year, "selectedMonth": report.plan_month, "operators": report.operators_data,
-                "preparedBy": report.prepared_by, "approvedBy": report.approved_by, "submitted_by": submitted_user
-            }
-            return Response({"success": True, "data": data}, status=200)
-
-        elif form_key in ['pm-checklist-mhe']:
-            report = get_object_or_404(PMChecklistMHE, id=rec_id)
-            data = {
-                "filledDate": str(report.filled_date), "partName": report.part_name, "trolleyNo": report.trolley_no,
-                "pmFrequency": report.pm_frequency, "checkPoints": report.checkpoints, "checkedBy": report.checked_by,
-                "verifiedBy": report.verified_by, "generalRemarks": report.general_remarks, "submitted_by": submitted_user
-            }
-            return Response({"success": True, "data": data}, status=200)
-
-        elif form_key in ['projection-welder']:
-            report = get_object_or_404(ProjectionWelderQual, id=rec_id)
-            data = {
-                "wpsNo": report.wps_no, "date": str(report.date), "weldingProcess": report.welding_process,
-                "baseMetal": report.base_metal, "baseMetalThickness": report.base_metal_thickness, "machineNo": report.machine_no,
-                "trials": report.trials, "welderName": report.welder_name, "conductedBy": report.conducted_by,
-                "verifiedBy": report.verified_by, "qualificationStatus": report.qualification_status, "submitted_by": submitted_user
-            }
-            return Response({"success": True, "data": data}, status=200)
-
-        elif form_key in ['spot-welder']:
-            report = get_object_or_404(SpotWelderQual, id=rec_id)
-            data = {
-                "wpsNo": report.wps_no, "date": str(report.date), "weldingProcess": report.welding_process,
-                "baseMetal": report.base_metal, "baseMetalThickness": report.base_metal_thickness, "machineNo": report.machine_no,
-                "gunType": report.gun_type, "trials": report.trials, "welderName": report.welder_name, "conductedBy": report.conducted_by,
-                "verifiedBy": report.verified_by, "qualificationStatus": report.qualification_status, "submitted_by": submitted_user
-            }
-            return Response({"success": True, "data": data}, status=200)
-
-        elif form_key in ['tig-mig-welder']:
-            report = get_object_or_404(TigMigWelderQual, id=rec_id)
-            data = {
-                "wpsNo": report.wps_no, "testingDate": str(report.testing_date), "weldingProcess": report.welding_process,
-                "machineNo": report.machine_no, "baseMetal": report.base_metal, "baseMetalThickness": report.base_metal_thickness,
-                "baseMetalSize": report.base_metal_size, "weldingPosition": report.welding_position,
-                "fillerMaterial": report.filler_material, "fillerMaterialSize": report.filler_material_size, "shieldingGas": report.shielding_gas,
-                "wireFeedSpeed": report.wire_feed_speed, "trials": report.trials, "testResults": report.test_results,
-                "welderName": report.welder_name, "conductedBy": report.conducted_by, "verifiedBy": report.verified_by,
-                "qualificationStatus": report.qualification_status, "submitted_by": submitted_user
-            }
-            return Response({"success": True, "data": data}, status=200)
-
-        elif form_key in ['process-validation']:
-            report = get_object_or_404(ProcessValidation, id=rec_id)
-            data = {
-                "validationDate": str(report.validation_date), "revalidationDate": str(report.revalidation_date),
-                "processName": report.process_name, "materialDetails": report.material_details, "machineNo": report.machine_no,
-                "processOwner": report.process_owner, "partName": report.part_name, "fixtureNo": report.fixture_no,
-                "operators": report.operators, "parameters": report.parameters, "trials": report.trials,
-                "finalParams": report.final_params, "conclusion": report.conclusion, "preparedBy": report.prepared_by,
-                "approvedBy": report.approved_by, "submitted_by": submitted_user
-            }
-            return Response({"success": True, "data": data}, status=200)
-
-        elif form_key in ['four-m-display']:
-            report = get_object_or_404(FourMDisplay, id=rec_id)
-            data = {
-                "s_no": report.s_no, "machine_no": report.machine_no, "operator_name": report.operator_name,
-                "man": report.man, "machine": report.machine, "material": report.material, "method": report.method,
-                "submitted_by": submitted_user
-            }
-            return Response({"success": True, "data": data}, status=200)
-
-        elif form_key in ['four-m-summary']:
-            report = get_object_or_404(FourMSummary, id=rec_id)
-            serializer = FourMSummarySerializer(report)
-            data = serializer.data
-            data['submitted_by'] = submitted_user
-            return Response({"success": True, "data": data}, status=200)
-
-        else:
+        if form_key not in FORM_REGISTRY or form_key not in MODEL_REGISTRY:
             return Response({"success": False, "error": f"Form '{form_key}' Not Supported Yet in Production"}, status=400)
+
+        TargetModel = MODEL_REGISTRY[form_key]
+        report = get_object_or_404(TargetModel, id=rec_id)
+        
+        formatter = FORM_REGISTRY[form_key]
+        data = formatter(report)
+        data['submitted_by'] = submitted_user
+
+        return Response({"success": True, "data": data}, status=200)
 
     except Exception as e:
         import traceback
@@ -918,12 +1030,10 @@ def production_data_view(request, form_key):
                     ('Approval & Training', 'Setup Approval', r.setup_approval or ''),
                     ('Approval & Training', 'Training Provided', getattr(r, 'training_provided', '') or ''),
                     ('Retroactive', 'Qty Checked', getattr(r, 'retro_qty_checked', '') if getattr(r, 'retro_qty_checked', None) is not None else ''),
-                    # ('Retroactive', 'Entry Qty', getattr(r, 'retro_entry_qty', '') if getattr(r, 'retro_entry_qty', None) is not None else ''),
                     ('Retroactive', 'Qty OK', getattr(r, 'retro_qty_ok', '') or ''),
                     ('Retroactive', 'R/W', getattr(r, 'retro_rw', '') or ''),
                     ('Retroactive', 'Scrap', getattr(r, 'retro_scrap', '') or ''),
                     ('Containment', 'Qty Checked', getattr(r, 'cont_qty_checked', '') if getattr(r, 'cont_qty_checked', None) is not None else ''),
-                    # ('Containment', 'Entry Qty', getattr(r, 'cont_entry_qty', '') if getattr(r, 'cont_entry_qty', None) is not None else ''),
                     ('Containment', 'Qty OK', getattr(r, 'cont_qty_ok', '') or ''),
                     ('Containment', 'R/W', getattr(r, 'cont_rw', '') or ''),
                     ('Containment', 'Scrap', getattr(r, 'cont_scrap', '') or ''),
@@ -1440,7 +1550,6 @@ def production_data_view(request, form_key):
             } for r in records]
             return JsonResponse({'data': data})
         except Exception as e:
-            print("❌ Backend Error in four-m-summary:", str(e))
             print("❌ Backend Error in four-m-summary:", str(e))
             return JsonResponse({'data': [], 'error': str(e)}, status=500)
 

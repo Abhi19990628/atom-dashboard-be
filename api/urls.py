@@ -3,7 +3,7 @@ from django.urls import path, include  # 🔥 NAYA: yahan 'include' add kiya hai
 from . import views
 # from .views import MasterDropdownView, MasterParametersView
 from .views import ApproveReportView, GetQANotificationsView, log_idle_reason
-
+from .views import ChangePasswordView, RequestPasswordResetOTPView, VerifyOTPAndResetPasswordView
 from .views import (
 
      plant_wise_total,
@@ -17,7 +17,7 @@ from .views import (
 
 from .views import get_machine_history
 from django.contrib import admin
-from .views import CustomLoginView, ChangePasswordView , DirectPasswordResetView
+from .views import CustomLoginView, ChangePasswordView 
 from .views import CurrentUserProfileView,get_department_stats
 
 urlpatterns = [
@@ -25,12 +25,15 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     
     path('login/', CustomLoginView.as_view(), name='api_login'),
-    path('change-password/', ChangePasswordView.as_view(), name='change_password'),
+    path('change-password/', ChangePasswordView.as_view(), name='change-password'),
+    
+    # Forgot password flow (Bina login ke)
+    path('request-reset-otp/', RequestPasswordResetOTPView.as_view(), name='request-reset-otp'),
+    path('verify-reset-otp/', VerifyOTPAndResetPasswordView.as_view(), name='verify-reset-otp'),
     
   
     path('approve-report/', ApproveReportView.as_view(), name='api_approve_report'),
     
-    path('reset-password-direct/', DirectPasswordResetView.as_view(), name='api_reset_password_direct'),
     # 👇 NAYA NOTIFICATION MODULE YAHAN ADD KIYA HAI 👇
     path('', include('apps.notifications.urls')),
     path('', include('apps.production_reports.urls')),
