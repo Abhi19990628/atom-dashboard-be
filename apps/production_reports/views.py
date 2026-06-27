@@ -13,7 +13,9 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.decorators import api_view
-from django.contrib.auth.models import User
+
+from api.services.report_logging import auto_log_report
+from api.utils.date_filters import apply_date_filter
 
 # ==============================================================================
 # IMPORTS FROM MAIN API APP
@@ -32,10 +34,6 @@ from api.serializers import (
     FourMChangeInspectionSerializer, FourMChangeRecordSerializer, FourMSummarySerializer,FourMInformationSheetSerializer
 )
 
-try:
-    from api.views import TrackedAPIView
-except ImportError:
-    TrackedAPIView = APIView
 
 # ==============================================================================
 # HELPER FUNCTIONS
@@ -46,207 +44,6 @@ def clean_val(val, default=None):
 # ==============================================================================
 # ✅ PRODUCTION HUB ROUTE MAPPING + AUTO ACTIVITY LOG & NOTIFICATION ROUTER
 # ==============================================================================
-
-def normalize_report_name(value):
-    return str(value or "").strip().lower()
-
-
-REPORT_ROUTE_MAP = {
-    # =========================
-    # PRODUCTION HUB
-    # =========================
-    normalize_report_name("Daily Prod Form"): {
-        "form_key": "daily-prod-plan",
-        "hub": "production-hub",
-        "target_group": "Production_Approvers",
-    },
-    normalize_report_name("Bin Trolley Form"): {
-        "form_key": "bin-trolley",
-        "hub": "production-hub",
-        "target_group": "Production_Approvers",
-    },
-    normalize_report_name("Machine Checksheet"): {
-        "form_key": "machine-checksheet",
-        "hub": "production-hub",
-        "target_group": "Production_Approvers",
-    },
-    normalize_report_name("Tip Change Monitor Form"): {
-        "form_key": "tip-change",
-        "hub": "production-hub",
-        "target_group": "Production_Approvers",
-    },
-    normalize_report_name("Rework Report"): {
-        "form_key": "rework",
-        "hub": "production-hub",
-        "target_group": "Production_Approvers",
-    },
-    normalize_report_name("5S Checksheet"): {
-        "form_key": "five-s",
-        "hub": "production-hub",
-        "target_group": "Production_Approvers",
-    },
-    normalize_report_name("4M Change Inspection"): {
-        "form_key": "four-m-inspection",
-        "hub": "production-hub",
-        "target_group": "Production_Approvers",
-    },
-    normalize_report_name("4M Tracking Record"): {
-        "form_key": "four-m-record",
-        "hub": "production-hub",
-        "target_group": "Production_Approvers",
-    },
-    normalize_report_name("4M Display Board"): {
-        "form_key": "four-m-display",
-        "hub": "production-hub",
-        "target_group": "Production_Approvers",
-    },
-    normalize_report_name("4M Summary Sheet"): {
-        "form_key": "four-m-summary",
-        "hub": "production-hub",
-        "target_group": "Production_Approvers",
-    },
-    normalize_report_name("4M Information Sheet"): {
-        "form_key": "four-m-information",
-        "hub": "production-hub",
-        "target_group": "Production_Approvers",
-    },
-    normalize_report_name("Monthly Prod Plan"): {
-        "form_key": "monthly-prod-plan",
-        "hub": "production-hub",
-        "target_group": "Production_Approvers",
-    },
-    normalize_report_name("Operator Observance Checklist"): {
-        "form_key": "operator-observance-checklist",
-        "hub": "production-hub",
-        "target_group": "Production_Approvers",
-    },
-    normalize_report_name("Operator Observance Plan"): {
-        "form_key": "operator-observance-plan",
-        "hub": "production-hub",
-        "target_group": "Production_Approvers",
-    },
-    normalize_report_name("PM Checklist MHE"): {
-        "form_key": "pm-checklist-mhe",
-        "hub": "production-hub",
-        "target_group": "Production_Approvers",
-    },
-    normalize_report_name("Projection Welder"): {
-        "form_key": "projection-welder",
-        "hub": "production-hub",
-        "target_group": "Production_Approvers",
-    },
-    normalize_report_name("Spot Welder"): {
-        "form_key": "spot-welder",
-        "hub": "production-hub",
-        "target_group": "Production_Approvers",
-    },
-    normalize_report_name("TIG/MIG Welder"): {
-        "form_key": "tig-mig-welder",
-        "hub": "production-hub",
-        "target_group": "Production_Approvers",
-    },
-    normalize_report_name("Process Validation"): {
-        "form_key": "process-validation",
-        "hub": "production-hub",
-        "target_group": "Production_Approvers",
-    },
-
-}
-
-
-DEFAULT_ROUTE_CONFIG = {
-    "form_key": "daily-prod-plan",
-    "hub": "production-hub",
-    "target_group": "Production_Approvers",
-}
-
-
-def get_route_config(report_name):
-    return REPORT_ROUTE_MAP.get(
-        normalize_report_name(report_name),
-        DEFAULT_ROUTE_CONFIG
-    )
-
-
-def auto_log_report(
-    username,
-    report_name,
-    record_id,
-    form_key=None,
-    hub=None,
-    target_group=None,
-):
-    if not username:
-        username = "Unknown User"
-
-    try:
-        route_config = get_route_config(report_name)
-
-        final_form_key = form_key or route_config["form_key"]
-        final_hub = hub or route_config["hub"]
-        final_target_group = target_group or route_config["target_group"]
-
-        user_obj = User.objects.filter(username=username).first()
-
-        dept_name = final_hub
-        submitter_location_code = ""
-
-        if user_obj:
-            profile = getattr(user_obj, "userprofile", getattr(user_obj, "profile", None))
-
-            if profile:
-                loc = str(getattr(profile, "location", "") or "").strip()
-                dept = str(getattr(profile, "department", "") or "").strip()
-
-                if loc or dept:
-                    dept_name = f"{loc} ({dept})".strip()
-
-                submitter_location_code = loc.replace(" ", "").lower()
-
-        # ✅ Create activity log with route info
-        log = ReportActivityLog.objects.create(
-            username=username,
-            department_name=dept_name,
-            report_name=report_name,
-            record_id=record_id,
-            form_key=final_form_key,
-            hub=final_hub,
-        )
-
-        approvers = User.objects.filter(groups__name=final_target_group)
-
-        date_str = timezone.localtime().strftime("%d-%b-%Y")
-        time_str = timezone.localtime().strftime("%I:%M %p")
-
-        msg = f"{username} submitted {report_name} on {date_str} at {time_str}."
-
-        for approver in approvers:
-            approver_profile = getattr(
-                approver,
-                "userprofile",
-                getattr(approver, "profile", None)
-            )
-
-            # ✅ If both submitter and approver have location, send only same plant/location
-            if submitter_location_code and approver_profile and getattr(approver_profile, "location", None):
-                approver_location_code = str(
-                    approver_profile.location
-                ).strip().replace(" ", "").lower()
-
-                if submitter_location_code != approver_location_code:
-                    continue
-
-            QANotification.objects.create(
-                user=approver,
-                message=msg,
-                report_log=log,
-            )
-
-        return log
-
-    except Exception as e:
-        print(f"🔥 Auto Log Failed for {report_name}: {str(e)}")
-        return None
 
 # ==============================================================================
 # 🏭 DAILY PRODUCTION APIs (Save APIs updated with auto_log_report)
@@ -413,7 +210,7 @@ class SaveFiveSReportView(APIView):
             print("Error:", str(e))
             return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-class SaveDailyProductionPlanView(TrackedAPIView):
+class SaveDailyProductionPlanView(APIView):
     report_name = "Daily Production plan"
     def post(self, request):
         try:
@@ -875,37 +672,6 @@ def get_single_production_report_view(request, form_key, report_id):
 @api_view(['GET'])
 def production_data_view(request, form_key):
 
-    # ── 🔥 MASTER HELPER FUNCTION (Sabhi APIs ko Filter Karne Ke Liye) ──
-    def apply_date_filter(queryset, date_field):
-        start_date = request.GET.get('start_date')
-        end_date = request.GET.get('end_date')
-
-        if start_date == 'all':
-            return queryset
-
-        if not start_date and not end_date:
-            ist_tz = pytz.timezone('Asia/Kolkata')
-            from django.utils.timezone import now
-            today_str = now().astimezone(ist_tz).strftime("%Y-%m-%d")
-            if date_field == 'created_at':
-                return queryset.filter(**{f"{date_field}__date": today_str})
-            return queryset.filter(**{f"{date_field}": today_str})
-
-        if start_date and end_date:
-            if date_field == 'created_at':
-                return queryset.filter(**{f"{date_field}__date__range": [start_date, end_date]})
-            return queryset.filter(**{f"{date_field}__range": [start_date, end_date]})
-        elif start_date:
-            if date_field == 'created_at':
-                return queryset.filter(**{f"{date_field}__date__gte": start_date})
-            return queryset.filter(**{f"{date_field}__gte": start_date})
-        elif end_date:
-            if date_field == 'created_at':
-                return queryset.filter(**{f"{date_field}__date__lte": end_date})
-            return queryset.filter(**{f"{date_field}__lte": end_date})
-            
-        return queryset
-
     # ── Helper: raw SQL table se data fetch karna
     def fetch_from_table(table_name, source_tag=None):
         try:
@@ -930,7 +696,7 @@ def production_data_view(request, form_key):
     if form_key == 'daily-prod-plan':
         try:
             base_query = DailyProductionPlan.objects.all()
-            records = apply_date_filter(base_query, 'plan_date').order_by('-plan_date', '-created_at')
+            records = apply_date_filter(request, base_query, 'plan_date').order_by('-plan_date', '-created_at')
             data = [{
                 'id': r.id,
                 'Date': str(r.plan_date),
@@ -962,7 +728,7 @@ def production_data_view(request, form_key):
     elif form_key == 'four-m-inspection':
         try:
             base_query = FourMChangeInspection.objects.all()
-            records = apply_date_filter(base_query, 'inspection_date').order_by('-inspection_date', '-created_at')
+            records = apply_date_filter(request, base_query, 'inspection_date').order_by('-inspection_date', '-created_at')
             data = []
             
             for r in records:
@@ -1008,7 +774,7 @@ def production_data_view(request, form_key):
     elif form_key == 'four-m-record':
         try:
             base_query = FourMChangeRecord.objects.all()
-            records = apply_date_filter(base_query, 'created_at').order_by('-created_at')
+            records = apply_date_filter(request, base_query, 'created_at').order_by('-created_at')
             data = []
             
             for r in records:
@@ -1059,7 +825,7 @@ def production_data_view(request, form_key):
     elif form_key == 'tip-change':
         try:
             base_query = TipChangeDressing.objects.all()
-            records = apply_date_filter(base_query, 'date').order_by('-date')
+            records = apply_date_filter(request, base_query, 'date').order_by('-date')
             data = [{
                 'Date': str(r.date),
                 'Plant': r.plant or 'N/A',
@@ -1078,7 +844,7 @@ def production_data_view(request, form_key):
     elif form_key == 'bin-trolley':
         try:
             base_query = BinTrolleyReport.objects.all()
-            records = apply_date_filter(base_query, 'date').order_by('-date', '-created_at')
+            records = apply_date_filter(request, base_query, 'date').order_by('-date', '-created_at')
             data = []
             for r in records:
                 def parse_json(field_data):
@@ -1129,7 +895,7 @@ def production_data_view(request, form_key):
     elif form_key == 'five-s-view':
         try:
             base_query = FiveSChecksheetReport.objects.prefetch_related('observations')
-            reports = apply_date_filter(base_query, 'date').order_by('-date', '-created_at')
+            reports = apply_date_filter(request, base_query, 'date').order_by('-date', '-created_at')
             data = []
             for report in reports:
                 observations = report.observations.all()
@@ -1164,7 +930,7 @@ def production_data_view(request, form_key):
     elif form_key == 'monthly-prod-plan':
         try:
             base_query = MonthlyProductionPlan.objects.all()
-            reports = apply_date_filter(base_query, 'created_at').order_by('-created_at')
+            reports = apply_date_filter(request, base_query, 'created_at').order_by('-created_at')
             data = []
             for r in reports:
                 data.append({
@@ -1186,7 +952,7 @@ def production_data_view(request, form_key):
     elif form_key == 'operator-observance-checklist':
         try:
             base_query = OperatorObservanceChecklist.objects.all()
-            reports = apply_date_filter(base_query, 'record_date').order_by('-created_at')
+            reports = apply_date_filter(request, base_query, 'record_date').order_by('-created_at')
             data = []
             effect_map = {'100': 'High', '50': 'Medium', 'low': 'Low'}
             
@@ -1227,7 +993,7 @@ def production_data_view(request, form_key):
     elif form_key == 'operator-observance-plan':
         try:
             base_query = OperatorObservancePlan.objects.all()
-            reports = apply_date_filter(base_query, 'created_at').order_by('-created_at')
+            reports = apply_date_filter(request, base_query, 'created_at').order_by('-created_at')
             data = []
             for r in reports:
                 common_data = {
@@ -1260,7 +1026,7 @@ def production_data_view(request, form_key):
     elif form_key == 'pm-checklist-mhe':
         try:
             base_query = PMChecklistMHE.objects.all()
-            reports = apply_date_filter(base_query, 'filled_date').order_by('-created_at')
+            reports = apply_date_filter(request, base_query, 'filled_date').order_by('-created_at')
             data = []
             for r in reports:
                 common_data = {
@@ -1299,7 +1065,7 @@ def production_data_view(request, form_key):
     elif form_key == 'projection-welder':
         try:
             base_query = ProjectionWelderQual.objects.all()
-            records = apply_date_filter(base_query, 'date').order_by('-created_at')
+            records = apply_date_filter(request, base_query, 'date').order_by('-created_at')
             data = []
             for r in records:
                 common_data = {
@@ -1349,7 +1115,7 @@ def production_data_view(request, form_key):
     elif form_key == 'spot-welder':
         try:
             base_query = SpotWelderQual.objects.all()
-            records = apply_date_filter(base_query, 'date').order_by('-created_at')
+            records = apply_date_filter(request, base_query, 'date').order_by('-created_at')
             data = []
             for r in records:
                 common_data = {
@@ -1399,7 +1165,7 @@ def production_data_view(request, form_key):
     elif form_key == 'tig-mig-welder':
         try:
             base_query = TigMigWelderQual.objects.all()
-            records = apply_date_filter(base_query, 'testing_date').order_by('-created_at')
+            records = apply_date_filter(request, base_query, 'testing_date').order_by('-created_at')
             data = []
             for r in records:
                 common_data = {
@@ -1451,7 +1217,7 @@ def production_data_view(request, form_key):
     elif form_key == 'process-validation':
         try:
             base_query = ProcessValidation.objects.all()
-            records = apply_date_filter(base_query, 'validation_date').order_by('-created_at')
+            records = apply_date_filter(request, base_query, 'validation_date').order_by('-created_at')
             data = []
             for r in records:
                 ops = r.operators
@@ -1510,7 +1276,7 @@ def production_data_view(request, form_key):
     elif form_key == 'four-m-display':
         try:
             base_query = FourMDisplay.objects.all()
-            records = apply_date_filter(base_query, 'date_filled').order_by('-created_at')
+            records = apply_date_filter(request, base_query, 'date_filled').order_by('-created_at')
             data = [{
                 'Machine No': r.machine_no or '',
                 'Operator Name': r.operator_name or '',
@@ -1529,7 +1295,7 @@ def production_data_view(request, form_key):
     elif form_key == 'four-m-summary':
         try:
             base_query = FourMSummary.objects.all()
-            records = apply_date_filter(base_query, 'date').order_by('-created_at')
+            records = apply_date_filter(request, base_query, 'date').order_by('-created_at')
             data = [{
                 'Date': str(r.date) if r.date else '',
                 'Customer': r.customer or '',
@@ -1557,7 +1323,7 @@ def production_data_view(request, form_key):
     elif form_key == 'four-m-information':
         try:
             base_query = FourMInformationSheet.objects.all()
-            records = apply_date_filter(base_query, 'date_filled').order_by('-created_at')
+            records = apply_date_filter(request, base_query, 'date_filled').order_by('-created_at')
             data = [{
                 'S.No': r.s_no if r.s_no is not None else '',
                 'Time': str(r.time) if r.time else '',

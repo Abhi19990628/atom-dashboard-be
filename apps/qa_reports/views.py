@@ -8,12 +8,14 @@ from django.shortcuts import get_object_or_404
 from django.http import JsonResponse
 from django.utils import timezone
 from django.utils.timezone import localtime
-from django.contrib.auth.models import User
 
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.decorators import api_view
+
+from api.services.report_logging import auto_log_report
+from api.utils.date_filters import apply_date_filter
 
 # ==============================================================================
 # IMPORTS FROM MAIN API APP
@@ -63,258 +65,6 @@ def clean_date(val):
 # ✅ QA HUB ROUTE MAPPING + AUTO ACTIVITY LOG & NOTIFICATION ROUTER
 # =================================================================================================
 
-def normalize_report_name(value):
-    return str(value or "").strip().lower()
-
-
-QA_REPORT_ROUTE_MAP = {
-    normalize_report_name("Deviation Approval Form"): {
-        "form_key": "deviation",
-        "hub": "qa-hub",
-        "target_group": "Quality_Approvers",
-    },
-    normalize_report_name("Redbin Approval Form"): {
-        "form_key": "redbin",
-        "hub": "qa-hub",
-        "target_group": "Quality_Approvers",
-    },
-    normalize_report_name("Red Bin Attendance"): {
-        "form_key": "redbin-attendance",
-        "hub": "qa-hub",
-        "target_group": "Quality_Approvers",
-    },
-    normalize_report_name("Incoming Inspection"): {
-        "form_key": "incoming",
-        "hub": "qa-hub",
-        "target_group": "Quality_Approvers",
-    },
-    normalize_report_name("Incoming Material Inspection"): {
-        "form_key": "incoming",
-        "hub": "qa-hub",
-        "target_group": "Quality_Approvers",
-    },
-    normalize_report_name("Inspection Report"): {
-        "form_key": "inspection",
-        "hub": "qa-hub",
-        "target_group": "Quality_Approvers",
-    },
-    normalize_report_name("Inspection"): {
-        "form_key": "inspection",
-        "hub": "qa-hub",
-        "target_group": "Quality_Approvers",
-    },
-    normalize_report_name("Scrap Note"): {
-        "form_key": "scrap",
-        "hub": "qa-hub",
-        "target_group": "Quality_Approvers",
-    },
-    normalize_report_name("Poka Yoke"): {
-        "form_key": "poka-yoke",
-        "hub": "qa-hub",
-        "target_group": "Quality_Approvers",
-    },
-    normalize_report_name("PDI"): {
-        "form_key": "pdi",
-        "hub": "qa-hub",
-        "target_group": "Quality_Approvers",
-    },
-    normalize_report_name("QA Rework Report"): {
-        "form_key": "rework",
-        "hub": "qa-hub",
-        "target_group": "Quality_Approvers",
-    },
-    normalize_report_name("Sample Inspection"): {
-        "form_key": "sample-inspection",
-        "hub": "qa-hub",
-        "target_group": "Quality_Approvers",
-    },
-    normalize_report_name("Good Receipt"): {
-        "form_key": "good-receipt",
-        "hub": "qa-hub",
-        "target_group": "Quality_Approvers",
-    },
-    normalize_report_name("Material Requisition Slip"): {
-        "form_key": "good-receipt",
-        "hub": "qa-hub",
-        "target_group": "Quality_Approvers",
-    },
-    normalize_report_name("RM Quality"): {
-        "form_key": "rm-quality-plan",
-        "hub": "qa-hub",
-        "target_group": "Quality_Approvers",
-    },
-    normalize_report_name("Raw Material"): {
-        "form_key": "rm-quality-plan",
-        "hub": "qa-hub",
-        "target_group": "Quality_Approvers",
-    },
-    normalize_report_name("Process Audit"): {
-        "form_key": "process-audit",
-        "hub": "qa-hub",
-        "target_group": "Quality_Approvers",
-    },
-    normalize_report_name("Coherence"): {
-        "form_key": "coherence",
-        "hub": "qa-hub",
-        "target_group": "Quality_Approvers",
-    },
-    normalize_report_name("Coherence Checklist"): {
-        "form_key": "coherence",
-        "hub": "qa-hub",
-        "target_group": "Quality_Approvers",
-    },
-    normalize_report_name("Layout Inspection"): {
-        "form_key": "layout-inspection",
-        "hub": "qa-hub",
-        "target_group": "Quality_Approvers",
-    },
-    normalize_report_name("Product Audit"): {
-        "form_key": "product-audit-plan",
-        "hub": "qa-hub",
-        "target_group": "Quality_Approvers",
-    },
-    normalize_report_name("Product Audit Plan"): {
-        "form_key": "product-audit-plan",
-        "hub": "qa-hub",
-        "target_group": "Quality_Approvers",
-    },
-    normalize_report_name("Customer Complaint"): {
-        "form_key": "customer-complaint",
-        "hub": "qa-hub",
-        "target_group": "Quality_Approvers",
-    },
-    normalize_report_name("Customer Satisfaction"): {
-        "form_key": "customer-satisfaction",
-        "hub": "qa-hub",
-        "target_group": "Quality_Approvers",
-    },
-    normalize_report_name("Warranty Claim"): {
-        "form_key": "warranty-claim",
-        "hub": "qa-hub",
-        "target_group": "Quality_Approvers",
-    },
-    normalize_report_name("MOM"): {
-        "form_key": "mom",
-        "hub": "qa-hub",
-        "target_group": "Quality_Approvers",
-    },
-    normalize_report_name("Meeting"): {
-        "form_key": "mom",
-        "hub": "qa-hub",
-        "target_group": "Quality_Approvers",
-    },
-}
-
-
-DEFAULT_QA_ROUTE_CONFIG = {
-    "form_key": "inspection",
-    "hub": "qa-hub",
-    "target_group": "Quality_Approvers",
-}
-
-
-def get_qa_route_config(report_name):
-    return QA_REPORT_ROUTE_MAP.get(
-        normalize_report_name(report_name),
-        DEFAULT_QA_ROUTE_CONFIG,
-    )
-
-
-def auto_log_report(username, report_name, record_id, form_key=None, hub=None, target_group=None):
-    if not username:
-        username = "Unknown User"
-
-    try:
-        route_config = get_qa_route_config(report_name)
-
-        final_form_key = form_key or route_config["form_key"]
-        final_hub = hub or route_config["hub"]
-        final_target_group = target_group or route_config["target_group"]
-
-        user_obj = User.objects.filter(username=username).first()
-
-        dept_name = final_hub
-        submitter_location_code = ""
-
-        if user_obj:
-            profile = getattr(user_obj, "userprofile", getattr(user_obj, "profile", None))
-
-            if profile:
-                loc = str(getattr(profile, "location", "") or "").strip()
-                dept = str(getattr(profile, "department", "") or "").strip()
-
-                if loc or dept:
-                    dept_name = f"{loc} ({dept})".strip()
-
-                submitter_location_code = loc.replace(" ", "").lower()
-
-        log = ReportActivityLog.objects.create(
-            username=username,
-            department_name=dept_name,
-            report_name=report_name,
-            record_id=record_id,
-            form_key=final_form_key,
-            hub=final_hub,
-        )
-
-        approvers = User.objects.filter(groups__name=final_target_group)
-
-        date_str = timezone.localtime().strftime("%d-%b-%Y")
-        time_str = timezone.localtime().strftime("%I:%M %p")
-        msg = f"{username} submitted {report_name} on {date_str} at {time_str}."
-
-        for approver in approvers:
-            approver_profile = getattr(
-                approver,
-                "userprofile",
-                getattr(approver, "profile", None),
-            )
-
-            # If both submitter and approver have location, send only same plant/location.
-            # If submitter has no location, notification will go to all Quality_Approvers.
-            if submitter_location_code and approver_profile and getattr(approver_profile, "location", None):
-                approver_location_code = str(
-                    approver_profile.location
-                ).strip().replace(" ", "").lower()
-
-                if submitter_location_code != approver_location_code:
-                    continue
-
-            QANotification.objects.create(
-                user=approver,
-                message=msg,
-                report_log=log,
-            )
-
-        return log
-
-    except Exception as e:
-        print(f"🔥 QA Auto Log Failed for {report_name}: {str(e)}")
-        traceback.print_exc()
-        return None
-
-class TrackedAPIView(APIView):
-    report_name = "General Report"
-    def finalize_response(self, request, response, *args, **kwargs):
-        if response.status_code in [200, 201] and request.method in ['POST', 'PATCH', 'PUT']:
-            try:
-                username = 'Unknown'
-                department = 'Unknown'
-                if request.user and request.user.is_authenticated:
-                    username = request.user.username
-                    if request.user.groups.exists():
-                        department = request.user.groups.first().name
-                    else:
-                        department = 'Default_User'
-                else:
-                    if hasattr(request, 'data') and isinstance(request.data, dict):
-                        username = request.data.get('username', 'Unknown')
-                        department = request.data.get('department', 'Unknown')
-                ReportTrackHistory.objects.create(username=username, department=department, report_name=self.report_name)
-            except Exception as e:
-                print("⚠️ Tracking Error:", e)
-        return super().finalize_response(request, response, *args, **kwargs)
-    
 # ==================================================
 # 🟢 1. DROPDOWN & MASTER APIs
 # ==================================================
@@ -969,40 +719,6 @@ def get_single_report_view(request, form_key, report_id):
 @api_view(['GET'])
 def qa_data_view(request, form_key):
 
-    # ── 🔥 NAYA MASTER HELPER FUNCTION (Sabhi APIs ko Filter Karne Ke Liye) ──
-    def apply_date_filter(queryset, date_field):
-        start_date = request.GET.get('start_date')
-        end_date = request.GET.get('end_date')
-
-        # Agar 'all' pass kiya hai toh pura DB data return kar do
-        if start_date == 'all':
-            return queryset
-
-        # Default Behavior: Agar filter se kuch na bhejein toh sirf Aaj (Today) ka data aayega
-        if not start_date and not end_date:
-            ist_tz = pytz.timezone('Asia/Kolkata')
-            from django.utils.timezone import now
-            today_str = now().astimezone(ist_tz).strftime("%Y-%m-%d")
-            if date_field == 'created_at':
-                return queryset.filter(**{f"{date_field}__date": today_str})
-            return queryset.filter(**{f"{date_field}": today_str})
-
-        # Custom Filters: Last 2 days, Specific Date wagerah
-        if start_date and end_date:
-            if date_field == 'created_at':
-                return queryset.filter(**{f"{date_field}__date__range": [start_date, end_date]})
-            return queryset.filter(**{f"{date_field}__range": [start_date, end_date]})
-        elif start_date:
-            if date_field == 'created_at':
-                return queryset.filter(**{f"{date_field}__date__gte": start_date})
-            return queryset.filter(**{f"{date_field}__gte": start_date})
-        elif end_date:
-            if date_field == 'created_at':
-                return queryset.filter(**{f"{date_field}__date__lte": end_date})
-            return queryset.filter(**{f"{date_field}__lte": end_date})
-            
-        return queryset
-
     # ── Helper: AM/PM aur Comma wala Time Generator ──
     def format_to_ampm(raw_time):
         if not raw_time:
@@ -1156,7 +872,7 @@ def qa_data_view(request, form_key):
     elif form_key == 'redbin-view':
         try:
             base_query = RedBinAnalysisReport.objects.all()
-            reports = apply_date_filter(base_query, 'entry_date').order_by('-entry_date', '-created_time')
+            reports = apply_date_filter(request, base_query, 'entry_date').order_by('-entry_date', '-created_time')
             data = []
             
             for report in reports:
@@ -1182,7 +898,7 @@ def qa_data_view(request, form_key):
     # ── 4. RED BIN ATTENDANCE ──────────────────────────────────
     elif form_key == 'redbin-attendance-view':
         try:
-            reports = apply_date_filter(RedBinAttendance.objects.all(), 'date').order_by('-date', '-created_at')
+            reports = apply_date_filter(request, RedBinAttendance.objects.all(), 'date').order_by('-date', '-created_at')
             data = []
             
             status_map = {'P': 'Present', 'A': 'Absent', '': 'Unmarked'}
@@ -1203,7 +919,7 @@ def qa_data_view(request, form_key):
     # ── 5. SCRAP NOTE ──────────────────────────────────────────
     elif form_key == 'scrap-note-view':
         try:
-            reports = apply_date_filter(ScrapNoteEntry.objects.all(), 'entry_date').order_by('-entry_date', '-created_at')
+            reports = apply_date_filter(request, ScrapNoteEntry.objects.all(), 'entry_date').order_by('-entry_date', '-created_at')
             data = []
             for report in reports:
                 data.append({
@@ -1221,7 +937,7 @@ def qa_data_view(request, form_key):
     # ── 6. REWORK REPORT ───────────────────────────────────────
     elif form_key == 'rework-view':
         try:
-            reports = apply_date_filter(ReworkEntry.objects.all(), 'date').order_by('-date', '-created_at')
+            reports = apply_date_filter(request, ReworkEntry.objects.all(), 'date').order_by('-date', '-created_at')
             data = []
             for r in reports:
                 details = r.dynamic_details or {}
@@ -1259,7 +975,7 @@ def qa_data_view(request, form_key):
     # ── 7. DEVIATION APPROVAL ──────────────────────────────────
     elif form_key == 'deviation-view':
         try:
-            reports = apply_date_filter(DeviationApproval.objects.all(), 'date').order_by('-date', '-created_at')
+            reports = apply_date_filter(request, DeviationApproval.objects.all(), 'date').order_by('-date', '-created_at')
             data = []
             for report in reports:
                 data.append({
@@ -1280,7 +996,7 @@ def qa_data_view(request, form_key):
     # ── 8. GOOD RECEIPT ENTRY (NEW) ────────────────────────────
     elif form_key == 'good-receipt':
         try:
-            reports = apply_date_filter(GoodReceiptEntry.objects.all(), 'received_date').order_by('-received_date', '-created_at')
+            reports = apply_date_filter(request, GoodReceiptEntry.objects.all(), 'received_date').order_by('-received_date', '-created_at')
             data = []
             for report in reports:
                 data.append({
@@ -1300,7 +1016,7 @@ def qa_data_view(request, form_key):
     # ── 9. PROCESS AUDIT CHECKSHEET ────────────────────────────
     elif form_key == 'process-audit-view':
         try:
-            reports = apply_date_filter(ProcessAuditChecksheet.objects.all(), 'date').order_by('-date', '-created_at')
+            reports = apply_date_filter(request, ProcessAuditChecksheet.objects.all(), 'date').order_by('-date', '-created_at')
             data = []
             for report in reports:
                 base_info = {
@@ -1330,7 +1046,7 @@ def qa_data_view(request, form_key):
     # ── 10. COHERENCE CHECKLIST ─────────────────────────────────
     elif form_key == 'coherence-view':
         try:
-            reports = apply_date_filter(CoherenceChecklist.objects.all(), 'date').order_by('-date', '-created_at')
+            reports = apply_date_filter(request, CoherenceChecklist.objects.all(), 'date').order_by('-date', '-created_at')
             data = []
             for report in reports:
                 base_info = {
@@ -1359,7 +1075,7 @@ def qa_data_view(request, form_key):
     # ── 11. LAYOUT INSPECTION ───────────────────────────────────
     elif form_key == 'layout-inspection-view':
         try:
-            reports = apply_date_filter(LayoutInspection.objects.all(), 'date').order_by('-date', '-created_at')
+            reports = apply_date_filter(request, LayoutInspection.objects.all(), 'date').order_by('-date', '-created_at')
             data = []
             for report in reports:
                 base_info = {
@@ -1390,7 +1106,7 @@ def qa_data_view(request, form_key):
     # ── 12. PRODUCT AUDIT PLAN ──────────────────────────────────
     elif form_key == 'product-audit-plan-view':
         try:
-            reports = apply_date_filter(ProductAuditPlan.objects.all(), 'date').order_by('-date', '-created_at')
+            reports = apply_date_filter(request, ProductAuditPlan.objects.all(), 'date').order_by('-date', '-created_at')
             data = []
             for report in reports:
                 base_info = {
@@ -1419,7 +1135,7 @@ def qa_data_view(request, form_key):
     # ── 13. CUSTOMER COMPLAINT ──────────────────────────────────
     elif form_key == 'customer-complaint-view':
         try:
-            reports = apply_date_filter(CustomerComplaint.objects.all(), 'date').order_by('-date', '-created_at')
+            reports = apply_date_filter(request, CustomerComplaint.objects.all(), 'date').order_by('-date', '-created_at')
             data = []
             for report in reports:
                 data.append({
@@ -1440,7 +1156,7 @@ def qa_data_view(request, form_key):
     # ── 14. CUSTOMER SATISFACTION ───────────────────────────────
     elif form_key == 'customer-satisfaction-view':
         try:
-            reports = apply_date_filter(CustomerSatisfaction.objects.all(), 'created_at').order_by('-created_at')
+            reports = apply_date_filter(request, CustomerSatisfaction.objects.all(), 'created_at').order_by('-created_at')
             data = []
             for report in reports:
                 row = {
@@ -1461,7 +1177,7 @@ def qa_data_view(request, form_key):
     # ── 15. WARRANTY CLAIM ──────────────────────────────────────
     elif form_key == 'warranty-claim-view':
         try:
-            reports = apply_date_filter(WarrantyClaim.objects.all(), 'date').order_by('-date', '-created_at')
+            reports = apply_date_filter(request, WarrantyClaim.objects.all(), 'date').order_by('-date', '-created_at')
             data = []
             for report in reports:
                 data.append({
@@ -1482,7 +1198,7 @@ def qa_data_view(request, form_key):
     # ── 16. MINUTES OF MEETING (MOM) ────────────────────────────
     elif form_key == 'mom-view':
         try:
-            reports = apply_date_filter(MinutesOfMeeting.objects.all(), 'date').order_by('-date', '-created_at')
+            reports = apply_date_filter(request, MinutesOfMeeting.objects.all(), 'date').order_by('-date', '-created_at')
             data = []
             for report in reports:
                 base_info = {
@@ -1510,7 +1226,7 @@ def qa_data_view(request, form_key):
     # ── 17. INCOMING MATERIAL INSPECTION (NEW) ──────────────────
     elif form_key == 'incoming-inspection-view':
         try:
-            reports = apply_date_filter(IncomingMaterialInspection.objects.all(), 'date').order_by('-date', '-created_at')
+            reports = apply_date_filter(request, IncomingMaterialInspection.objects.all(), 'date').order_by('-date', '-created_at')
             data = []
             for report in reports:
                 base_info = {

@@ -2965,110 +2965,54 @@ class GetQANotificationsView(APIView):
 # ==============================================================================
 # 🏭 ENTERPRISE DYNAMIC ROUTING (LOCATION + DEPARTMENT AWARE)
 # ==============================================================================
+
+from api.services.report_logging import auto_log_report
+
+
 class SaveReportLogView(APIView):
-    permission_classes = [] 
-    
+    permission_classes = []
+
     def post(self, request):
-        username = request.data.get('username')
-        report_name = request.data.get('report_name')
-        record_id = request.data.get('record_id') 
-        final_form_key = request.data.get('form_key')
-        final_hub = request.data.get('hub') 
+        username = request.data.get("username")
+        report_name = request.data.get("report_name")
+        record_id = request.data.get("record_id")
+        form_key = request.data.get("form_key")
+        hub = request.data.get("hub")
+        target_group = request.data.get("target_group")
 
         if not username or not report_name:
-            return Response({"error": "Username and report_name are required fields."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"error": "username and report_name are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        try:
-            user_obj = User.objects.get(username=username)
-        except User.DoesNotExist:
-            return Response({"error": f"System Error: User '{username}' not found in database."}, status=status.HTTP_404_NOT_FOUND)
-
-        # ── 1. STRICT PROFILE EXTRACTION (LOCATION & DEPARTMENT) ──
-        submitter_location = None
-        submitter_department = None
-        
-        try:
-            profile = getattr(user_obj, 'userprofile', getattr(user_obj, 'profile', None))
-            if profile:
-                if getattr(profile, 'location', None):
-                    submitter_location = str(profile.location).strip()
-                if getattr(profile, 'department', None):
-                    submitter_department = str(profile.department).strip()
-        except Exception as e:
-            print(f"⚠️ Profile check exception for {username}: {e}")
-
-        # 🔥 STRICT GATE: Agar Location ya Department missing hai, toh block karo!
-        if not submitter_location or not submitter_department:
-            return Response({
-                "error": f"Validation Error: User '{username}' lacks valid Location or Department in Admin. Please update."
-            }, status=status.HTTP_400_BAD_REQUEST)
-
-        # Routing ke liye format
-        submitter_plant_code = submitter_location.replace(" ", "").lower()
-
-        # ── 2. DEPARTMENT KE HISAAB SE APPROVER GROUP DECIDE KARO ──
-        target_approver_group = 'QA_Approvers' # Default fallback
-        
-        if submitter_department == 'QA':
-            target_approver_group = 'QA_Approvers'
-        elif submitter_department == 'Production':
-            target_approver_group = 'Production_Approvers'
-        elif submitter_department == 'Maintenance':
-            target_approver_group = 'Maintenance_Approvers'
-
-        # ── 3. LOG THE ENTRY ──
-        log = ReportActivityLog.objects.create(
-            username=username, 
-            department_name=f"{submitter_location} ({submitter_department})", # E.g., "Plant 1 (Production)"
-            report_name=report_name, 
+        log = auto_log_report(
+            username=username,
+            report_name=report_name,
             record_id=record_id,
-            form_key=final_form_key,
-            hub=final_hub, 
+            form_key=form_key,
+            hub=hub,
+            target_group=target_group,
         )
-        
-        # ── 4. STRICT NOTIFICATION ROUTING ──
-        local_time = localtime(log.timestamp).strftime('%I:%M %p')
-        date_str = localtime(log.timestamp).strftime('%d-%b-%Y')
-        msg = f"{username} submitted {report_name} on {date_str} at {local_time}."
-        
-        print(f"🚀 ROUTING START | Submitter: {username} [{submitter_plant_code} - {submitter_department}] -> Target Group: {target_approver_group}")
 
-        # Sirf us specific group ke approvers ko nikalenge (e.g., Sirf Production_Approvers)
-        approvers = User.objects.filter(groups__name=target_approver_group)
-        notifs_sent = 0
-        
-        if not approvers.exists():
-            print(f"⚠️ WARNING: No users found in group '{target_approver_group}'!")
-        
-        for approver in approvers:
-            try:
-                approver_profile = getattr(approver, 'userprofile', getattr(approver, 'profile', None))
-                if approver_profile and getattr(approver_profile, 'location', None):
-                    approver_location = str(approver_profile.location).strip()
-                    approver_plant_code = approver_location.replace(" ", "").lower()
-                    
-                    print(f"   -> Checking Approver: {approver.username} [{approver_plant_code}]")
-                    
-                    # 🔥 100% STRICT MATCH: (Plant 1 == Plant 1) AND (Group == Group)
-                    if submitter_plant_code == approver_plant_code:
-                        # Hum QANotification model ka hi use kar rahe hain message store karne ke liye
-                        QANotification.objects.create(user=approver, message=msg, report_log=log)
-                        notifs_sent += 1
-                        print(f"      ✅ MATCHED! Notification sent to {approver.username}")
-                    else:
-                        print(f"      ❌ BLOCKED! Submitter Plant({submitter_plant_code}) != Approver Plant({approver_plant_code})")
-                else:
-                    print(f"   -> ❌ SKIP: Approver {approver.username} has no location configured.")
-            except Exception:
-                pass
+        if not log:
+            return Response(
+                {"error": "Activity log failed. Check backend console."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
-        return Response({
-            "message": "Activity log saved and dynamically routed successfully!", 
-            "log_id": log.id
-        }, status=status.HTTP_201_CREATED)
-        
-        
-        
+        return Response(
+            {
+                "success": True,
+                "message": "Activity log and notification created successfully.",
+                "log_id": log.id,
+                "form_key": log.form_key,
+                "hub": log.hub,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
 from .serializers import UserDepartmentProfileSerializer
@@ -3232,120 +3176,3 @@ def get_department_stats(request):
     return Response(response_data)
 
 #by aman pal
-
-def normalize_report_name(value):
-    return str(value or "").strip().lower()
-
-
-REPORT_ROUTE_MAP = {
-    # =========================
-    # PRODUCTION HUB
-    # =========================
-    normalize_report_name("Daily Prod Form"): {
-        "form_key": "daily-prod-plan",
-        "hub": "production-hub",
-        "target_group": "Production_Approvers",
-    },
-    normalize_report_name("Bin Trolley Form"): {
-        "form_key": "bin-trolley",
-        "hub": "production-hub",
-        "target_group": "Production_Approvers",
-    },
-    normalize_report_name("Tip Change Monitor Form"): {
-        "form_key": "tip-change",
-        "hub": "production-hub",
-        "target_group": "Production_Approvers",
-    },
-    normalize_report_name("4M Change Inspection"): {
-        "form_key": "four-m-inspection",
-        "hub": "production-hub",
-        "target_group": "Production_Approvers",
-    },
-    normalize_report_name("4M Tracking Record"): {
-        "form_key": "four-m-record",
-        "hub": "production-hub",
-        "target_group": "Production_Approvers",
-    },
-    normalize_report_name("4M Display Board"): {
-        "form_key": "four-m-display",
-        "hub": "production-hub",
-        "target_group": "Production_Approvers",
-    },
-    normalize_report_name("4M Summary Sheet"): {
-        "form_key": "four-m-summary",
-        "hub": "production-hub",
-        "target_group": "Production_Approvers",
-    },
-   normalize_report_name("4M Information Sheet"): {
-    "form_key": "four-m-information",
-    "hub": "production-hub",
-    "target_group": "Production_Approvers",
-},
-
-    # =========================
-    # QUALITY / QA HUB
-    # =========================
-    normalize_report_name("Deviation Report"): {
-        "form_key": "deviation",
-        "hub": "qa-hub",
-        "target_group": "Quality_Approvers",  # change if your group name is QA_Approvers
-    },
-    normalize_report_name("Redbin Approval Form"): {
-        "form_key": "redbin",
-        "hub": "qa-hub",
-        "target_group": "Quality_Approvers",
-    },
-    normalize_report_name("Red Bin Attendance"): {
-        "form_key": "redbin-attendance",
-        "hub": "qa-hub",
-        "target_group": "Quality_Approvers",
-    },
-    normalize_report_name("Incoming Inspection"): {
-        "form_key": "incoming",
-        "hub": "qa-hub",
-        "target_group": "Quality_Approvers",
-    },
-    normalize_report_name("Scrap Note"): {
-        "form_key": "scrap",
-        "hub": "qa-hub",
-        "target_group": "Quality_Approvers",
-    },
-
-    # =========================
-    # MAINTENANCE HUB
-    # =========================
-    normalize_report_name("Machine Breakdown Form"): {
-        "form_key": "machine-breakdown",
-        "hub": "maintenance-hub",
-        "target_group": "Maintenance_Approvers",
-    },
-    normalize_report_name("Machine Preventive Maintenance"): {
-        "form_key": "preventive-maintenance",
-        "hub": "maintenance-hub",
-        "target_group": "Maintenance_Approvers",
-    },
-    normalize_report_name("Tool Breakdown Form"): {
-        "form_key": "tool-breakdown",
-        "hub": "maintenance-hub",
-        "target_group": "Maintenance_Approvers",
-    },
-    normalize_report_name("Tool Preventive Maintenance"): {
-        "form_key": "tool-preventive-maintenance",
-        "hub": "maintenance-hub",
-        "target_group": "Maintenance_Approvers",
-    },
-}
-
-
-DEFAULT_ROUTE_CONFIG = {
-    "form_key": "daily-prod-plan",
-    "hub": "production-hub",
-    "target_group": "Production_Approvers",
-}
-
-
-def get_route_config(report_name):
-    return REPORT_ROUTE_MAP.get(
-        normalize_report_name(report_name),
-        DEFAULT_ROUTE_CONFIG
-    )
