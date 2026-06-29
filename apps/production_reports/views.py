@@ -656,9 +656,29 @@ def get_single_production_report_view(request, form_key, report_id):
         formatter = FORM_REGISTRY[form_key]
         data = formatter(report)
         data['submitted_by'] = submitted_user
-
+        data['status'] = log_entry.status or "In Progress"
+        data['remarks'] = log_entry.remarks or ""
+        
+        if log_entry.status and log_entry.status.startswith("Approved by"):
+            data['approval_status'] = "Approved"
+            data['approved_by'] = log_entry.status.replace("Approved by", "").strip()
+            data['rejected_by'] = ""
+        elif log_entry.status and log_entry.status.startswith("Rejected by"):
+            data['approval_status'] = "Rejected"
+            data['approved_by'] = ""
+            data['rejected_by'] = log_entry.status.replace("Rejected by", "").strip()
+        else:
+            data['approval_status'] = "Pending"
+            data['approved_by'] = ""
+            data['rejected_by'] = ""
+        
+        data['approved_or_rejected_at'] = (
+            log_entry.approved_or_rejected_at.strftime("%Y-%m-%d %H:%M:%S")
+            if log_entry.approved_or_rejected_at
+            else ""
+        )
+        
         return Response({"success": True, "data": data}, status=200)
-
     except Exception as e:
         import traceback
         print("🔥 ERROR IN GET SINGLE PRODUCTION REPORT:", traceback.format_exc())

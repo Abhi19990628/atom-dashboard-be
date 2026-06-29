@@ -2876,38 +2876,152 @@ from django.utils.timezone import localtime
 from .models import ReportActivityLog, QANotification
 
  
+from django.utils import timezone
 
 class ApproveReportView(APIView):
     permission_classes = []
 
     def post(self, request):
-        log_id = request.data.get('log_id')
-        approver_username = request.data.get('approver_username')
+        log_id = request.data.get("log_id")
+        approver_username = (
+            request.data.get("approver_username")
+            or request.data.get("approved_by")
+            or "Approver"
+        )
+        remarks = (
+            request.data.get("remarks")
+            or request.data.get("remark")
+            or ""
+        )
 
-        if not log_id or not approver_username:
-            return Response({"error": "log_id and approver_username are required."}, status=status.HTTP_400_BAD_REQUEST)
+        if not log_id:
+            return Response(
+                {"error": "log_id is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         try:
-            from .models import ReportActivityLog, QANotification # Local import to avoid circular dependency issues
-            
-            # Find the report
             report = ReportActivityLog.objects.get(id=log_id)
-            
-            # Update the status 
+
+            reviewed_at = timezone.localtime(timezone.now()).strftime("%Y-%m-%d %H:%M:%S")
+
             report.status = f"Approved by {approver_username}"
-            report.save()
+            report.approved_or_rejected_at = reviewed_at
+            report.remarks = remarks
+            report.save(update_fields=[
+                "status",
+                "approved_or_rejected_at",
+                "remarks"
+            ])
 
-            # Mark notification as read
-            notifications = QANotification.objects.filter(report_log=report)
-            for notif in notifications:
-                notif.is_read = True
-                notif.save()
+            QANotification.objects.filter(report_log=report).update(is_read=True)
 
-            return Response({"message": f"Report successfully approved by {approver_username}!"}, status=status.HTTP_200_OK)
-            
+            return Response(
+                {
+                    "success": True,
+                    "message": f"Report successfully approved by {approver_username}!",
+                    "status": report.status,
+                    "approved_or_rejected_at": str(reviewed_at),
+                    "remarks": remarks,
+                },
+                status=status.HTTP_200_OK
+            )
+
+        except ReportActivityLog.DoesNotExist:
+            return Response(
+                {"error": "Report log not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
         except Exception as e:
-            return Response({"error": f"Report not found or error occurred: {str(e)}"}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class RejectReportView(APIView):
+    permission_classes = []
+
+    def post(self, request):
+        log_id = request.data.get("log_id")
+        approver_username = (
+            request.data.get("approver_username")
+            or request.data.get("rejected_by")
+            or "Approver"
+        )
+        remarks = (
+            request.data.get("remarks")
+            or request.data.get("remark")
+            or request.data.get("rejection_remark")
+            or ""
+        )
+
+        if not log_id:
+            return Response(
+                {"error": "log_id is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if not remarks.strip():
+            return Response(
+                {"error": "Rejection remark is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            report = ReportActivityLog.objects.get(id=log_id)
+
+            reviewed_at = timezone.localtime(timezone.now()).strftime("%Y-%m-%d %H:%M:%S")
+
+            report.status = f"Rejected by {approver_username}"
+            report.approved_or_rejected_at = reviewed_at
+            report.remarks = remarks
+            report.save(update_fields=[
+                "status",
+                "approved_or_rejected_at",
+                "remarks"
+            ])
+
+            QANotification.objects.filter(report_log=report).update(is_read=True)
+
+            return Response(
+                {
+                    "success": True,
+                    "message": f"Report successfully rejected by {approver_username}!",
+                    "status": report.status,
+                    "approved_or_rejected_at": str(reviewed_at),
+                    "remarks": remarks,
+                },
+                status=status.HTTP_200_OK
+            )
+
+        except ReportActivityLog.DoesNotExist:
+            return Response(
+                {"error": "Report log not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
         
+from api.services.report_registry import get_route_config
+
+
+def resolve_hub_from_department(department_name):
+    text = str(department_name or "").lower()
+
+    if "production" in text:
+        return "production-hub"
+
+    if "qa" in text or "quality" in text:
+        return "qa-hub"
+
+    if "maintenance" in text:
+        return "maintenance-hub"
+
+    return ""  
         
 class GetQANotificationsView(APIView):
     def get(self, request, username):
@@ -2924,17 +3038,24 @@ class GetQANotificationsView(APIView):
             for n in notifications:
                 log = n.report_log
 
+                route_config = get_route_config(log.report_name) if log else {}
+
+                department_name = log.department_name if log else ""
+                report_name = log.report_name if log else ""
+
                 notifications_data.append({
                     "id": n.id,
                     "message": n.message,
                     "time": timezone.localtime(n.created_at).strftime("%d-%b-%Y %I:%M %p"),
 
                     "report_log_id": log.id if log else None,
-                    "report_name": log.report_name if log else "",
+                    "report_name": report_name,
+                    "department_name": department_name,
 
-                    # ✅ Most important for frontend routing
-                    "formRoute": log.form_key if log else "",
-                    "hub": log.hub if log else "",
+                    # These are route values derived from report_name/department_name.
+                    # They are NOT database columns now.
+                    "formRoute": route_config.get("form_key", ""),
+                    "hub": resolve_hub_from_department(department_name) or route_config.get("hub", ""),
 
                     "submitted_by": log.username if log else "",
                 })
@@ -2976,8 +3097,7 @@ class SaveReportLogView(APIView):
         username = request.data.get("username")
         report_name = request.data.get("report_name")
         record_id = request.data.get("record_id")
-        form_key = request.data.get("form_key")
-        hub = request.data.get("hub")
+        department_name = request.data.get("department_name")
         target_group = request.data.get("target_group")
 
         if not username or not report_name:
@@ -2987,12 +3107,11 @@ class SaveReportLogView(APIView):
             )
 
         log = auto_log_report(
-            username=username,
-            report_name=report_name,
-            record_id=record_id,
-            form_key=form_key,
-            hub=hub,
-            target_group=target_group,
+        username=username,
+        report_name=report_name,
+        record_id=record_id,
+        department_name=department_name,
+        target_group=target_group,
         )
 
         if not log:
@@ -3002,15 +3121,15 @@ class SaveReportLogView(APIView):
             )
 
         return Response(
-            {
-                "success": True,
-                "message": "Activity log and notification created successfully.",
-                "log_id": log.id,
-                "form_key": log.form_key,
-                "hub": log.hub,
-            },
-            status=status.HTTP_201_CREATED,
-        )
+    {
+        "success": True,
+        "message": "Activity log and notification created successfully.",
+        "log_id": log.id,
+        "report_name": log.report_name,
+        "department_name": log.department_name,
+    },
+    status=status.HTTP_201_CREATED,
+)
 
 
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser

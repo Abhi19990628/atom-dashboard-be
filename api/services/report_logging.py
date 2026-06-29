@@ -33,18 +33,16 @@ def auto_log_report(
     username,
     report_name,
     record_id,
-    form_key=None,
-    hub=None,
+    department_name=None,
     target_group=None,
 ):
     """
     Common activity-log and notification creator.
 
-    Safe behavior:
-    - Creates ReportActivityLog.
-    - Sends notifications to same plant/location approvers.
-    - Avoids duplicate logs for same username/report/record/form/hub.
-    - Avoids duplicate notifications for same approver + log.
+    New behavior:
+    - Uses report_name instead of form_key.
+    - Uses department_name instead of hub.
+    - Does not save form_key or hub in ReportActivityLog.
     """
 
     if not username:
@@ -53,14 +51,12 @@ def auto_log_report(
     try:
         route_config = get_route_config(report_name)
 
-        final_form_key = form_key or route_config["form_key"]
-        final_hub = hub or route_config["hub"]
         final_target_group = target_group or route_config["target_group"]
         final_target_group = resolve_existing_group_name(final_target_group)
 
         user_obj = User.objects.filter(username=username).first()
 
-        dept_name = final_hub
+        dept_name = department_name or ""
         submitter_location_code = ""
 
         if user_obj:
@@ -75,6 +71,9 @@ def auto_log_report(
 
                 submitter_location_code = loc.replace(" ", "").lower()
 
+        if not dept_name:
+            dept_name = "Unknown Department"
+
         existing_log = None
 
         if record_id:
@@ -82,8 +81,6 @@ def auto_log_report(
                 username=username,
                 report_name=report_name,
                 record_id=record_id,
-                form_key=final_form_key,
-                hub=final_hub,
             ).order_by("-id").first()
 
         if existing_log:
@@ -94,8 +91,6 @@ def auto_log_report(
                 department_name=dept_name,
                 report_name=report_name,
                 record_id=record_id,
-                form_key=final_form_key,
-                hub=final_hub,
             )
 
         approvers = User.objects.filter(groups__name=final_target_group).distinct()

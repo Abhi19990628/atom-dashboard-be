@@ -2,7 +2,7 @@
 from django.urls import path, include  # 🔥 NAYA: yahan 'include' add kiya hai
 from . import views
 # from .views import MasterDropdownView, MasterParametersView
-from .views import ApproveReportView, GetQANotificationsView, log_idle_reason
+from .views import ApproveReportView, GetQANotificationsView , RejectReportView, log_idle_reason
 from .views import ChangePasswordView, RequestPasswordResetOTPView, VerifyOTPAndResetPasswordView
 from .views import (
 
@@ -33,6 +33,7 @@ urlpatterns = [
     
   
     path('approve-report/', ApproveReportView.as_view(), name='api_approve_report'),
+    path('reject-report/', RejectReportView.as_view(), name='api_reject_report'),
     
     # 👇 NAYA NOTIFICATION MODULE YAHAN ADD KIYA HAI 👇
     path('', include('apps.notifications.urls')),
