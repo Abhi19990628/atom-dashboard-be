@@ -33,7 +33,9 @@ urlpatterns = [
     # Update API 
     path('update-daily-production/<int:pk>/', views.UpdateDailyProductionPlanView.as_view(), name='update_daily_production'),
     
-    
+    # Production get record for the particular form URL
+    path('get-record/production/<str:form_key>/<int:record_id>/', views.get_record_by_id, name='get_record_by_id'),
+
     # Production Data Fetch View
     path('get-single-production-report/<str:form_key>/<int:report_id>/', views.get_single_production_report_view, name='get-single-production-report'),
 
