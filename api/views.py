@@ -2971,7 +2971,10 @@ class RejectReportView(APIView):
         try:
             report = ReportActivityLog.objects.get(id=log_id)
 
-            reviewed_at = timezone.localtime(timezone.now()).strftime("%Y-%m-%d %H:%M:%S")
+            reviewed_at = timezone.localtime(timezone.now()).replace(
+                microsecond=0,
+                tzinfo=None
+            )
 
             report.status = f"Rejected by {approver_username}"
             report.approved_or_rejected_at = reviewed_at
@@ -3280,7 +3283,12 @@ def get_department_stats(request):
         user_data_dict[raw_username]['filled'] += 1
 
         report_display_id = str(log.record_id) if log.record_id else "N/A"
-        formatted_date = log.timestamp.strftime('%d-%b-%Y') if log.timestamp else ""
+        
+        if log.timestamp:
+            ts = datetime.fromisoformat(str(log.timestamp)) if isinstance(log.timestamp, str) else log.timestamp
+            formatted_date = ts.strftime('%d-%b-%Y')
+        else:
+            formatted_date = ""
 
         user_data_dict[raw_username]['reportsList'].append({
             'id': report_display_id,

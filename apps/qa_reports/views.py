@@ -2,7 +2,11 @@ import json
 import traceback
 from datetime import datetime
 import pytz
+import logging
+import time
 
+
+from django.core.exceptions import ObjectDoesNotExist
 from django.db import connection, transaction
 from django.shortcuts import get_object_or_404
 from django.http import JsonResponse
@@ -263,31 +267,140 @@ class SaveGoodReceiptView(APIView):
         except Exception as e:
             return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+class SaveReworkReportView(APIView):
+    @transaction.atomic
+    def post(self, request):
+        try:
+            data = request.data
+            items = data.get("items", [])
+
+            if not isinstance(items, list) or len(items) == 0:
+                return Response(
+                    {"success": False, "error": "No rework items received."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            created_reports = []
+
+            for row in items:
+                report = ReworkEntry.objects.create(
+                    date=clean_date(data.get("date")) or timezone.now().date(),
+                    remark=data.get("remark", ""),
+                    part_name=row.get("part_name", ""),
+                    part_no=row.get("part_no", ""),
+                    spec=row.get("spec", ""),
+                    non_conformance=row.get("non_conformance", ""),
+                    rework_qty=int(row.get("rework_qty") or 0),
+                    inspected_by=row.get("inspected_by", ""),
+                    dynamic_details={
+                        "status": row.get("status", ""),
+                        "observations": row.get("observations", []),
+                    },
+                )
+
+                created_reports.append(report)
+
+            last_report = created_reports[-1]
+
+            return Response(
+                {
+                    "success": True,
+                    "message": "Rework Report Saved Successfully!",
+                    "record_id": last_report.id,
+                    "created_count": len(created_reports),
+                },
+                status=status.HTTP_201_CREATED,
+            )
+
+        except Exception as e:
+            print("🔥 SaveReworkReportView Error:", traceback.format_exc())
+            return Response(
+                {"success": False, "error": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+
 class SaveInspectionReportView(APIView):
     def post(self, request):
         try:
             data = request.data
-            master = data.get('master_data', {})
-            logs = data.get('logs', [])
-            
-            date_val = master.get('date') or timezone.now().date()
-            report, created = InspectionReport.objects.get_or_create(
-                customer_account=master.get('customer', 'Unknown'), part_name=master.get('part_name', 'Unknown'), operation=master.get('operation', 'Unknown'), inspection_date=date_val,
-                defaults={
-                    'part_number': master.get('part_number', 'N/A'), 'plant_location': master.get('plant_location', 'PLANT 1'),
-                    'operator_name': logs[-1].get('operator', 'Unknown') if logs else 'Unknown', 'machine_number': logs[-1].get('machine', 'N/A') if logs else 'N/A',
-                    'inspection_data': {}
-                }
-            )
-            report.operator_name = logs[-1].get('operator', 'Unknown') if logs else 'Unknown'
-            report.machine_number = logs[-1].get('machine', 'N/A') if logs else 'N/A'
-            report.inspection_data = {"parameters": data.get('parameters', []), "logs": logs}
-            report.save()
 
-            msg = "New Report Created!" if created else "Report Updated!"
-            return Response({"message": msg, "report_id": report.id, "record_id": report.id}, status=status.HTTP_200_OK)
+            # Supports both frontend formats:
+            # 1) old format: master_data + parameters + logs
+            # 2) direct model format: customer_account + inspection_data
+            master = data.get("master_data", {}) or {}
+            logs = data.get("logs", []) or []
+
+            if master:
+                customer_account = master.get("customer") or master.get("customer_account") or "Unknown"
+                part_name = master.get("part_name") or "Unknown"
+                operation = master.get("operation") or "Unknown"
+                part_number = master.get("part_number") or "N/A"
+                plant_location = master.get("plant_location") or "Plant 1"
+                inspection_date = master.get("date") or master.get("inspection_date") or timezone.now().date()
+
+                operator_name = (
+                    master.get("operator_name")
+                    or (logs[-1].get("operator") if logs else "")
+                    or "Unknown"
+                )
+
+                machine_number = (
+                    master.get("machine_number")
+                    or (logs[-1].get("machine") if logs else "")
+                    or "N/A"
+                )
+
+                inspection_data = {
+                    "parameters": data.get("parameters", []),
+                    "logs": logs,
+                }
+
+            else:
+                customer_account = data.get("customer_account") or data.get("customer") or "Unknown"
+                part_name = data.get("part_name") or "Unknown"
+                operation = data.get("operation") or "Unknown"
+                part_number = data.get("part_number") or "N/A"
+                plant_location = data.get("plant_location") or "Plant 1"
+                inspection_date = data.get("inspection_date") or data.get("date") or timezone.now().date()
+                operator_name = data.get("operator_name") or "Unknown"
+                machine_number = data.get("machine_number") or "N/A"
+                inspection_data = data.get("inspection_data") or {
+                    "parameters": data.get("parameters", []),
+                    "logs": data.get("logs", []),
+                }
+
+            report, created = InspectionReport.objects.update_or_create(
+                customer_account=customer_account,
+                part_name=part_name,
+                operation=operation,
+                inspection_date=inspection_date,
+                defaults={
+                    "part_number": part_number,
+                    "plant_location": plant_location,
+                    "operator_name": operator_name,
+                    "machine_number": machine_number,
+                    "inspection_data": inspection_data,
+                },
+            )
+
+            return Response(
+                {
+                    "success": True,
+                    "message": "New Report Created!" if created else "Report Updated!",
+                    "report_id": report.id,
+                    "record_id": report.id,
+                },
+                status=status.HTTP_200_OK,
+            )
+
         except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            import traceback
+            print("🔥 SaveInspectionReportView Error:", traceback.format_exc())
+            return Response(
+                {"success": False, "error": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
 class SaveProcessAuditView(APIView):
     @transaction.atomic
@@ -665,11 +778,24 @@ def get_single_report_view(request, form_key, report_id):
 
         elif form_key in ['inspection-view', 'inspection']:
             report = get_object_or_404(InspectionReport, id=rec_id)
+
+            inspection_data = report.inspection_data or {}
+            meta_data = inspection_data.get("meta", {}) if isinstance(inspection_data, dict) else {}
+
             data = {
-                "customer": report.customer_account, "part_name": report.part_name, "operation": report.operation, "part_number": report.part_number,
-                "plant_location": report.plant_location, "date": str(report.inspection_date), "operator": report.operator_name,
-                "machine": report.machine_number, "inspection_data": report.inspection_data, "submitted_by": submitted_user
+                "customer": report.customer_account,
+                "part_name": report.part_name,
+                "operation": report.operation,
+                "part_number": report.part_number,
+                "model_name": meta_data.get("model_name", ""),
+                "plant_location": report.plant_location,
+                "date": str(report.inspection_date),
+                "operator": report.operator_name,
+                "machine": report.machine_number,
+                "inspection_data": inspection_data,
+                "submitted_by": submitted_user,
             }
+
             return Response({"success": True, "data": data}, status=200)
         
         elif form_key in ['rework-view', 'rework']:
@@ -719,6 +845,41 @@ def get_single_report_view(request, form_key, report_id):
 @api_view(['GET'])
 def qa_data_view(request, form_key):
 
+    # ── 🔥 NAYA MASTER HELPER FUNCTION (Sabhi APIs ko Filter Karne Ke Liye) ──
+    def apply_date_filter(queryset, date_field):
+        start_date = request.GET.get('start_date')
+        end_date = request.GET.get('end_date')
+
+        # Agar 'all' pass kiya hai toh pura DB data return kar do
+        if start_date == 'all':
+            return queryset
+
+        # Behavior: Agar filter se kuch na bhejein toh sirf Aaj (Today) ka data aayega
+        if not start_date and not end_date:
+            ist_tz = pytz.timezone('Asia/Kolkata')
+            from django.utils.timezone import now
+            today_str = now().astimezone(ist_tz).strftime("%Y-%m-%d")
+            if date_field == 'created_at':
+                return queryset.filter(**{f"{date_field}__date": today_str})
+            return queryset.filter(**{f"{date_field}": today_str})
+
+        # Custom Filters: Last 2 days, Specific Date wagerah
+        if start_date and end_date:
+            if date_field == 'created_at':
+                return queryset.filter(**{f"{date_field}__date__range": [start_date, end_date]})
+            return queryset.filter(**{f"{date_field}__range": [start_date, end_date]})
+        
+        elif start_date:
+            if date_field == 'created_at':
+                return queryset.filter(**{f"{date_field}__date__gte": start_date})
+            return queryset.filter(**{f"{date_field}__gte": start_date})
+        elif end_date:
+            if date_field == 'created_at':
+                return queryset.filter(**{f"{date_field}__date__lte": end_date})
+            return queryset.filter(**{f"{date_field}__lte": end_date})
+            
+        return queryset
+
     # ── Helper: AM/PM aur Comma wala Time Generator ──
     def format_to_ampm(raw_time):
         if not raw_time:
@@ -737,7 +898,6 @@ def qa_data_view(request, form_key):
                 return dt_obj.strftime("%Y-%m-%d , %I:%M %p").lower()
         except Exception:
             return str(raw_time)
-
 
     # ── Helper: raw SQL table se data fetch karna ──────────────
     def fetch_from_table(table_name, source_tag=None):
@@ -758,6 +918,38 @@ def qa_data_view(request, form_key):
         except Exception as e:
             print(f"⚠️ {table_name} error: {e}")
             return []
+
+    # ──  COMMON LOG MAPPING  ──
+    log_mapping = {}
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT record_id, username, status 
+                FROM user_report_activity_logs
+            """)
+            for row in cursor.fetchall():
+                rec_id, raw_username, status = row[0], row[1], row[2]
+                
+                # Prepared By ke liye @ se split karne wala logic
+                username = raw_username.split('@')[0] if raw_username else '—'
+                
+                if rec_id not in log_mapping:
+                    log_mapping[rec_id] = {'prepared_by': username}
+
+                else:
+                # Agar multiple logs same record_id par hain, tab bhi prepared_by maintain rahe
+                     log_mapping[rec_id]['prepared_by'] = username
+                # Status ke hisaab se logic
+                if status and status.startswith('Approved'):
+                    raw_approver = status.replace('Approved by ', '').strip()
+                    approver_name = raw_approver.split('@')[0].capitalize() if raw_approver else '—'
+                    log_mapping[rec_id]['approved_by'] = approver_name
+            
+                elif status == 'Completed':
+                    log_mapping[rec_id]['approved_by'] = username.capitalize()
+
+    except Exception as e:
+        print(f" Activity logs fetch error: {e}")
 
     # ── 2. INSPECTION (FPIR) ───────────────────────────────────
     if form_key == 'inspection-view':
@@ -847,6 +1039,8 @@ def qa_data_view(request, form_key):
                             'Specification': param.get('spec', '—'),
                             'Tolerance':     param.get('tol', '—'),
                             'Instrument':    param.get('instr', '—'),
+                            'Prepared By':   log_mapping.get(rec.get('id'), {}).get('prepared_by', '—'),
+                            'Approved By':   log_mapping.get(rec.get('id'), {}).get('approved_by', '—'),
                         }
 
                         for log in logs:
@@ -872,7 +1066,7 @@ def qa_data_view(request, form_key):
     elif form_key == 'redbin-view':
         try:
             base_query = RedBinAnalysisReport.objects.all()
-            reports = apply_date_filter(request, base_query, 'entry_date').order_by('-entry_date', '-created_time')
+            reports = apply_date_filter(base_query, 'entry_date').order_by('-entry_date', '-created_time')
             data = []
             
             for report in reports:
@@ -889,6 +1083,8 @@ def qa_data_view(request, form_key):
                     'Responsible Person': report.responsible_person,
                     'Target Date': str(report.target_date),
                     'Completion Date': str(report.completion_date) if report.completion_date else 'Pending',
+                    'Prepared By': log_mapping.get(report.id, {}).get('prepared_by', '—'),
+                    'Approved By': log_mapping.get(report.id, {}).get('approved_by', '—'),
                 })
             return JsonResponse({'data': data})
         except Exception as e:
@@ -898,7 +1094,7 @@ def qa_data_view(request, form_key):
     # ── 4. RED BIN ATTENDANCE ──────────────────────────────────
     elif form_key == 'redbin-attendance-view':
         try:
-            reports = apply_date_filter(request, RedBinAttendance.objects.all(), 'date').order_by('-date', '-created_at')
+            reports = apply_date_filter(RedBinAttendance.objects.all(), 'date').order_by('-date', '-created_at')
             data = []
             
             status_map = {'P': 'Present', 'A': 'Absent', '': 'Unmarked'}
@@ -911,6 +1107,8 @@ def qa_data_view(request, form_key):
                     'Employee Name': report.employee_name,
                     'Designation': report.designation,
                     'Attendance': status_map.get(report.status, report.status),
+                    'Prepared By': log_mapping.get(report.id, {}).get('prepared_by', '—'),
+                    'Approved By': log_mapping.get(report.id, {}).get('approved_by', '—'),
                 })
             return JsonResponse({'data': data})
         except Exception as e:
@@ -919,7 +1117,7 @@ def qa_data_view(request, form_key):
     # ── 5. SCRAP NOTE ──────────────────────────────────────────
     elif form_key == 'scrap-note-view':
         try:
-            reports = apply_date_filter(request, ScrapNoteEntry.objects.all(), 'entry_date').order_by('-entry_date', '-created_at')
+            reports = apply_date_filter(ScrapNoteEntry.objects.all(), 'entry_date').order_by('-entry_date', '-created_at')
             data = []
             for report in reports:
                 data.append({
@@ -929,6 +1127,8 @@ def qa_data_view(request, form_key):
                     'Defect Detail': report.defect_detail,
                     'Quantity': report.quantity,
                     'Remarks': report.remarks or '—',
+                    'Prepared By': log_mapping.get(report.id, {}).get('prepared_by', '—'),
+                    'Approved By': log_mapping.get(report.id, {}).get('approved_by', '—'),
                 })
             return JsonResponse({'data': data})
         except Exception as e:
@@ -937,7 +1137,7 @@ def qa_data_view(request, form_key):
     # ── 6. REWORK REPORT ───────────────────────────────────────
     elif form_key == 'rework-view':
         try:
-            reports = apply_date_filter(request, ReworkEntry.objects.all(), 'date').order_by('-date', '-created_at')
+            reports = apply_date_filter(ReworkEntry.objects.all(), 'date').order_by('-date', '-created_at')
             data = []
             for r in reports:
                 details = r.dynamic_details or {}
@@ -960,7 +1160,9 @@ def qa_data_view(request, form_key):
                     'Rework Qty': r.rework_qty,
                     'Status': final_status,
                     'Inspected By': r.inspected_by or '—',
-                    'Remark': r.remark or '—'
+                    'Remark': r.remark or '—',
+                    'Prepared By': log_mapping.get(r.id, {}).get('prepared_by', '—'),
+                    'Approved By': log_mapping.get(r.id, {}).get('approved_by', '—'),
                 }
                 
                 for i, val in enumerate(observations):
@@ -975,7 +1177,7 @@ def qa_data_view(request, form_key):
     # ── 7. DEVIATION APPROVAL ──────────────────────────────────
     elif form_key == 'deviation-view':
         try:
-            reports = apply_date_filter(request, DeviationApproval.objects.all(), 'date').order_by('-date', '-created_at')
+            reports = apply_date_filter(DeviationApproval.objects.all(), 'date').order_by('-date', '-created_at')
             data = []
             for report in reports:
                 data.append({
@@ -987,7 +1189,9 @@ def qa_data_view(request, form_key):
                     'Duration': report.duration or '—',
                     'Prod Incharge': report.prod_incharge or '—',
                     'QA Incharge': report.qa_incharge or '—',
-                    'Remarks': report.remarks or '—'
+                    'Remarks': report.remarks or '—',
+                    'Prepared By': log_mapping.get(report.id, {}).get('prepared_by', '—'),
+                    'Approved By': log_mapping.get(report.id, {}).get('approved_by', '—'),
                 })
             return JsonResponse({'data': data})
         except Exception as e:
@@ -996,7 +1200,7 @@ def qa_data_view(request, form_key):
     # ── 8. GOOD RECEIPT ENTRY (NEW) ────────────────────────────
     elif form_key == 'good-receipt':
         try:
-            reports = apply_date_filter(request, GoodReceiptEntry.objects.all(), 'received_date').order_by('-received_date', '-created_at')
+            reports = apply_date_filter(GoodReceiptEntry.objects.all(), 'received_date').order_by('-received_date', '-created_at')
             data = []
             for report in reports:
                 data.append({
@@ -1007,7 +1211,9 @@ def qa_data_view(request, form_key):
                     'Quantity': report.qty,
                     'Specification': report.specification or '—',
                     'Received By': report.received_by,
-                    'Remark': report.remark or '—'
+                    'Remark': report.remark or '—',
+                    'Prepared By': log_mapping.get(report.id, {}).get('prepared_by', '—'),
+                    'Approved By': log_mapping.get(report.id, {}).get('approved_by', '—'),
                 })
             return JsonResponse({'data': data})
         except Exception as e:
@@ -1016,7 +1222,7 @@ def qa_data_view(request, form_key):
     # ── 9. PROCESS AUDIT CHECKSHEET ────────────────────────────
     elif form_key == 'process-audit-view':
         try:
-            reports = apply_date_filter(request, ProcessAuditChecksheet.objects.all(), 'date').order_by('-date', '-created_at')
+            reports = apply_date_filter(ProcessAuditChecksheet.objects.all(), 'date').order_by('-date', '-created_at')
             data = []
             for report in reports:
                 base_info = {
@@ -1025,6 +1231,8 @@ def qa_data_view(request, form_key):
                     'Machine Model': report.machine_model or '—',
                     'Auditor': report.auditor or '—',
                     'Auditee': report.auditee or '—',
+                    'Prepared By': log_mapping.get(report.id, {}).get('prepared_by', '—'),
+                    'Approved By': log_mapping.get(report.id, {}).get('approved_by', '—'),
                 }
                 
                 audit_details = report.audit_details or []
@@ -1046,7 +1254,7 @@ def qa_data_view(request, form_key):
     # ── 10. COHERENCE CHECKLIST ─────────────────────────────────
     elif form_key == 'coherence-view':
         try:
-            reports = apply_date_filter(request, CoherenceChecklist.objects.all(), 'date').order_by('-date', '-created_at')
+            reports = apply_date_filter(CoherenceChecklist.objects.all(), 'date').order_by('-date', '-created_at')
             data = []
             for report in reports:
                 base_info = {
@@ -1054,8 +1262,9 @@ def qa_data_view(request, form_key):
                     'Part Name': report.part_name or '—',
                     'Part No': report.part_no or '—',
                     'Model Name': report.model_name or '—',
-                    'Prepared By': report.prepared_by or '—',
                     'Verified By': report.verified_by or '—',
+                    'Prepared By': log_mapping.get(report.id, {}).get('prepared_by', '—'),
+                    'Approved By': log_mapping.get(report.id, {}).get('approved_by', '—'),
                 }
                 
                 operations = report.operations or []
@@ -1075,7 +1284,7 @@ def qa_data_view(request, form_key):
     # ── 11. LAYOUT INSPECTION ───────────────────────────────────
     elif form_key == 'layout-inspection-view':
         try:
-            reports = apply_date_filter(request, LayoutInspection.objects.all(), 'date').order_by('-date', '-created_at')
+            reports = apply_date_filter(LayoutInspection.objects.all(), 'date').order_by('-date', '-created_at')
             data = []
             for report in reports:
                 base_info = {
@@ -1085,8 +1294,9 @@ def qa_data_view(request, form_key):
                     'Part No': report.part_no or '—',
                     'Model Name': report.model_name or '—',
                     'Sample Size': report.sample_size or '—',
-                    'Prepared By': report.prepared_by or '—',
                     'Verified By': report.verified_by or '—',
+                    'Prepared By': log_mapping.get(report.id, {}).get('prepared_by', '—'),
+                    'Approved By': log_mapping.get(report.id, {}).get('approved_by', '—'),
                 }
                 
                 inspections = report.inspections or []
@@ -1106,7 +1316,7 @@ def qa_data_view(request, form_key):
     # ── 12. PRODUCT AUDIT PLAN ──────────────────────────────────
     elif form_key == 'product-audit-plan-view':
         try:
-            reports = apply_date_filter(request, ProductAuditPlan.objects.all(), 'date').order_by('-date', '-created_at')
+            reports = apply_date_filter(ProductAuditPlan.objects.all(), 'date').order_by('-date', '-created_at')
             data = []
             for report in reports:
                 base_info = {
@@ -1114,8 +1324,8 @@ def qa_data_view(request, form_key):
                     'Doc No': report.doc_no or '—',
                     'Rev No': report.rev_no or '—',
                     'Plan Year': report.plan_year or '—',
-                    'Prepared By': report.prepared_by or '—',
-                    'Approved By': report.approved_by or '—',
+                    'Prepared By': log_mapping.get(report.id, {}).get('prepared_by', '—'),
+                    'Approved By': log_mapping.get(report.id, {}).get('approved_by', '—'),
                 }
                 
                 audit_rows = report.audit_rows or []
@@ -1135,7 +1345,7 @@ def qa_data_view(request, form_key):
     # ── 13. CUSTOMER COMPLAINT ──────────────────────────────────
     elif form_key == 'customer-complaint-view':
         try:
-            reports = apply_date_filter(request, CustomerComplaint.objects.all(), 'date').order_by('-date', '-created_at')
+            reports = apply_date_filter(CustomerComplaint.objects.all(), 'date').order_by('-date', '-created_at')
             data = []
             for report in reports:
                 data.append({
@@ -1148,6 +1358,8 @@ def qa_data_view(request, form_key):
                     'Target Date': str(report.target_date) if report.target_date else '—',
                     'Horizontal Action': report.horizontal_action or '—',
                     'Status': report.status or '—',
+                    'Prepared By': log_mapping.get(report.id, {}).get('prepared_by', '—'),
+                    'Approved By': log_mapping.get(report.id, {}).get('approved_by', '—'),
                 })
             return JsonResponse({'data': data})
         except Exception as e:
@@ -1156,12 +1368,14 @@ def qa_data_view(request, form_key):
     # ── 14. CUSTOMER SATISFACTION ───────────────────────────────
     elif form_key == 'customer-satisfaction-view':
         try:
-            reports = apply_date_filter(request, CustomerSatisfaction.objects.all(), 'created_at').order_by('-created_at')
+            reports = apply_date_filter(CustomerSatisfaction.objects.all(), 'created_at').order_by('-created_at')
             data = []
             for report in reports:
                 row = {
                     'Customer Name': report.customer_name or '—',
                     'Month Year': report.month_year or '—',
+                    'Prepared By': log_mapping.get(report.id, {}).get('prepared_by', '—'),
+                    'Approved By': log_mapping.get(report.id, {}).get('approved_by', '—'),
                 }
                 
                 indicators = report.performance_indicators or {}
@@ -1177,7 +1391,7 @@ def qa_data_view(request, form_key):
     # ── 15. WARRANTY CLAIM ──────────────────────────────────────
     elif form_key == 'warranty-claim-view':
         try:
-            reports = apply_date_filter(request, WarrantyClaim.objects.all(), 'date').order_by('-date', '-created_at')
+            reports = apply_date_filter(WarrantyClaim.objects.all(), 'date').order_by('-date', '-created_at')
             data = []
             for report in reports:
                 data.append({
@@ -1190,6 +1404,8 @@ def qa_data_view(request, form_key):
                     'Rejection Root Cause': report.rejection_root_cause or '—',
                     'Disposal Action': report.disposal_action or '—',
                     'CAPA Analysis': report.capa_analysis or '—',
+                    'Prepared By': log_mapping.get(report.id, {}).get('prepared_by', '—'),
+                    'Approved By': log_mapping.get(report.id, {}).get('approved_by', '—'),
                 })
             return JsonResponse({'data': data})
         except Exception as e:
@@ -1198,7 +1414,7 @@ def qa_data_view(request, form_key):
     # ── 16. MINUTES OF MEETING (MOM) ────────────────────────────
     elif form_key == 'mom-view':
         try:
-            reports = apply_date_filter(request, MinutesOfMeeting.objects.all(), 'date').order_by('-date', '-created_at')
+            reports = apply_date_filter(MinutesOfMeeting.objects.all(), 'date').order_by('-date', '-created_at')
             data = []
             for report in reports:
                 base_info = {
@@ -1207,6 +1423,8 @@ def qa_data_view(request, form_key):
                     'Subject': report.subject or '—',
                     'AOT Members': report.aot_members or '—',
                     'Supplier Members': report.supplier_members or '—',
+                    'Prepared By': log_mapping.get(report.id, {}).get('prepared_by', '—'),
+                    'Approved By': log_mapping.get(report.id, {}).get('approved_by', '—'),
                 }
                 
                 discussions = report.discussions or []
@@ -1226,7 +1444,7 @@ def qa_data_view(request, form_key):
     # ── 17. INCOMING MATERIAL INSPECTION (NEW) ──────────────────
     elif form_key == 'incoming-inspection-view':
         try:
-            reports = apply_date_filter(request, IncomingMaterialInspection.objects.all(), 'date').order_by('-date', '-created_at')
+            reports = apply_date_filter(IncomingMaterialInspection.objects.all(), 'date').order_by('-date', '-created_at')
             data = []
             for report in reports:
                 base_info = {
@@ -1241,9 +1459,9 @@ def qa_data_view(request, form_key):
                     'Coil No': report.coil_no or '—',
                     'Invoice No': report.invoice_no or '—',
                     'QTY': report.qty or '—',
-                    'Prepared By': report.prepared_by or '—',
                     'Checked By': report.checked_by or '—',
-                    'Approved By': report.approved_by or '—',
+                    'Prepared By': log_mapping.get(report.id, {}).get('prepared_by', '—'),
+                    'Approved By': log_mapping.get(report.id, {}).get('approved_by', '—'),
                 }
 
                 insp_rows = report.inspection_data or []
@@ -1271,3 +1489,550 @@ def qa_data_view(request, form_key):
 
     # Agar koi aur form_key aati hai toh default error
     return JsonResponse({'data': [], 'error': 'Form type not supported'}, status=400)
+
+
+
+
+
+logger = logging.getLogger(__name__)
+
+# ══════════════════════════════════════════════════════════
+# 1. UTILITY FUNCTIONS (Global Scope)
+# ══════════════════════════════════════════════════════════
+def parse_json_field(field_data):
+    if isinstance(field_data, str):
+        try:
+            return json.loads(field_data)
+        except Exception:
+            return []
+    elif isinstance(field_data, dict):
+        return field_data
+    return field_data or []
+
+def get_log_details(rid):
+    prepared_by = '—'
+    approved_by = '—'
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT username, status 
+                FROM user_report_activity_logs 
+                WHERE record_id = %s
+                ORDER BY id ASC
+            """, [rid])
+            
+            rows = cursor.fetchall()
+            for index, row in enumerate(rows):
+                raw_username = row[0]
+                status = row[1]
+                
+                formatted_name = raw_username.split('@')[0].capitalize() if raw_username else '—'
+                
+                if index == 0 and formatted_name != '—':
+                    prepared_by = formatted_name
+                    
+                if status and status.startswith('Approved'):
+                    raw_approver = status.replace('Approved by ', '').strip()
+                    approver_name = raw_approver.split('@')[0].capitalize() if raw_approver else '—'
+                    approved_by = approver_name
+                elif status == 'Completed':
+                    approved_by = formatted_name
+                    
+    except Exception as e:
+        logger.error(f"⚠️ Log fetch error: {e}")
+        
+    return prepared_by, approved_by
+
+# ══════════════════════════════════════════════════════════
+# 2. SEPARATE HANDLER FUNCTIONS FOR EACH FORM
+# ══════════════════════════════════════════════════════════
+
+def handle_inspection_view(rid, prep_by, app_by):
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            SELECT 
+                id, customer_account, part_name, operation,
+                part_number, plant_location, inspection_date,
+                operator_name, machine_number, inspection_data
+            FROM inspection_reports
+            WHERE id = %s
+        """, [rid])
+        row = cursor.fetchone()
+        
+        if not row:
+            raise ObjectDoesNotExist()
+            
+        cols = [col[0] for col in cursor.description]
+        rec = dict(zip(cols, row))
+        for k, v in rec.items():
+            if hasattr(v, 'strftime'):
+                rec[k] = str(v)
+
+    raw_insp_data = rec.get('inspection_data')
+    insp_data = parse_json_field(raw_insp_data) if isinstance(raw_insp_data, str) else (raw_insp_data or {})
+
+    logs = insp_data.get('logs', [])
+    parameters = insp_data.get('parameters', [])
+
+    common = {
+        'Customer':      rec.get('customer_account', '—'),
+        'Part Name':     rec.get('part_name', '—'),
+        'Operation':     rec.get('operation', '—'),
+        'Part Number':   rec.get('part_number', '—'),
+        'Plant':         rec.get('plant_location', '—'),
+        'Insp. Date':    rec.get('inspection_date', '—'),
+        'Operator':      rec.get('operator_name', '—') or '—',
+        'Machine No':    rec.get('machine_number', '—') or '—',
+        'Prepared By':   prep_by,
+        'Approved By':   app_by,
+    }
+
+    rows = []
+    for param in parameters:
+        sr_key = str(param.get('sr', param.get('sr_no', '')))
+        row_data = common.copy()
+        row_data['Parameter'] = param.get('item', '—')
+        row_data['Category'] = param.get('category', '—')
+        row_data['Specification'] = param.get('spec', '—')
+        row_data['Tolerance'] = param.get('tol', '—')
+        row_data['Instrument'] = param.get('instr', '—')
+
+        for log in logs:
+            stage_name = log.get('displayStage', log.get('baseStage', 'STAGE')).upper()
+            readings = log.get('readings', {})
+            vals = readings.get(sr_key, {})
+            row_data[f'{stage_name} VAL 1'] = vals.get('val1', '—') if vals.get('val1') else '—'
+            row_data[f'{stage_name} VAL 2'] = vals.get('val2', '—') if vals.get('val2') else '—'
+            
+        rows.append(row_data)
+
+    return {'data': rows, 'common': common}
+
+
+def handle_redbin_view(rid, prep_by, app_by):
+    report = RedBinAnalysisReport.objects.get(id=rid)
+    return {
+        'data': {
+            'Date': str(report.entry_date), 
+            'Part Name & Model': report.part_name_model,
+            'Operation': report.operation,
+            'Total Rejected Qty': report.total_rej_qty,
+            'Defect Detail': report.defect_detail,
+            'Root Cause': report.root_cause_reason,
+            'Action Taken': report.action_taken,
+            'Responsible Person': report.responsible_person,
+            'Target Date': str(report.target_date),
+            'Completion Date': str(report.completion_date) if report.completion_date else 'Pending',
+            'Prepared By': prep_by,
+            'Approved By': app_by,
+        }
+    }
+
+
+def handle_redbin_attendance_view(rid, prep_by, app_by):
+    report = RedBinAttendance.objects.get(id=rid)
+    status_map = {'P': 'Present', 'A': 'Absent', '': 'Unmarked'}
+    return {
+        'data': {
+            'Date': str(report.date),
+            'Month': report.month,
+            'Year': report.year,
+            'Employee Name': report.employee_name,
+            'Designation': report.designation,
+            'Attendance': status_map.get(report.status, report.status),
+            'Prepared By': prep_by,
+            'Approved By': app_by,
+        }
+    }
+
+
+def handle_scrap_note_view(rid, prep_by, app_by):
+    report = ScrapNoteEntry.objects.get(id=rid)
+    return {
+        'data': {
+            'Date': str(report.entry_date),
+            'Part Name': report.part_name,
+            'Part No': report.part_no,
+            'Defect Detail': report.defect_detail,
+            'Quantity': report.quantity,
+            'Remarks': report.remarks or '—',
+            'Prepared By': prep_by,
+            'Approved By': app_by,
+        }
+    }
+
+
+def handle_rework_view(rid, prep_by, app_by):
+    r = ReworkEntry.objects.get(id=rid)
+    details = parse_json_field(r.dynamic_details) if r.dynamic_details else {}
+    status_val = details.get('status', '')
+    observations = details.get('observations', [])
+    
+    if status_val == 'ok':
+        final_status = ' OK'
+    elif status_val == 'notok':
+        final_status = 'NOT OK'
+    else:
+        final_status = '—'
+
+    data = {
+        'Date': str(r.date),
+        'Part Name': r.part_name,
+        'Part No': r.part_no,
+        'Spec': r.spec,
+        'Non Conformance': r.non_conformance,
+        'Rework Qty': r.rework_qty,
+        'Status': final_status,
+        'Inspected By': r.inspected_by or '—',
+        'Remark': r.remark or '—',
+        'Prepared By': prep_by,
+        'Approved By': app_by,
+    }
+    
+    for i, val in enumerate(observations):
+        data[f'Obs {i+1}'] = val if val else '—'
+        
+    return {'data': data}
+
+
+def handle_deviation_view(rid, prep_by, app_by):
+    report = DeviationApproval.objects.get(id=rid)
+    return {
+        'data': {
+            'Date': str(report.date),
+            'Tool Name/No.': report.tool_name_no or '—',
+            'Location': report.location or '—',
+            'Problem': report.problem or '—',
+            'Reason for Deviation': report.reason_for_deviation or '—',
+            'Duration': report.duration or '—',
+            'Prod Incharge': report.prod_incharge or '—',
+            'QA Incharge': report.qa_incharge or '—',
+            'Remarks': report.remarks or '—',
+            'Prepared By': prep_by,
+            'Approved By': app_by,
+        }
+    }
+
+
+def handle_good_receipt(rid, prep_by, app_by):
+    report = GoodReceiptEntry.objects.get(id=rid)
+    return {
+        'data': {
+            'Date': str(report.received_date),
+            'Requested By': report.requested_by,
+            'Item Name': report.item_name,
+            'Department': report.department,
+            'Quantity': report.qty,
+            'Specification': report.specification or '—',
+            'Received By': report.received_by,
+            'Remark': report.remark or '—',
+            'Prepared By': prep_by,
+            'Approved By': app_by,
+        }
+    }
+
+
+def handle_process_audit_view(rid, prep_by, app_by):
+    report = ProcessAuditChecksheet.objects.get(id=rid)
+    common = {
+        'Date': str(report.date) if report.date else '—',
+        'Part Name & No': report.part_name_no or '—',
+        'Machine Model': report.machine_model or '—',
+        'Auditor': report.auditor or '—',
+        'Auditee': report.auditee or '—',
+        'Prepared By': prep_by,
+        'Approved By': app_by,
+    }
+    
+    audit_details = parse_json_field(report.audit_details)
+    if not audit_details:
+        return {'data': [common], 'common': common}
+    
+    rows = []
+    for detail in audit_details:
+        row = common.copy()
+        if isinstance(detail, dict):
+            for k, v in detail.items():
+                row[k.capitalize()] = v
+        else:
+            row['Detail'] = str(detail)
+        rows.append(row)
+        
+    return {'data': rows, 'common': common}
+
+
+def handle_coherence_view(rid, prep_by, app_by):
+    report = CoherenceChecklist.objects.get(id=rid)
+    common = {
+        'Date': str(report.date) if report.date else '—',
+        'Part Name': report.part_name or '—',
+        'Part No': report.part_no or '—',
+        'Model Name': report.model_name or '—',
+        'Verified By': report.verified_by or '—',
+        'Prepared By': prep_by,
+        'Approved By': app_by,
+    }
+    
+    operations = parse_json_field(report.operations)
+    if not operations:
+        return {'data': [common], 'common': common}
+        
+    rows = []
+    for op in operations:
+        row = common.copy()
+        if isinstance(op, dict):
+            for k, v in op.items():
+                row[f"Op {k.capitalize()}"] = v
+        rows.append(row)
+        
+    return {'data': rows, 'common': common}
+
+
+def handle_layout_inspection_view(rid, prep_by, app_by):
+    report = LayoutInspection.objects.get(id=rid)
+    common = {
+        'Date': str(report.date) if report.date else '—',
+        'Customer Name': report.customer_name or '—',
+        'Part Name': report.part_name or '—',
+        'Part No': report.part_no or '—',
+        'Model Name': report.model_name or '—',
+        'Sample Size': report.sample_size or '—',
+        'Verified By': report.verified_by or '—',
+        'Prepared By': prep_by,
+        'Approved By': app_by,
+    }
+    
+    inspections = parse_json_field(report.inspections)
+    if not inspections:
+        return {'data': [common], 'common': common}
+        
+    rows = []
+    for insp in inspections:
+        row = common.copy()
+        if isinstance(insp, dict):
+            for k, v in insp.items():
+                row[k.capitalize()] = v
+        rows.append(row)
+        
+    return {'data': rows, 'common': common}
+
+
+def handle_product_audit_plan_view(rid, prep_by, app_by):
+    report = ProductAuditPlan.objects.get(id=rid)
+    common = {
+        'Date': str(report.date) if report.date else '—',
+        'Doc No': report.doc_no or '—',
+        'Rev No': report.rev_no or '—',
+        'Plan Year': report.plan_year or '—',
+        'Prepared By': prep_by,
+        'Approved By': app_by,
+    }
+    
+    audit_rows = parse_json_field(report.audit_rows)
+    if not audit_rows:
+        return {'data': [common], 'common': common}
+        
+    rows = []
+    for a_row in audit_rows:
+        row = common.copy()
+        if isinstance(a_row, dict):
+            for k, v in a_row.items():
+                row[k.capitalize()] = v
+        rows.append(row)
+        
+    return {'data': rows, 'common': common}
+
+
+def handle_customer_complaint_view(rid, prep_by, app_by):
+    report = CustomerComplaint.objects.get(id=rid)
+    return {
+        'data': {
+            'Date': str(report.date) if report.date else '—',
+            'Customer Name': report.customer_name or '—',
+            'Part Details': report.part_details or '—',
+            'Model Name': report.model_name or '—',
+            'Problem Description': report.problem_description or '—',
+            'Counter Measure': report.counter_measure or '—',
+            'Target Date': str(report.target_date) if report.target_date else '—',
+            'Horizontal Action': report.horizontal_action or '—',
+            'Status': report.status or '—',
+            'Prepared By': prep_by,
+            'Approved By': app_by,
+        }
+    }
+
+
+def handle_customer_satisfaction_view(rid, prep_by, app_by):
+    report = CustomerSatisfaction.objects.get(id=rid)
+    data = {
+        'Customer Name': report.customer_name or '—',
+        'Month Year': report.month_year or '—',
+        'Prepared By': prep_by,
+        'Approved By': app_by,
+    }
+    
+    indicators = parse_json_field(report.performance_indicators)
+    if isinstance(indicators, dict):
+        for k, v in indicators.items():
+            data[k.replace('_', ' ').title()] = v
+            
+    return {'data': data}
+
+
+def handle_warranty_claim_view(rid, prep_by, app_by):
+    report = WarrantyClaim.objects.get(id=rid)
+    return {
+        'data': {
+            'Date': str(report.date) if report.date else '—',
+            'Customer Name': report.customer_name or '—',
+            'Part Details': report.part_details or '—',
+            'Claim Qty': report.claim_qty or '—',
+            'Warranty Defect': report.warranty_defect or '—',
+            'Decision': report.decision or '—',
+            'Rejection Root Cause': report.rejection_root_cause or '—',
+            'Disposal Action': report.disposal_action or '—',
+            'CAPA Analysis': report.capa_analysis or '—',
+            'Prepared By': prep_by,
+            'Approved By': app_by,
+        }
+    }
+
+
+def handle_mom_view(rid, prep_by, app_by):
+    report = MinutesOfMeeting.objects.get(id=rid)
+    common = {
+        'Date': str(report.date) if report.date else '—',
+        'Time': str(report.time) if report.time else '—',
+        'Subject': report.subject or '—',
+        'AOT Members': report.aot_members or '—',
+        'Supplier Members': report.supplier_members or '—',
+        'Prepared By': prep_by,
+        'Approved By': app_by,
+    }
+    
+    discussions = parse_json_field(report.discussions)
+    if not discussions:
+        return {'data': [common], 'common': common}
+        
+    rows = []
+    for disc in discussions:
+        row = common.copy()
+        if isinstance(disc, dict):
+            for k, v in disc.items():
+                row[k.capitalize()] = v
+        rows.append(row)
+        
+    return {'data': rows, 'common': common}
+
+
+def handle_incoming_inspection_view(rid, prep_by, app_by):
+    report = IncomingMaterialInspection.objects.get(id=rid)
+    common = {
+        'Date': str(report.date) if report.date else '—',
+        'Supplier': report.supplier or '—',
+        'Customer': report.customer or '—',
+        'Part Name': report.part_name or '—',
+        'Part No': report.part_no or '—',
+        'Grade': report.grade or '—',
+        'MTC': report.mtc or '—',
+        'GA/NGA': report.ga_nga or '—',
+        'Coil No': report.coil_no or '—',
+        'Invoice No': report.invoice_no or '—',
+        'QTY': report.qty or '—',
+        'Checked By': report.checked_by or '—',
+        'Prepared By': prep_by,
+        'Approved By': app_by,
+    }
+
+    insp_rows = parse_json_field(report.inspection_data)
+    if not insp_rows:
+        return {'data': [common], 'common': common}
+        
+    rows = []
+    for i_row in insp_rows:
+        row = common.copy()
+        row['Parameter'] = i_row.get('parameter', '—')
+        row['Specification'] = i_row.get('specification', '—')
+        row['Insp Method'] = i_row.get('inspMethod', '—')
+        
+        observations = i_row.get('observations', [])
+        for i in range(5):
+            val = observations[i] if i < len(observations) else ''
+            row[f'Obs {i+1}'] = val if val else '—'
+        
+        row['Remark'] = i_row.get('remark', '—')
+        rows.append(row)
+        
+    return {'data': rows, 'common': common}
+
+# ══════════════════════════════════════════════════════════
+# 3. REGISTRY (Mapping Form Keys to Functions)
+# ══════════════════════════════════════════════════════════
+FORM_HANDLERS = {
+    'inspection-view': handle_inspection_view,
+    'redbin-view': handle_redbin_view,
+    'redbin-attendance-view': handle_redbin_attendance_view,
+    'scrap-note-view': handle_scrap_note_view,
+    'rework-view': handle_rework_view,
+    'deviation-view': handle_deviation_view,
+    'good-receipt': handle_good_receipt,
+    'process-audit-view': handle_process_audit_view,
+    'coherence-view': handle_coherence_view,
+    'layout-inspection-view': handle_layout_inspection_view,
+    'product-audit-plan-view': handle_product_audit_plan_view,
+    'customer-complaint-view': handle_customer_complaint_view,
+    'customer-satisfaction-view': handle_customer_satisfaction_view,
+    'warranty-claim-view': handle_warranty_claim_view,
+    'mom-view': handle_mom_view,
+    'incoming-inspection-view': handle_incoming_inspection_view,
+}
+
+# ══════════════════════════════════════════════════════════
+# 4. THE MAIN VIEW (Clean & Modular)
+# ══════════════════════════════════════════════════════════
+@api_view(['GET'])
+def get_qa_record_by_id(request, form_key, record_id):
+
+    start_time = time.time() # ⏱️ Timer Start
+
+    # ... (Aapka pura function ka code yahan aayega) ...
+
+    end_time = time.time() # ⏱️ Timer Stop
+    execution_time = (end_time - start_time) * 1000 # Milliseconds mein convert kiya
+    
+    print(f"🔥 YEH API CHALNE MEIN {execution_time:.2f} ms LAGE! 🔥")
+    """
+    Ek specific QA record ko uske ID se fetch karta hai.
+    Sath hi Prepared By aur Approved By logs bhi fetch karta hai.
+    """
+    try:
+        rid = int(record_id)
+    except (ValueError, TypeError):
+        return JsonResponse({'data': None, 'error': 'Invalid record_id'}, status=400)
+
+    # 1. Check if the form key exists in our registry
+    handler_func = FORM_HANDLERS.get(form_key)
+    if not handler_func:
+        return JsonResponse({'data': None, 'error': f'QA Form key "{form_key}" not supported'}, status=400)
+
+    # 2. Fetch Logs for 'Prepared By' & 'Approved By'
+    prep_by, app_by = get_log_details(rid)
+
+    # 3. Execute the handler and return response
+    try:
+        response_data = handler_func(rid, prep_by, app_by)
+        return JsonResponse(response_data)
+        
+    except ObjectDoesNotExist:
+        return JsonResponse({'data': None, 'error': f'Record #{rid} not found'}, status=404)
+        
+    except Exception as e:
+        logger.exception(f"Error in {form_key} for ID {rid}: {e}")
+        return JsonResponse({'data': None, 'error': str(e)}, status=500)
+
+
+
+
+
+
+

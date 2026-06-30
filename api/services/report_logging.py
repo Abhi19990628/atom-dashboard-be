@@ -95,8 +95,9 @@ def auto_log_report(
 
         approvers = User.objects.filter(groups__name=final_target_group).distinct()
 
-        date_str = timezone.localtime(log.timestamp).strftime("%d-%b-%Y")
-        time_str = timezone.localtime(log.timestamp).strftime("%I:%M %p")
+        local_now = timezone.localtime(timezone.now())
+        date_str = local_now.strftime("%d-%b-%Y")
+        time_str = local_now.strftime("%I:%M %p")
         msg = f"{username} submitted {report_name} on {date_str} at {time_str}."
 
         for approver in approvers:

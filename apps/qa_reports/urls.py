@@ -1,5 +1,6 @@
 from django.urls import path
 from . import views
+from .views import SaveReworkReportView
 
 urlpatterns = [
     #  Master Data (Dropdowns & Auto-fill) -> YE MISSING THE
@@ -15,7 +16,7 @@ urlpatterns = [
     path('good-receipt/create/', views.SaveGoodReceiptView.as_view(), name='create_good_receipt'),
     path('save-inspection-report/', views.SaveInspectionReportView.as_view(), name='save_inspection_report'),
     path('get-inspection-report/', views.GetInspectionReportView.as_view(), name='get_inspection_report'),
-
+    path("qa-rework/save/", SaveReworkReportView.as_view(), name="save_qa_rework_report"),
     #  QA Monthly
     path('save-process-audit/', views.SaveProcessAuditView.as_view(), name='save_process_audit'),
     path('coherence/', views.SaveCoherenceChecklistView.as_view(), name='save_coherence'),

@@ -1952,84 +1952,24 @@ class IncomingMaterialInspection(models.Model):
     def __str__(self):
         return f"{self.supplier} | {self.part_name} ({self.part_no}) - {self.date}"
     
-    
-    
-    
-# from django.db import models
-# from django.contrib.auth.models import User
-
-# # 1. User Profile: Kaunsa user kis Department/Plant ka hai
-# class UserProfile(models.Model):
-#     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
-    
-#     # Department / Plant ke options
-#     DEPARTMENT_CHOICES = (
-#         ('Plant 1', 'Plant 1'),
-#         ('Plant 2', 'Plant 2'),
-#         ('QA Hub', 'QA Hub'),
-#         ('Production Hub', 'Production Hub'),
-#         ('Maintenance Hub', 'Maintenance Hub'),
-#     )
-#     department_name = models.CharField(max_length=50, choices=DEPARTMENT_CHOICES, default='Plant 1')
-
-#     class Meta:
-#         # 🔥 Puraani default table ki jagah ye naam DB mein aayega
-#         db_table = 'user_department_profiles' 
-
-#     def __str__(self):
-#         return f"{self.user.username} - {self.department_name}"
-
-from django.db import models
-from django.contrib.auth.models import User
-from django.db.models.signals import post_save
-from django.dispatch import receiver
-
-# ==============================================================================
-# 🏭 ENTERPRISE USER PROFILE MASTER
-# ==============================================================================
-class UserProfile(models.Model):
-    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
-    
-    # 📌 Nayi Fields Jo Aapne Maangi Thi
-    employee_id = models.CharField(max_length=50, unique=True, null=True, blank=True, help_text="Unique Employee Code")
-    mobile_no = models.CharField(max_length=15, null=True, blank=True)
-    contact_email = models.EmailField(null=True, blank=True, help_text="Alternate/Direct Email")
-    
-    # 📌 Location (Konsa Plant Hai)
-    LOCATION_CHOICES = (
-        ('Plant 1', 'Plant 1'),
-        ('Plant 2', 'Plant 2'),
-        ('HQ', 'Headquarters'),
-    )
-    location = models.CharField(max_length=50, choices=LOCATION_CHOICES, default='Plant 1')
-
-    # 📌 Department
-    DEPARTMENT_CHOICES = (
-        ('QA', 'Quality Assurance (QA)'),
-        ('Production', 'Production'),
-        ('Maintenance', 'Maintenance'),
-        ('Management', 'Management'),
-    )
-    department = models.CharField(max_length=50, choices=DEPARTMENT_CHOICES, default='QA')
-
-    class Meta:
-        db_table = 'user_department_profiles' 
-
-    def __str__(self):
-        emp_code = self.employee_id if self.employee_id else "NO-ID"
-        return f"{self.user.username} | ID: {emp_code} | {self.location} - {self.department}"
-    
 
 from django.db import models
 from django.contrib.auth.models import User
 
+from django.utils import timezone
+
+def current_datetime_string():
+    return timezone.localtime(timezone.now()).strftime("%Y-%m-%d %H:%M:%S")
 
 class ReportActivityLog(models.Model):
     username = models.CharField(max_length=255)
     department_name = models.CharField(max_length=100) 
     report_name = models.CharField(max_length=255)
     record_id = models.IntegerField(null=True, blank=True)
-    timestamp = models.DateTimeField(auto_now_add=True)
+    timestamp = models.CharField(
+    max_length=19,
+    default=current_datetime_string
+)
     status = models.CharField(max_length=255, default="In Progress") 
     approved_or_rejected_at = models.CharField(max_length=19, null=True, blank=True)
     remarks = models.TextField(null=True, blank=True)

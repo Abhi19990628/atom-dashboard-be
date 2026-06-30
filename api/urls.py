@@ -16,13 +16,13 @@ from .views import (
 )
 
 from .views import get_machine_history
-from django.contrib import admin
+# from django.contrib import admin
 from .views import CustomLoginView, ChangePasswordView 
 from .views import CurrentUserProfileView,get_department_stats
 
 urlpatterns = [
     # Dashboard APIs
-    path('admin/', admin.site.urls),
+    # path('admin/', admin.site.urls),
     
     path('login/', CustomLoginView.as_view(), name='api_login'),
     path('change-password/', ChangePasswordView.as_view(), name='change-password'),
