@@ -576,7 +576,7 @@ class MachineHistoryCard(models.Model):
     machine_no = models.CharField(max_length=100)
     machine_specs = models.CharField(max_length=255, blank=True, null=True)
     location = models.CharField(max_length=255, blank=True, null=True)
-    
+    plant = models.CharField(max_length=50, blank=True, null=True)
     # React se aane wale history array ko hum seedha JSON me save kar lenge (Aapke pattern ke hisaab se)
     history_records = models.JSONField(default=list)
     
@@ -587,7 +587,7 @@ class MachineHistoryCard(models.Model):
 
     class Meta:
         managed = True
-        db_table = "machine_history_card"
+        db_table = '"maintenance"."machine_history_card"'
         ordering = ['-created_at']
 
     def __str__(self):

@@ -21,10 +21,15 @@ REPORT_ROUTE_MAP = {
         "hub": "production-hub",
         "target_group": "Production_Approvers",
     },
+    normalize_report_name("Poka Yoke Checksheet"): {
+        "form_key": "poka-yoke",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
     normalize_report_name("Machine Checksheet"): {
-        "form_key": "machine-checksheet",
-        "hub": "production-hub",
-        "target_group": "Production_Approvers",
+        "form_key": "poka-yoke",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
     },
     normalize_report_name("Tip Change Monitor Form"): {
         "form_key": "tip-change",
@@ -106,7 +111,6 @@ REPORT_ROUTE_MAP = {
         "hub": "production-hub",
         "target_group": "Production_Approvers",
     },
-
     # =========================
     # QA HUB
     # =========================
@@ -235,27 +239,56 @@ REPORT_ROUTE_MAP = {
         "hub": "qa-hub",
         "target_group": "Quality_Approvers",
     },
-
     # =========================
     # MAINTENANCE HUB
     # =========================
+    normalize_report_name("Machine History Card"): {
+        "form_key": "machine-history",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Machine History Form"): {
+        "form_key": "machine-history",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Daily Power Press Checksheet"): {
+        "form_key": "power-press-checksheet",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Power Press Checksheet"): {
+        "form_key": "power-press-checksheet",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
     normalize_report_name("Machine Breakdown Form"): {
         "form_key": "machine-breakdown",
         "hub": "maintenance-hub",
         "target_group": "Maintenance_Approvers",
     },
-    normalize_report_name("Machine Preventive Maintenance"): {
-        "form_key": "preventive-maintenance",
+    normalize_report_name("Machine Breakdown Intimation Form"): {
+        "form_key": "machine-breakdown",
         "hub": "maintenance-hub",
         "target_group": "Maintenance_Approvers",
     },
-    normalize_report_name("Tool Breakdown Form"): {
-        "form_key": "tool-breakdown",
+    normalize_report_name("machine breakdown  Form"): {
+        "form_key": "machine-breakdown",
         "hub": "maintenance-hub",
         "target_group": "Maintenance_Approvers",
     },
-    normalize_report_name("Tool Preventive Maintenance"): {
-        "form_key": "tool-preventive-maintenance",
+    normalize_report_name("Poka Yoke Checksheet"): {
+        "form_key": "poka-yoke",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Poka Yoke Monitoring"): {
+        "form_key": "poka-yoke",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("poka yoka machine Form"): {
+        "form_key": "poka-yoke",
         "hub": "maintenance-hub",
         "target_group": "Maintenance_Approvers",
     },
