@@ -97,7 +97,18 @@ class SaveMachineChecksheetView(APIView):
                 MachineChecksheetObservation.objects.bulk_create(observations)
 
             # 🔥 AUTO LOG BANAO
-            auto_log_report(data.get('submitted_by'), "Machine Checksheet", report.id)
+            username = (
+                data.get("username")
+                or data.get("submitted_by")
+                or data.get("checked_by_maintenance")
+                or "Unknown User"
+            )
+            
+            auto_log_report(
+                username=username,
+                report_name="Poka Yoke Checksheet",
+                record_id=report.id,
+            )
             return Response({"success": True, "message": "✅ Daily Checksheet Saved Successfully!", "report_id": report.id, "record_id": report.id}, status=status.HTTP_201_CREATED)
 
         except Exception as e:
@@ -1467,7 +1478,18 @@ class SaveMachineChecksheetView(APIView):
                 MachineChecksheetObservation.objects.bulk_create(observations)
 
             # 🔥 AUTO LOG BANAO
-            auto_log_report(data.get('submitted_by'), "Machine Checksheet", report.id)
+            username = (
+    data.get("username")
+    or data.get("submitted_by")
+    or data.get("checked_by_maintenance")
+    or "Unknown User"
+            )
+            
+            auto_log_report(
+                username=username,
+                report_name="Poka Yoke Checksheet",
+                record_id=report.id,
+            )
             return Response({"success": True, "message": "✅ Daily Checksheet Saved Successfully!", "report_id": report.id, "record_id": report.id}, status=status.HTTP_201_CREATED)
 
         except Exception as e:
