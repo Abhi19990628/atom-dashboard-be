@@ -462,6 +462,16 @@ REPORT_ROUTE_MAP = {
         "hub": "maintenance-hub",
         "target_group": "Maintenance_Approvers",
     },
+    normalize_report_name("Process Audit"): {
+        "form_key": "process-audit",
+        "hub": "qa-hub",
+        "target_group": "Quality_Approvers",
+    },
+    normalize_report_name("Process Audit Checksheet"): {
+        "form_key": "process-audit",
+        "hub": "qa-hub",
+        "target_group": "Quality_Approvers",
+    },
 }
 
 
