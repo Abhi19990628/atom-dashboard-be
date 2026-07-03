@@ -2,7 +2,7 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from django.db import transaction
 from django.db import connection
-from .models import OperatorAssignment, IdleReport
+from .models import MachineHistoryCard, OperatorAssignment, IdleReport
 from datetime import datetime, timedelta
 from apps.mqtt.mqtt_client import PLANT1_TOPICS, PLANT2_TOPICS
 from django.views.decorators.cache import cache_control, never_cache
@@ -1068,15 +1068,13 @@ def plant2_live(request):
         import traceback
         traceback.print_exc()
         return Response({"success": False, "error": str(e), "machines": [], "plant": 2}, status=500)
-
-
+    
+@never_cache
 @api_view(['GET'])
 def get_machine_history(request):
     """
     🌟 ADVANCED STORY BUILDER API 🌟
-    Returns exact chronological nodes for the frontend 'Production Journey Timeline'.
-    ✅ STRICTLY relies on Database events (No fake 8:30 AM inference).
-    ✅ Pure Professional English strings.
+    ✅ 100% BULLETPROOF TIMEZONE FIX (Forced +05:30 and WITH TIME ZONE)
     """
     try:
         from django.db import connection
@@ -1085,9 +1083,10 @@ def get_machine_history(request):
         
         plant_no = int(request.GET.get('plant_no', 2))
         machine_no = str(request.GET.get('machine_no', '')).strip()
-        date_str = request.GET.get('date', '').strip() 
+        date_str = request.GET.get('date', '').strip()
         
         ist_tz = pytz.timezone('Asia/Kolkata')
+        
         if not date_str:
             date_str = datetime.now(ist_tz).strftime('%Y-%m-%d')
             
@@ -1097,88 +1096,78 @@ def get_machine_history(request):
         target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
         now_ist = datetime.now(ist_tz)
         
-        # Shift Boundaries
         shift_a_start = ist_tz.localize(datetime.combine(target_date, datetime.strptime("08:30:00", "%H:%M:%S").time()))
-        shift_a_end = shift_a_start + timedelta(hours=12) # 20:30 (8:30 PM)
+        shift_a_end = shift_a_start + timedelta(hours=12) # 20:30:00
         
-        start_str = shift_a_start.strftime('%Y-%m-%d %H:%M:%S')
-        end_str = shift_a_end.strftime('%Y-%m-%d %H:%M:%S')
+        # 🛑 FIX: Append +05:30 so Postgres doesn't guess the timezone!
+        start_str = shift_a_start.strftime('%Y-%m-%d %H:%M:%S+05:30')
+        end_str = shift_a_end.strftime('%Y-%m-%d %H:%M:%S+05:30')
 
         events = []
-        
-        # 1️⃣ SHIFT START NODE (Reference point)
-        events.append({
-            "timestamp": shift_a_start.timestamp(),
-            "time_str": shift_a_start.strftime('%I:%M %p'),
-            "type": "SHIFT_START",
-            "title": "Shift Started",
-            "details": "Shift officially started at 08:30 AM",
-            "raw_time": start_str,
-            "shift": "A"
-        })
+        machine_meta = {
+            "customer_name": "N/A",
+            "part_name": "N/A",
+            "part_number": "N/A",
+            "tool_id": "N/A"
+        }
 
         with connection.cursor() as cursor:
-            # 2️⃣ FETCH EXACT MACHINE EVENTS (ON, OFF, SHUT HEIGHT, TOOL CHANGE)
+            # 🚀 META DATA
             cursor.execute("""
-                SELECT event_type, timestamp, shift, details
-                FROM "Machine_Event_Logs"
+                SELECT tool_id FROM Plant2_data 
+                WHERE machine_no = %s 
+                AND timestamp >= %s::timestamp WITH TIME ZONE 
+                AND timestamp <= %s::timestamp WITH TIME ZONE 
+                AND tool_id IS NOT NULL AND tool_id != 'N/A'
+                ORDER BY timestamp DESC LIMIT 1
+            """, [machine_no, start_str, end_str])
+            tool_res = cursor.fetchone()
+            
+            if tool_res and tool_res[0]:
+                tool_id = tool_res[0][:24]
+                machine_meta["tool_id"] = tool_id
+                cursor.execute('SELECT "CUSTOMER", "PART_NAME", "PART_NUMBER" FROM public.tid_map WHERE "EPC" = %s LIMIT 1', [tool_id])
+                meta_res = cursor.fetchone()
+                if meta_res:
+                    machine_meta["customer_name"] = meta_res[0] or "N/A"
+                    machine_meta["part_name"] = meta_res[1] or "N/A"
+                    machine_meta["part_number"] = meta_res[2] or "N/A"
+
+            # 🚀 MACHINE EVENTS
+            cursor.execute("""
+                SELECT event_type, timestamp, shift, details 
+                FROM "Machine_Event_Logs" 
                 WHERE plant_no = %s AND machine_no = %s 
-                  AND timestamp >= %s AND timestamp <= %s
+                AND timestamp >= %s::timestamp WITH TIME ZONE 
+                AND timestamp <= %s::timestamp WITH TIME ZONE 
             """, [plant_no, machine_no, start_str, end_str])
             
             for row in cursor.fetchall():
                 evt_type = row[0]
                 ts_obj = row[1]
-                shift = row[2]
-                details = row[3]
                 
+                # 🟢 FORCE PROPER TIMEZONE FIX
                 if ts_obj.tzinfo is None:
                     ts_obj = ist_tz.localize(ts_obj)
                 else:
                     ts_obj = ts_obj.astimezone(ist_tz)
-                
-                # Pure English Titles
+                    
                 title = evt_type
                 if evt_type == 'ON': title = "Machine Powered ON"
                 elif evt_type == 'OFF': title = "Machine Offline"
                 elif evt_type == 'SHUT_HEIGHT_CHANGE': title = "Shut Height Adjusted"
-                elif evt_type == 'TOOL_CHANGE': title = "Tool Changed"
+                elif evt_type == 'TOOL_CHANGE': title = "New Part / Tool Started"
                 
                 events.append({
                     "timestamp": ts_obj.timestamp(),
                     "time_str": ts_obj.strftime('%I:%M %p'),
                     "type": evt_type,
                     "title": title,
-                    "details": details,
-                    "raw_time": ts_obj.strftime('%Y-%m-%d %H:%M:%S'),
-                    "shift": shift
+                    "details": row[3],
+                    "shift": row[2]
                 })
 
-            # 3️⃣ FETCH FIRST PRODUCTION COUNT
-            cursor.execute("""
-                SELECT MIN(timestamp) FROM Plant2_data
-                WHERE machine_no = %s AND count > 0 AND timestamp >= %s AND timestamp <= %s
-            """, [machine_no, start_str, end_str])
-            
-            first_count_ts = cursor.fetchone()[0]
-            
-            if first_count_ts:
-                if first_count_ts.tzinfo is None:
-                    first_count_ts = ist_tz.localize(first_count_ts)
-                else:
-                    first_count_ts = first_count_ts.astimezone(ist_tz)
-
-                events.append({
-                    "timestamp": first_count_ts.timestamp(),
-                    "time_str": first_count_ts.strftime('%I:%M %p'),
-                    "type": "FIRST_COUNT",
-                    "title": "First Production Count",
-                    "details": "Machine started producing parts",
-                    "raw_time": first_count_ts.strftime('%Y-%m-%d %H:%M:%S'),
-                    "shift": "A"
-                })
-
-            # 4️⃣ CALCULATE HOURLY PRODUCTION SUMMARIES
+            # 🚀 HOURLY POST-MORTEM
             hour_boundaries = [shift_a_start]
             for hr in range(9, 21): 
                 hour_boundaries.append(shift_a_start.replace(hour=hr, minute=0, second=0))
@@ -1188,86 +1177,71 @@ def get_machine_history(request):
                 t1 = hour_boundaries[i]
                 t2 = hour_boundaries[i+1]
                 
-                if t2 > now_ist: # Skip future boundaries
-                    break
+                if t1 > now_ist: 
+                    break 
                     
-                t1_str = t1.strftime('%Y-%m-%d %H:%M:%S')
-                t2_str = t2.strftime('%Y-%m-%d %H:%M:%S')
+                # 🛑 FIX: Append +05:30
+                t1_str = t1.strftime('%Y-%m-%d %H:%M:%S+05:30')
+                t2_str = t2.strftime('%Y-%m-%d %H:%M:%S+05:30')
                 
                 cursor.execute("""
-                    SELECT COALESCE(SUM(count), 0) FROM Plant2_data
-                    WHERE machine_no = %s AND timestamp > %s AND timestamp <= %s
+                    SELECT COALESCE(SUM(count), 0) FROM Plant2_data 
+                    WHERE machine_no = %s 
+                    AND timestamp > %s::timestamp WITH TIME ZONE 
+                    AND timestamp <= %s::timestamp WITH TIME ZONE
                 """, [machine_no, t1_str, t2_str])
-                
                 hr_count = cursor.fetchone()[0] or 0
                 
+                cursor.execute("""
+                    SELECT COALESCE(SUM(idle_time), 0) FROM "Plant2_hourly_idle" 
+                    WHERE machine_no = %s 
+                    AND timestamp >= %s::timestamp WITH TIME ZONE 
+                    AND timestamp < %s::timestamp WITH TIME ZONE
+                """, [machine_no, t1_str, t2_str])
+                hr_idle = cursor.fetchone()[0] or 0
+
+                cursor.execute("""
+                    SELECT COUNT(*) FROM "Machine_Event_Logs" 
+                    WHERE machine_no = %s AND event_type = 'SHUT_HEIGHT_CHANGE'
+                    AND timestamp > %s::timestamp WITH TIME ZONE 
+                    AND timestamp <= %s::timestamp WITH TIME ZONE
+                """, [machine_no, t1_str, t2_str])
+                hr_shut_changes = cursor.fetchone()[0] or 0
+
+                details_text = f"Production: {hr_count} pieces."
+                if hr_idle > 0:
+                    details_text += f" | ⚠️ Machine was idle/offline for {hr_idle} mins."
+                if hr_shut_changes > 0:
+                    details_text += f" | 🔧 Shut height changed {hr_shut_changes} times."
+
                 events.append({
-                    "timestamp": t2.timestamp() - 1,
-                    "time_str": t2.strftime('%I:%M %p'),
+                    "timestamp": min((t2.timestamp() - 1), now_ist.timestamp()), 
+                    "time_str": t2.strftime('%I:%M %p') if t2 <= now_ist else now_ist.strftime('%I:%M %p'),
                     "type": "HOUR_CHANGE",
-                    "title": f"Hourly Production Summary ({t2.strftime('%I %p')})",
-                    "details": f"Total production in this hour: {hr_count} pieces",
-                    "raw_time": t2_str,
-                    "shift": "A",
-                    "count": hr_count
+                    "title": f"Hourly Summary ({t1.strftime('%I %p')} - {t2.strftime('%I:%M %p')})",
+                    "details": details_text,
+                    "count": hr_count,
+                    "idle_mins": hr_idle,
+                    "shut_changes": hr_shut_changes
                 })
 
-        # 5️⃣ ADD LUNCH TIME (12:15 PM - 12:45 PM)
-        lunch_start = ist_tz.localize(datetime.combine(target_date, datetime.strptime("12:15:00", "%H:%M:%S").time()))
-        lunch_end = ist_tz.localize(datetime.combine(target_date, datetime.strptime("12:45:00", "%H:%M:%S").time()))
-        
-        if now_ist >= lunch_start:
-            events.append({
-                "timestamp": lunch_start.timestamp(),
-                "time_str": lunch_start.strftime('%I:%M %p'),
-                "type": "LUNCH_START",
-                "title": "Lunch Break Started",
-                "details": "Machine tracking paused for lunch (12:15 PM)",
-                "raw_time": lunch_start.strftime('%Y-%m-%d %H:%M:%S'),
-                "shift": "A"
-            })
-        if now_ist >= lunch_end:
-            events.append({
-                "timestamp": lunch_end.timestamp(),
-                "time_str": lunch_end.strftime('%I:%M %p'),
-                "type": "LUNCH_END",
-                "title": "Lunch Break Ended",
-                "details": "Production Tracking Resumed (12:45 PM)",
-                "raw_time": lunch_end.strftime('%Y-%m-%d %H:%M:%S'),
-                "shift": "A"
-            })
-
-        # 6️⃣ SORT ALL EVENTS CHRONOLOGICALLY
         events.sort(key=lambda x: x['timestamp'])
-
-        final_events = []
-        for e in events:
-            if e['timestamp'] <= now_ist.timestamp():
-                final_events.append({
-                    "type": e['type'],
-                    "time": e['time_str'],
-                    "title": e['title'],
-                    "details": e['details'],
-                    "timestamp": e['timestamp'],
-                    "raw_time": e['raw_time'],
-                    "shift": e['shift'],
-                    "count": e.get('count', 0)
-                })
 
         return Response({
             "success": True,
             "plant_no": plant_no,
             "machine_no": machine_no,
             "date": date_str,
-            "total_events": len(final_events),
-            "events": final_events
+            "machine_meta": machine_meta,
+            "total_events": len(events),
+            "events": events
         })
         
     except Exception as e:
         import traceback
         traceback.print_exc()
         return Response({"success": False, "error": str(e)}, status=500)
-
+    
 @never_cache
 @api_view(['POST'])
 def save_hourly_snapshot(request):
@@ -2913,6 +2887,13 @@ class ApproveReportView(APIView):
                 "approved_or_rejected_at",
                 "remarks"
             ])
+            if report.record_id and normalize_report_name(report.report_name) in [
+            "machine history card",
+            "machine history form",
+            ]:
+             MachineHistoryCard.objects.filter(id=report.record_id).update(
+                 approved_by=approver_username
+             )
 
             QANotification.objects.filter(report_log=report).update(is_read=True)
 
@@ -3009,7 +2990,7 @@ class RejectReportView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
         
-from api.services.report_registry import get_route_config
+from api.services.report_registry import get_route_config, normalize_report_name
 
 
 def resolve_hub_from_department(department_name):
@@ -3123,16 +3104,18 @@ class SaveReportLogView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
+        route_config = get_route_config(report_name)
+
         return Response(
-    {
-        "success": True,
-        "message": "Activity log and notification created successfully.",
-        "log_id": log.id,
-        "report_name": log.report_name,
-        "department_name": log.department_name,
-    },
-    status=status.HTTP_201_CREATED,
-)
+            {
+                "success": True,
+                "message": "Activity log and notification created successfully.",
+                "log_id": log.id,
+                "form_key": route_config.get("form_key", ""),
+                "hub": route_config.get("hub", ""),
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
@@ -3267,6 +3250,7 @@ def get_department_stats(request):
                 'filled': 0,
                 'approved': 0,
                 'pending': 0,
+                'rejected': 0,
                 'head': actual_head_name, 
                 'reportsList': []
             }
@@ -3276,6 +3260,10 @@ def get_department_stats(request):
         if 'approved' in db_status:
             display_status = 'Approved'
             user_data_dict[raw_username]['approved'] += 1
+            
+        elif 'rejected' in db_status:
+            display_status = 'Rejected'
+            user_data_dict[raw_username]['rejected'] += 1
         else:
             display_status = 'Pending'
             user_data_dict[raw_username]['pending'] += 1

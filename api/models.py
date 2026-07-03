@@ -232,8 +232,7 @@ class MachineChecksheetReport(models.Model):
 
     class Meta:
         managed = True
-        db_table = "machine_checksheet_report"
-
+        db_table = '"machine_maintenance"."machine_checksheet_report"'
     def __str__(self):
         return f"{self.machine_no} - {self.date}"
 
@@ -252,7 +251,7 @@ class MachineChecksheetObservation(models.Model):
 
     class Meta:
         managed = True
-        db_table = "machine_checksheet_observation"
+        db_table = '"machine_maintenance"."machine_checksheet_observation"'
         ordering = ['s_no']
 
 
@@ -576,7 +575,7 @@ class MachineHistoryCard(models.Model):
     machine_no = models.CharField(max_length=100)
     machine_specs = models.CharField(max_length=255, blank=True, null=True)
     location = models.CharField(max_length=255, blank=True, null=True)
-    
+    plant = models.CharField(max_length=50, blank=True, null=True)
     # React se aane wale history array ko hum seedha JSON me save kar lenge (Aapke pattern ke hisaab se)
     history_records = models.JSONField(default=list)
     
@@ -620,7 +619,7 @@ class MachineBreakdownIntimation(models.Model):
 
     class Meta:
         managed = True
-        db_table = "machine_breakdown_intimation"
+        db_table = '"machine_maintenance"."machine_breakdown_intimation"'
         ordering = ['-created_at']
 
     def __str__(self):
@@ -1709,7 +1708,7 @@ class MachinePreventiveMaintenance(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        db_table = 'machine_preventive_maintenance'
+        db_table = '"machine_maintenance"."machine_preventive_maintenance"'
         ordering = ['-created_at']
 
     def __str__(self):
@@ -1768,6 +1767,7 @@ class ProjectionWeldingPMCheckSheet(models.Model):
 
     def __str__(self):
         return f"{self.machine_name} - {self.machine_no} - {self.date}"
+    
 class PowerPressPMCheckSheet(models.Model):
     machine_name = models.CharField(max_length=150, default="POWER PRESS")
     machine_no = models.CharField(max_length=50)

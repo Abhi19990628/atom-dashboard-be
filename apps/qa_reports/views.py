@@ -641,9 +641,203 @@ class SaveReportLogView(APIView):
             status=status.HTTP_201_CREATED,
         )
 
-# ==============================================================================
-# 🔥 ALL FORMS FETCH API (For View/Approve Mode)
-# ==============================================================================
+# # ==============================================================================
+# # 🔥 ALL FORMS FETCH API (For View/Approve Mode)
+# # ==============================================================================
+# @api_view(['GET'])
+# def get_single_report_view(request, form_key, report_id):
+#     try:
+#         log_entry = get_object_or_404(ReportActivityLog, id=report_id)
+#         submitted_user = log_entry.username
+#         rec_id = log_entry.record_id
+
+#         if not rec_id:
+#             return Response({"success": False, "error": "No Record ID attached to this notification."}, status=404)
+
+#         if form_key in ['deviation-view', 'deviation']:
+#             report = get_object_or_404(DeviationApproval, id=rec_id)
+#             data = {
+#                 "toolNameNo": report.tool_name_no, "location": report.location, "problem": report.problem,
+#                 "reasonForDeviation": report.reason_for_deviation, "date": str(report.date), "duration": report.duration,
+#                 "prodIncharge": report.prod_incharge, "qaIncharge": report.qa_incharge, "remarks": report.remarks,
+#                 "submitted_by": submitted_user
+#             }
+#             return Response({"success": True, "data": data}, status=200)
+
+#         elif form_key == 'good-receipt':
+#              report = get_object_or_404(GoodReceiptEntry, id=rec_id)
+#              data = {
+#                 "requestedBy": report.requested_by, "itemName": report.item_name, "specification": report.specification,
+#                 "department": report.department, "qty": report.qty, "remark": report.remark, "receivedBy": report.received_by,
+#                 "receivedDate": str(report.received_date), "submitted_by": submitted_user
+#              }
+#              return Response({"success": True, "data": data}, status=200)
+
+#         elif form_key in ['incoming-inspection-view', 'incoming']:
+#              report = get_object_or_404(IncomingMaterialInspection, id=rec_id)
+#              data = {
+#                 "supplier": report.supplier, "customer": report.customer, "part_name": report.part_name, "part_no": report.part_no,
+#                 "date": str(report.date), "grade": report.grade, "mtc": report.mtc, "ga_nga": report.ga_nga, "coil_no": report.coil_no,
+#                 "invoice_no": report.invoice_no, "qty": report.qty, "inspection_data": report.inspection_data,
+#                 "prepared_by": report.prepared_by, "checked_by": report.checked_by, "approved_by": report.approved_by, "submitted_by": submitted_user
+#              }
+#              return Response({"success": True, "data": data}, status=200)
+
+#         elif form_key in ['redbin-view', 'redbin']:
+#             report = get_object_or_404(RedBinAnalysisReport, id=rec_id)
+#             data = {
+#                 "entry_date": str(report.entry_date), "part_name_model": report.part_name_model, "operation": report.operation,
+#                 "total_rej_qty": report.total_rej_qty, "defect_detail": report.defect_detail, "root_cause_reason": report.root_cause_reason,
+#                 "action_taken": report.action_taken, "responsible_person": report.responsible_person,
+#                 "target_date": str(report.target_date) if report.target_date else "",
+#                 "completion_date": str(report.completion_date) if report.completion_date else "", "submitted_by": submitted_user
+#             }
+#             return Response({"success": True, "data": data}, status=200)
+
+#         elif form_key in ['scrap-note-view', 'scrap']:
+#             report = get_object_or_404(ScrapNoteEntry, id=rec_id)
+#             data = {
+#                 "entry_date": str(report.entry_date), "part_name": report.part_name, "part_no": report.part_no,
+#                 "defect_detail": report.defect_detail, "quantity": report.quantity, "remarks": report.remarks, "submitted_by": submitted_user
+#             }
+#             return Response({"success": True, "data": data}, status=200)
+
+#         elif form_key in ['process-audit-view', 'process-audit']:
+#             report = get_object_or_404(ProcessAuditChecksheet, id=rec_id)
+#             data = {
+#                 "part_name_no": report.part_name_no, "model_name": report.machine_model, "audit_date": str(report.date),
+#                 "auditor_name": report.auditor, "auditee_name": report.auditee, "audit_details": report.audit_details, "submitted_by": submitted_user
+#             }
+#             return Response({"success": True, "data": data}, status=200)
+
+#         elif form_key in ['coherence-view', 'coherence']:
+#             report = get_object_or_404(CoherenceChecklist, id=rec_id)
+#             data = {
+#                 "partName": report.part_name, "partNo": report.part_no, "date": str(report.date), "model": report.model_name,
+#                 "preparedBy": report.prepared_by, "verifiedBy": report.verified_by, "operations": report.operations, "submitted_by": submitted_user
+#             }
+#             return Response({"success": True, "data": data}, status=200)
+
+#         elif form_key in ['layout-inspection-view', 'layout-inspection']:
+#             report = get_object_or_404(LayoutInspection, id=rec_id)
+#             data = {
+#                 "partName": report.part_name, "partNo": report.part_no, "model": report.model_name, "customer": report.customer_name,
+#                 "date": str(report.date), "sampleSize": report.sample_size, "preparedBy": report.prepared_by, "verifiedBy": report.verified_by,
+#                 "inspections": report.inspections, "submitted_by": submitted_user
+#             }
+#             return Response({"success": True, "data": data}, status=200)
+
+#         elif form_key in ['product-audit-plan-view', 'product-audit-plan']:
+#             report = get_object_or_404(ProductAuditPlan, id=rec_id)
+#             data = {
+#                 "doc_no": report.doc_no, "rev_no": report.rev_no, "date": str(report.date), "plan_year": report.plan_year,
+#                 "prepared_by": report.prepared_by, "approved_by": report.approved_by, "rows": report.audit_rows, "submitted_by": submitted_user
+#             }
+#             return Response({"success": True, "data": data}, status=200)
+
+#         elif form_key in ['customer-complaint-view', 'customer-complaint']:
+#             report = get_object_or_404(CustomerComplaint, id=rec_id)
+#             data = {
+#                 "date": str(report.date), "part_details": report.part_details, "model_name": report.model_name, "customer_name": report.customer_name,
+#                 "problem_description": report.problem_description, "counter_measure": report.counter_measure, "target_date": str(report.target_date),
+#                 "horizontal_action": report.horizontal_action, "status": report.status, "submitted_by": submitted_user
+#             }
+#             return Response({"success": True, "data": data}, status=200)
+
+#         elif form_key in ['customer-satisfaction-view', 'customer-satisfaction']:
+#             report = get_object_or_404(CustomerSatisfaction, id=rec_id)
+#             data = {
+#                 "customerName": report.customer_name, "monthYear": report.month_year, **report.performance_indicators, "submitted_by": submitted_user
+#             }
+#             return Response({"success": True, "data": data}, status=200)
+
+#         elif form_key in ['warranty-claim-view', 'warranty-claim']:
+#             report = get_object_or_404(WarrantyClaim, id=rec_id)
+#             data = {
+#                 "date": str(report.date), "customerName": report.customer_name, "partDetails": report.part_details, "claimQty": report.claim_qty,
+#                 "warrantyDefect": report.warranty_defect, "decision": report.decision, "rejectionRootCause": report.rejection_root_cause,
+#                 "disposalAction": report.disposal_action, "capaAnalysis": report.capa_analysis, "submitted_by": submitted_user
+#             }
+#             return Response({"success": True, "data": data}, status=200)
+
+#         elif form_key in ['mom-view', 'mom']:
+#             report = get_object_or_404(MinutesOfMeeting, id=rec_id)
+#             data = {
+#                 "date": str(report.date), "time": str(report.time), "subject": report.subject, "aotMembers": report.aot_members,
+#                 "supplierMembers": report.supplier_members, "discussions": report.discussions, "submitted_by": submitted_user
+#             }
+#             return Response({"success": True, "data": data}, status=200)
+
+#         elif form_key in ['redbin-attendance-view', 'redbin-attendance']:
+#             report = get_object_or_404(RedBinAttendance, id=rec_id)
+#             data = {
+#                 "date": str(report.date), "month": report.month, "year": report.year, "employee_name": report.employee_name,
+#                 "designation": report.designation, "status": report.status, "submitted_by": submitted_user
+#             }
+#             return Response({"success": True, "data": data}, status=200)
+
+#         elif form_key in ['inspection-view', 'inspection']:
+#             report = get_object_or_404(InspectionReport, id=rec_id)
+
+#             inspection_data = report.inspection_data or {}
+#             meta_data = inspection_data.get("meta", {}) if isinstance(inspection_data, dict) else {}
+
+#             data = {
+#                 "customer": report.customer_account,
+#                 "part_name": report.part_name,
+#                 "operation": report.operation,
+#                 "part_number": report.part_number,
+#                 "model_name": meta_data.get("model_name", ""),
+#                 "plant_location": report.plant_location,
+#                 "date": str(report.inspection_date),
+#                 "operator": report.operator_name,
+#                 "machine": report.machine_number,
+#                 "inspection_data": inspection_data,
+#                 "submitted_by": submitted_user,
+#             }
+
+#             return Response({"success": True, "data": data}, status=200)
+        
+#         elif form_key in ['rework-view', 'rework']:
+#             report = get_object_or_404(ReworkEntry, id=rec_id)
+
+#             details = report.dynamic_details or {}
+#             status_val = details.get('status', '')
+#             observations = details.get('observations', [])
+
+#             if status_val == 'ok':
+#                 final_status = 'OK'
+#             elif status_val == 'notok':
+#                 final_status = 'NOT OK'
+#             else:
+#                 final_status = '—'
+
+#             data = {
+#                 "Date": str(report.date),
+#                 "Part Name": report.part_name,
+#                 "Part No": report.part_no,
+#                 "Spec": report.spec,
+#                 "Non Conformance": report.non_conformance,
+#                 "Rework Qty": report.rework_qty,
+#                 "Status": final_status,
+#                 "Inspected By": report.inspected_by or "—",
+#                 "Remark": report.remark or "—",
+#                 "submitted_by": submitted_user,
+#             }
+
+#             for i, val in enumerate(observations):
+#                 data[f"Obs {i + 1}"] = val if val else "—"
+
+#             return Response({"success": True, "data": data}, status=200)
+
+#         else:
+#             return Response({"success": False, "error": f"Form '{form_key}' Not Supported Yet"}, status=400)
+
+#     except Exception as e:
+#         import traceback
+#         print("🔥 ERROR IN GET SINGLE REPORT:", traceback.format_exc())
+#         return Response({"success": False, "error": str(e)}, status=500)
+
 @api_view(['GET'])
 def get_single_report_view(request, form_key, report_id):
     try:
@@ -654,191 +848,164 @@ def get_single_report_view(request, form_key, report_id):
         if not rec_id:
             return Response({"success": False, "error": "No Record ID attached to this notification."}, status=404)
 
-        if form_key in ['deviation-view', 'deviation']:
-            report = get_object_or_404(DeviationApproval, id=rec_id)
-            data = {
-                "toolNameNo": report.tool_name_no, "location": report.location, "problem": report.problem,
-                "reasonForDeviation": report.reason_for_deviation, "date": str(report.date), "duration": report.duration,
-                "prodIncharge": report.prod_incharge, "qaIncharge": report.qa_incharge, "remarks": report.remarks,
-                "submitted_by": submitted_user
-            }
-            return Response({"success": True, "data": data}, status=200)
-
-        elif form_key == 'good-receipt':
-             report = get_object_or_404(GoodReceiptEntry, id=rec_id)
-             data = {
-                "requestedBy": report.requested_by, "itemName": report.item_name, "specification": report.specification,
-                "department": report.department, "qty": report.qty, "remark": report.remark, "receivedBy": report.received_by,
-                "receivedDate": str(report.received_date), "submitted_by": submitted_user
-             }
-             return Response({"success": True, "data": data}, status=200)
-
-        elif form_key in ['incoming-inspection-view', 'incoming']:
-             report = get_object_or_404(IncomingMaterialInspection, id=rec_id)
-             data = {
-                "supplier": report.supplier, "customer": report.customer, "part_name": report.part_name, "part_no": report.part_no,
-                "date": str(report.date), "grade": report.grade, "mtc": report.mtc, "ga_nga": report.ga_nga, "coil_no": report.coil_no,
-                "invoice_no": report.invoice_no, "qty": report.qty, "inspection_data": report.inspection_data,
-                "prepared_by": report.prepared_by, "checked_by": report.checked_by, "approved_by": report.approved_by, "submitted_by": submitted_user
-             }
-             return Response({"success": True, "data": data}, status=200)
-
-        elif form_key in ['redbin-view', 'redbin']:
-            report = get_object_or_404(RedBinAnalysisReport, id=rec_id)
-            data = {
-                "entry_date": str(report.entry_date), "part_name_model": report.part_name_model, "operation": report.operation,
-                "total_rej_qty": report.total_rej_qty, "defect_detail": report.defect_detail, "root_cause_reason": report.root_cause_reason,
-                "action_taken": report.action_taken, "responsible_person": report.responsible_person,
-                "target_date": str(report.target_date) if report.target_date else "",
-                "completion_date": str(report.completion_date) if report.completion_date else "", "submitted_by": submitted_user
-            }
-            return Response({"success": True, "data": data}, status=200)
-
-        elif form_key in ['scrap-note-view', 'scrap']:
-            report = get_object_or_404(ScrapNoteEntry, id=rec_id)
-            data = {
-                "entry_date": str(report.entry_date), "part_name": report.part_name, "part_no": report.part_no,
-                "defect_detail": report.defect_detail, "quantity": report.quantity, "remarks": report.remarks, "submitted_by": submitted_user
-            }
-            return Response({"success": True, "data": data}, status=200)
-
-        elif form_key in ['process-audit-view', 'process-audit']:
-            report = get_object_or_404(ProcessAuditChecksheet, id=rec_id)
-            data = {
-                "part_name_no": report.part_name_no, "model_name": report.machine_model, "audit_date": str(report.date),
-                "auditor_name": report.auditor, "auditee_name": report.auditee, "audit_details": report.audit_details, "submitted_by": submitted_user
-            }
-            return Response({"success": True, "data": data}, status=200)
-
-        elif form_key in ['coherence-view', 'coherence']:
-            report = get_object_or_404(CoherenceChecklist, id=rec_id)
-            data = {
-                "partName": report.part_name, "partNo": report.part_no, "date": str(report.date), "model": report.model_name,
-                "preparedBy": report.prepared_by, "verifiedBy": report.verified_by, "operations": report.operations, "submitted_by": submitted_user
-            }
-            return Response({"success": True, "data": data}, status=200)
-
-        elif form_key in ['layout-inspection-view', 'layout-inspection']:
-            report = get_object_or_404(LayoutInspection, id=rec_id)
-            data = {
-                "partName": report.part_name, "partNo": report.part_no, "model": report.model_name, "customer": report.customer_name,
-                "date": str(report.date), "sampleSize": report.sample_size, "preparedBy": report.prepared_by, "verifiedBy": report.verified_by,
-                "inspections": report.inspections, "submitted_by": submitted_user
-            }
-            return Response({"success": True, "data": data}, status=200)
-
-        elif form_key in ['product-audit-plan-view', 'product-audit-plan']:
-            report = get_object_or_404(ProductAuditPlan, id=rec_id)
-            data = {
-                "doc_no": report.doc_no, "rev_no": report.rev_no, "date": str(report.date), "plan_year": report.plan_year,
-                "prepared_by": report.prepared_by, "approved_by": report.approved_by, "rows": report.audit_rows, "submitted_by": submitted_user
-            }
-            return Response({"success": True, "data": data}, status=200)
-
-        elif form_key in ['customer-complaint-view', 'customer-complaint']:
-            report = get_object_or_404(CustomerComplaint, id=rec_id)
-            data = {
-                "date": str(report.date), "part_details": report.part_details, "model_name": report.model_name, "customer_name": report.customer_name,
-                "problem_description": report.problem_description, "counter_measure": report.counter_measure, "target_date": str(report.target_date),
-                "horizontal_action": report.horizontal_action, "status": report.status, "submitted_by": submitted_user
-            }
-            return Response({"success": True, "data": data}, status=200)
-
-        elif form_key in ['customer-satisfaction-view', 'customer-satisfaction']:
-            report = get_object_or_404(CustomerSatisfaction, id=rec_id)
-            data = {
-                "customerName": report.customer_name, "monthYear": report.month_year, **report.performance_indicators, "submitted_by": submitted_user
-            }
-            return Response({"success": True, "data": data}, status=200)
-
-        elif form_key in ['warranty-claim-view', 'warranty-claim']:
-            report = get_object_or_404(WarrantyClaim, id=rec_id)
-            data = {
-                "date": str(report.date), "customerName": report.customer_name, "partDetails": report.part_details, "claimQty": report.claim_qty,
-                "warrantyDefect": report.warranty_defect, "decision": report.decision, "rejectionRootCause": report.rejection_root_cause,
-                "disposalAction": report.disposal_action, "capaAnalysis": report.capa_analysis, "submitted_by": submitted_user
-            }
-            return Response({"success": True, "data": data}, status=200)
-
-        elif form_key in ['mom-view', 'mom']:
-            report = get_object_or_404(MinutesOfMeeting, id=rec_id)
-            data = {
-                "date": str(report.date), "time": str(report.time), "subject": report.subject, "aotMembers": report.aot_members,
-                "supplierMembers": report.supplier_members, "discussions": report.discussions, "submitted_by": submitted_user
-            }
-            return Response({"success": True, "data": data}, status=200)
-
-        elif form_key in ['redbin-attendance-view', 'redbin-attendance']:
-            report = get_object_or_404(RedBinAttendance, id=rec_id)
-            data = {
-                "date": str(report.date), "month": report.month, "year": report.year, "employee_name": report.employee_name,
-                "designation": report.designation, "status": report.status, "submitted_by": submitted_user
-            }
-            return Response({"success": True, "data": data}, status=200)
-
-        elif form_key in ['inspection-view', 'inspection']:
-            report = get_object_or_404(InspectionReport, id=rec_id)
-
-            inspection_data = report.inspection_data or {}
-            meta_data = inspection_data.get("meta", {}) if isinstance(inspection_data, dict) else {}
-
-            data = {
-                "customer": report.customer_account,
-                "part_name": report.part_name,
-                "operation": report.operation,
-                "part_number": report.part_number,
-                "model_name": meta_data.get("model_name", ""),
-                "plant_location": report.plant_location,
-                "date": str(report.inspection_date),
-                "operator": report.operator_name,
-                "machine": report.machine_number,
-                "inspection_data": inspection_data,
-                "submitted_by": submitted_user,
-            }
-
-            return Response({"success": True, "data": data}, status=200)
+        # ── 🔥 CUSTOM FORMATTERS ──
         
-        elif form_key in ['rework-view', 'rework']:
-            report = get_object_or_404(ReworkEntry, id=rec_id)
-
-            details = report.dynamic_details or {}
+        def format_inspection(r):
+            inspection_data = r.inspection_data or {}
+            meta_data = inspection_data.get("meta", {}) if isinstance(inspection_data, dict) else {}
+            return {
+                "customer": r.customer_account,
+                "part_name": r.part_name,
+                "operation": r.operation,
+                "part_number": r.part_number,
+                "model_name": meta_data.get("model_name", ""),
+                "plant_location": r.plant_location,
+                "date": str(r.inspection_date),
+                "operator": r.operator_name,
+                "machine": r.machine_number,
+                "inspection_data": inspection_data
+            }
+            
+        def format_rework(r):
+            details = r.dynamic_details or {}
             status_val = details.get('status', '')
             observations = details.get('observations', [])
 
-            if status_val == 'ok':
-                final_status = 'OK'
-            elif status_val == 'notok':
-                final_status = 'NOT OK'
-            else:
-                final_status = '—'
+            final_status = 'OK' if status_val == 'ok' else 'NOT OK' if status_val == 'notok' else '—'
 
             data = {
-                "Date": str(report.date),
-                "Part Name": report.part_name,
-                "Part No": report.part_no,
-                "Spec": report.spec,
-                "Non Conformance": report.non_conformance,
-                "Rework Qty": report.rework_qty,
+                "Date": str(r.date),
+                "Part Name": r.part_name,
+                "Part No": r.part_no,
+                "Spec": r.spec,
+                "Non Conformance": r.non_conformance,
+                "Rework Qty": r.rework_qty,
                 "Status": final_status,
-                "Inspected By": report.inspected_by or "—",
-                "Remark": report.remark or "—",
-                "submitted_by": submitted_user,
+                "Inspected By": r.inspected_by or "—",
+                "Remark": r.remark or "—",
             }
-
             for i, val in enumerate(observations):
                 data[f"Obs {i + 1}"] = val if val else "—"
+            return data
 
-            return Response({"success": True, "data": data}, status=200)
 
-        else:
-            return Response({"success": False, "error": f"Form '{form_key}' Not Supported Yet"}, status=400)
+        # ── 🔥 THE REGISTRY ──
+        FORM_REGISTRY = {
+            'deviation': lambda r: {"toolNameNo": r.tool_name_no, "location": r.location, "problem": r.problem, "reasonForDeviation": r.reason_for_deviation, "date": str(r.date), "duration": r.duration, "prodIncharge": r.prod_incharge, "qaIncharge": r.qa_incharge, "remarks": r.remarks},
+            'deviation-view': lambda r: FORM_REGISTRY['deviation'](r),
+            
+            'good-receipt': lambda r: {"requestedBy": r.requested_by, "itemName": r.item_name, "specification": r.specification, "department": r.department, "qty": r.qty, "remark": r.remark, "receivedBy": r.received_by, "receivedDate": str(r.received_date)},
+            
+            'incoming': lambda r: {"supplier": r.supplier, "customer": r.customer, "part_name": r.part_name, "part_no": r.part_no, "date": str(r.date), "grade": r.grade, "mtc": r.mtc, "ga_nga": r.ga_nga, "coil_no": r.coil_no, "invoice_no": r.invoice_no, "qty": r.qty, "inspection_data": r.inspection_data, "prepared_by": r.prepared_by, "checked_by": r.checked_by, "approved_by": r.approved_by},
+            'incoming-inspection-view': lambda r: FORM_REGISTRY['incoming'](r),
+            
+            'redbin': lambda r: {"entry_date": str(r.entry_date), "part_name_model": r.part_name_model, "operation": r.operation, "total_rej_qty": r.total_rej_qty, "defect_detail": r.defect_detail, "root_cause_reason": r.root_cause_reason, "action_taken": r.action_taken, "responsible_person": r.responsible_person, "target_date": str(r.target_date) if r.target_date else "", "completion_date": str(r.completion_date) if r.completion_date else ""},
+            'redbin-view': lambda r: FORM_REGISTRY['redbin'](r),
+            
+            'scrap': lambda r: {"entry_date": str(r.entry_date), "part_name": r.part_name, "part_no": r.part_no, "defect_detail": r.defect_detail, "quantity": r.quantity, "remarks": r.remarks},
+            'scrap-note-view': lambda r: FORM_REGISTRY['scrap'](r),
+            
+            'process-audit': lambda r: {"part_name_no": r.part_name_no, "model_name": r.machine_model, "audit_date": str(r.date), "auditor_name": r.auditor, "auditee_name": r.auditee, "audit_details": r.audit_details},
+            'process-audit-view': lambda r: FORM_REGISTRY['process-audit'](r),
+            
+            'coherence': lambda r: {"partName": r.part_name, "partNo": r.part_no, "date": str(r.date), "model": r.model_name, "preparedBy": r.prepared_by, "verifiedBy": r.verified_by, "operations": r.operations},
+            'coherence-view': lambda r: FORM_REGISTRY['coherence'](r),
+            
+            'layout-inspection': lambda r: {"partName": r.part_name, "partNo": r.part_no, "model": r.model_name, "customer": r.customer_name, "date": str(r.date), "sampleSize": r.sample_size, "preparedBy": r.prepared_by, "verifiedBy": r.verified_by, "inspections": r.inspections},
+            'layout-inspection-view': lambda r: FORM_REGISTRY['layout-inspection'](r),
+            
+            'product-audit-plan': lambda r: {"doc_no": r.doc_no, "rev_no": r.rev_no, "date": str(r.date), "plan_year": r.plan_year, "prepared_by": r.prepared_by, "approved_by": r.approved_by, "rows": r.audit_rows},
+            'product-audit-plan-view': lambda r: FORM_REGISTRY['product-audit-plan'](r),
+            
+            'customer-complaint': lambda r: {"date": str(r.date), "part_details": r.part_details, "model_name": r.model_name, "customer_name": r.customer_name, "problem_description": r.problem_description, "counter_measure": r.counter_measure, "target_date": str(r.target_date), "horizontal_action": r.horizontal_action, "status": r.status},
+            'customer-complaint-view': lambda r: FORM_REGISTRY['customer-complaint'](r),
+            
+            'customer-satisfaction': lambda r: {"customerName": r.customer_name, "monthYear": r.month_year, **r.performance_indicators},
+            'customer-satisfaction-view': lambda r: FORM_REGISTRY['customer-satisfaction'](r),
+            
+            'warranty-claim': lambda r: {"date": str(r.date), "customerName": r.customer_name, "partDetails": r.part_details, "claimQty": r.claim_qty, "warrantyDefect": r.warranty_defect, "decision": r.decision, "rejectionRootCause": r.rejection_root_cause, "disposalAction": r.disposal_action, "capaAnalysis": r.capa_analysis},
+            'warranty-claim-view': lambda r: FORM_REGISTRY['warranty-claim'](r),
+            
+            'mom': lambda r: {"date": str(r.date), "time": str(r.time), "subject": r.subject, "aotMembers": r.aot_members, "supplierMembers": r.supplier_members, "discussions": r.discussions},
+            'mom-view': lambda r: FORM_REGISTRY['mom'](r),
+            
+            'redbin-attendance': lambda r: {"date": str(r.date), "month": r.month, "year": r.year, "employee_name": r.employee_name, "designation": r.designation, "status": r.status},
+            'redbin-attendance-view': lambda r: FORM_REGISTRY['redbin-attendance'](r),
+            
+            'inspection': format_inspection,
+            'inspection-view': format_inspection,
+            
+            'rework': format_rework,
+            'rework-view': format_rework,
+        }
+
+        MODEL_REGISTRY = {
+            'deviation': DeviationApproval, 'deviation-view': DeviationApproval,
+            'good-receipt': GoodReceiptEntry,
+            'incoming': IncomingMaterialInspection, 'incoming-inspection-view': IncomingMaterialInspection,
+            'redbin': RedBinAnalysisReport, 'redbin-view': RedBinAnalysisReport,
+            'scrap': ScrapNoteEntry, 'scrap-note-view': ScrapNoteEntry,
+            'process-audit': ProcessAuditChecksheet, 'process-audit-view': ProcessAuditChecksheet,
+            'coherence': CoherenceChecklist, 'coherence-view': CoherenceChecklist,
+            'layout-inspection': LayoutInspection, 'layout-inspection-view': LayoutInspection,
+            'product-audit-plan': ProductAuditPlan, 'product-audit-plan-view': ProductAuditPlan,
+            'customer-complaint': CustomerComplaint, 'customer-complaint-view': CustomerComplaint,
+            'customer-satisfaction': CustomerSatisfaction, 'customer-satisfaction-view': CustomerSatisfaction,
+            'warranty-claim': WarrantyClaim, 'warranty-claim-view': WarrantyClaim,
+            'mom': MinutesOfMeeting, 'mom-view': MinutesOfMeeting,
+            'redbin-attendance': RedBinAttendance, 'redbin-attendance-view': RedBinAttendance,
+            'inspection': InspectionReport, 'inspection-view': InspectionReport,
+            'rework': ReworkEntry, 'rework-view': ReworkEntry,
+        }
+
+        if form_key not in FORM_REGISTRY or form_key not in MODEL_REGISTRY:
+            return Response({"success": False, "error": f"Form '{form_key}' Not Supported Yet in QA"}, status=400)
+
+        TargetModel = MODEL_REGISTRY[form_key]
+        report = get_object_or_404(TargetModel, id=rec_id)
+        
+        formatter = FORM_REGISTRY[form_key]
+        data = formatter(report)
+
+        # ── COMMON LOG ATTRIBUTES (Just like Production) ──
+        status_text = log_entry.status or ""
+        
+        def clean_name(email_or_name):
+            if not email_or_name:
+                return "—"
+            return email_or_name.split('@')[0].capitalize()
+
+        prepared_by = clean_name(submitted_user)
+        data['Prepared By'] = prepared_by
+        data['submitted_by'] = submitted_user 
+        
+        data['Approved By'] = "—"
+        data['Rejected By'] = "—"
+        data['approval_status'] = "Pending"
+        
+        if status_text.startswith('Approved by'):
+            raw_approver = status_text.replace('Approved by', '').strip()
+            data['Approved By'] = clean_name(raw_approver)
+            data['approval_status'] = "Approved"
+            
+        elif status_text.startswith('Rejected by'):
+            raw_rejecter = status_text.replace('Rejected by', '').strip()
+            data['Rejected By'] = clean_name(raw_rejecter)
+            data['approval_status'] = "Rejected"
+            
+        elif status_text in ['Completed', 'Approved']:
+            data['Approved By'] = prepared_by
+            data['approval_status'] = "Approved"
+
+        data['Approver_remarks'] = log_entry.remarks if log_entry.remarks else 'Null'
+        data['approved_or_rejected_at'] = log_entry.approved_or_rejected_at or ""
+
+        return Response({"success": True, "data": data}, status=200)
 
     except Exception as e:
         import traceback
-        print("🔥 ERROR IN GET SINGLE REPORT:", traceback.format_exc())
+        print("🔥 ERROR IN GET SINGLE QA REPORT:", traceback.format_exc())
         return Response({"success": False, "error": str(e)}, status=500)
-
-
 # ==============================================================================
 # 📊 QA DATA FETCH API (General List Views)
 # ==============================================================================
@@ -1494,541 +1661,541 @@ def qa_data_view(request, form_key):
 
 
 
-logger = logging.getLogger(__name__)
+# logger = logging.getLogger(__name__)
 
-# ══════════════════════════════════════════════════════════
-# 1. UTILITY FUNCTIONS (Global Scope)
-# ══════════════════════════════════════════════════════════
-def parse_json_field(field_data):
-    if isinstance(field_data, str):
-        try:
-            return json.loads(field_data)
-        except Exception:
-            return []
-    elif isinstance(field_data, dict):
-        return field_data
-    return field_data or []
+# # ══════════════════════════════════════════════════════════
+# # 1. UTILITY FUNCTIONS (Global Scope)
+# # ══════════════════════════════════════════════════════════
+# def parse_json_field(field_data):
+#     if isinstance(field_data, str):
+#         try:
+#             return json.loads(field_data)
+#         except Exception:
+#             return []
+#     elif isinstance(field_data, dict):
+#         return field_data
+#     return field_data or []
 
-def get_log_details(rid):
-    prepared_by = '—'
-    approved_by = '—'
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute("""
-                SELECT username, status 
-                FROM user_report_activity_logs 
-                WHERE record_id = %s
-                ORDER BY id ASC
-            """, [rid])
+# def get_log_details(rid):
+#     prepared_by = '—'
+#     approved_by = '—'
+#     try:
+#         with connection.cursor() as cursor:
+#             cursor.execute("""
+#                 SELECT username, status 
+#                 FROM user_report_activity_logs 
+#                 WHERE record_id = %s
+#                 ORDER BY id ASC
+#             """, [rid])
             
-            rows = cursor.fetchall()
-            for index, row in enumerate(rows):
-                raw_username = row[0]
-                status = row[1]
+#             rows = cursor.fetchall()
+#             for index, row in enumerate(rows):
+#                 raw_username = row[0]
+#                 status = row[1]
                 
-                formatted_name = raw_username.split('@')[0].capitalize() if raw_username else '—'
+#                 formatted_name = raw_username.split('@')[0].capitalize() if raw_username else '—'
                 
-                if index == 0 and formatted_name != '—':
-                    prepared_by = formatted_name
+#                 if index == 0 and formatted_name != '—':
+#                     prepared_by = formatted_name
                     
-                if status and status.startswith('Approved'):
-                    raw_approver = status.replace('Approved by ', '').strip()
-                    approver_name = raw_approver.split('@')[0].capitalize() if raw_approver else '—'
-                    approved_by = approver_name
-                elif status == 'Completed':
-                    approved_by = formatted_name
+#                 if status and status.startswith('Approved'):
+#                     raw_approver = status.replace('Approved by ', '').strip()
+#                     approver_name = raw_approver.split('@')[0].capitalize() if raw_approver else '—'
+#                     approved_by = approver_name
+#                 elif status == 'Completed':
+#                     approved_by = formatted_name
                     
-    except Exception as e:
-        logger.error(f"⚠️ Log fetch error: {e}")
+#     except Exception as e:
+#         logger.error(f"⚠️ Log fetch error: {e}")
         
-    return prepared_by, approved_by
+#     return prepared_by, approved_by
 
-# ══════════════════════════════════════════════════════════
-# 2. SEPARATE HANDLER FUNCTIONS FOR EACH FORM
-# ══════════════════════════════════════════════════════════
+# # ══════════════════════════════════════════════════════════
+# # 2. SEPARATE HANDLER FUNCTIONS FOR EACH FORM
+# # ══════════════════════════════════════════════════════════
 
-def handle_inspection_view(rid, prep_by, app_by):
-    with connection.cursor() as cursor:
-        cursor.execute("""
-            SELECT 
-                id, customer_account, part_name, operation,
-                part_number, plant_location, inspection_date,
-                operator_name, machine_number, inspection_data
-            FROM inspection_reports
-            WHERE id = %s
-        """, [rid])
-        row = cursor.fetchone()
+# def handle_inspection_view(rid, prep_by, app_by):
+#     with connection.cursor() as cursor:
+#         cursor.execute("""
+#             SELECT 
+#                 id, customer_account, part_name, operation,
+#                 part_number, plant_location, inspection_date,
+#                 operator_name, machine_number, inspection_data
+#             FROM inspection_reports
+#             WHERE id = %s
+#         """, [rid])
+#         row = cursor.fetchone()
         
-        if not row:
-            raise ObjectDoesNotExist()
+#         if not row:
+#             raise ObjectDoesNotExist()
             
-        cols = [col[0] for col in cursor.description]
-        rec = dict(zip(cols, row))
-        for k, v in rec.items():
-            if hasattr(v, 'strftime'):
-                rec[k] = str(v)
+#         cols = [col[0] for col in cursor.description]
+#         rec = dict(zip(cols, row))
+#         for k, v in rec.items():
+#             if hasattr(v, 'strftime'):
+#                 rec[k] = str(v)
 
-    raw_insp_data = rec.get('inspection_data')
-    insp_data = parse_json_field(raw_insp_data) if isinstance(raw_insp_data, str) else (raw_insp_data or {})
+#     raw_insp_data = rec.get('inspection_data')
+#     insp_data = parse_json_field(raw_insp_data) if isinstance(raw_insp_data, str) else (raw_insp_data or {})
 
-    logs = insp_data.get('logs', [])
-    parameters = insp_data.get('parameters', [])
+#     logs = insp_data.get('logs', [])
+#     parameters = insp_data.get('parameters', [])
 
-    common = {
-        'Customer':      rec.get('customer_account', '—'),
-        'Part Name':     rec.get('part_name', '—'),
-        'Operation':     rec.get('operation', '—'),
-        'Part Number':   rec.get('part_number', '—'),
-        'Plant':         rec.get('plant_location', '—'),
-        'Insp. Date':    rec.get('inspection_date', '—'),
-        'Operator':      rec.get('operator_name', '—') or '—',
-        'Machine No':    rec.get('machine_number', '—') or '—',
-        'Prepared By':   prep_by,
-        'Approved By':   app_by,
-    }
+#     common = {
+#         'Customer':      rec.get('customer_account', '—'),
+#         'Part Name':     rec.get('part_name', '—'),
+#         'Operation':     rec.get('operation', '—'),
+#         'Part Number':   rec.get('part_number', '—'),
+#         'Plant':         rec.get('plant_location', '—'),
+#         'Insp. Date':    rec.get('inspection_date', '—'),
+#         'Operator':      rec.get('operator_name', '—') or '—',
+#         'Machine No':    rec.get('machine_number', '—') or '—',
+#         'Prepared By':   prep_by,
+#         'Approved By':   app_by,
+#     }
 
-    rows = []
-    for param in parameters:
-        sr_key = str(param.get('sr', param.get('sr_no', '')))
-        row_data = common.copy()
-        row_data['Parameter'] = param.get('item', '—')
-        row_data['Category'] = param.get('category', '—')
-        row_data['Specification'] = param.get('spec', '—')
-        row_data['Tolerance'] = param.get('tol', '—')
-        row_data['Instrument'] = param.get('instr', '—')
+#     rows = []
+#     for param in parameters:
+#         sr_key = str(param.get('sr', param.get('sr_no', '')))
+#         row_data = common.copy()
+#         row_data['Parameter'] = param.get('item', '—')
+#         row_data['Category'] = param.get('category', '—')
+#         row_data['Specification'] = param.get('spec', '—')
+#         row_data['Tolerance'] = param.get('tol', '—')
+#         row_data['Instrument'] = param.get('instr', '—')
 
-        for log in logs:
-            stage_name = log.get('displayStage', log.get('baseStage', 'STAGE')).upper()
-            readings = log.get('readings', {})
-            vals = readings.get(sr_key, {})
-            row_data[f'{stage_name} VAL 1'] = vals.get('val1', '—') if vals.get('val1') else '—'
-            row_data[f'{stage_name} VAL 2'] = vals.get('val2', '—') if vals.get('val2') else '—'
+#         for log in logs:
+#             stage_name = log.get('displayStage', log.get('baseStage', 'STAGE')).upper()
+#             readings = log.get('readings', {})
+#             vals = readings.get(sr_key, {})
+#             row_data[f'{stage_name} VAL 1'] = vals.get('val1', '—') if vals.get('val1') else '—'
+#             row_data[f'{stage_name} VAL 2'] = vals.get('val2', '—') if vals.get('val2') else '—'
             
-        rows.append(row_data)
+#         rows.append(row_data)
 
-    return {'data': rows, 'common': common}
-
-
-def handle_redbin_view(rid, prep_by, app_by):
-    report = RedBinAnalysisReport.objects.get(id=rid)
-    return {
-        'data': {
-            'Date': str(report.entry_date), 
-            'Part Name & Model': report.part_name_model,
-            'Operation': report.operation,
-            'Total Rejected Qty': report.total_rej_qty,
-            'Defect Detail': report.defect_detail,
-            'Root Cause': report.root_cause_reason,
-            'Action Taken': report.action_taken,
-            'Responsible Person': report.responsible_person,
-            'Target Date': str(report.target_date),
-            'Completion Date': str(report.completion_date) if report.completion_date else 'Pending',
-            'Prepared By': prep_by,
-            'Approved By': app_by,
-        }
-    }
+#     return {'data': rows, 'common': common}
 
 
-def handle_redbin_attendance_view(rid, prep_by, app_by):
-    report = RedBinAttendance.objects.get(id=rid)
-    status_map = {'P': 'Present', 'A': 'Absent', '': 'Unmarked'}
-    return {
-        'data': {
-            'Date': str(report.date),
-            'Month': report.month,
-            'Year': report.year,
-            'Employee Name': report.employee_name,
-            'Designation': report.designation,
-            'Attendance': status_map.get(report.status, report.status),
-            'Prepared By': prep_by,
-            'Approved By': app_by,
-        }
-    }
+# def handle_redbin_view(rid, prep_by, app_by):
+#     report = RedBinAnalysisReport.objects.get(id=rid)
+#     return {
+#         'data': {
+#             'Date': str(report.entry_date), 
+#             'Part Name & Model': report.part_name_model,
+#             'Operation': report.operation,
+#             'Total Rejected Qty': report.total_rej_qty,
+#             'Defect Detail': report.defect_detail,
+#             'Root Cause': report.root_cause_reason,
+#             'Action Taken': report.action_taken,
+#             'Responsible Person': report.responsible_person,
+#             'Target Date': str(report.target_date),
+#             'Completion Date': str(report.completion_date) if report.completion_date else 'Pending',
+#             'Prepared By': prep_by,
+#             'Approved By': app_by,
+#         }
+#     }
 
 
-def handle_scrap_note_view(rid, prep_by, app_by):
-    report = ScrapNoteEntry.objects.get(id=rid)
-    return {
-        'data': {
-            'Date': str(report.entry_date),
-            'Part Name': report.part_name,
-            'Part No': report.part_no,
-            'Defect Detail': report.defect_detail,
-            'Quantity': report.quantity,
-            'Remarks': report.remarks or '—',
-            'Prepared By': prep_by,
-            'Approved By': app_by,
-        }
-    }
+# def handle_redbin_attendance_view(rid, prep_by, app_by):
+#     report = RedBinAttendance.objects.get(id=rid)
+#     status_map = {'P': 'Present', 'A': 'Absent', '': 'Unmarked'}
+#     return {
+#         'data': {
+#             'Date': str(report.date),
+#             'Month': report.month,
+#             'Year': report.year,
+#             'Employee Name': report.employee_name,
+#             'Designation': report.designation,
+#             'Attendance': status_map.get(report.status, report.status),
+#             'Prepared By': prep_by,
+#             'Approved By': app_by,
+#         }
+#     }
 
 
-def handle_rework_view(rid, prep_by, app_by):
-    r = ReworkEntry.objects.get(id=rid)
-    details = parse_json_field(r.dynamic_details) if r.dynamic_details else {}
-    status_val = details.get('status', '')
-    observations = details.get('observations', [])
+# def handle_scrap_note_view(rid, prep_by, app_by):
+#     report = ScrapNoteEntry.objects.get(id=rid)
+#     return {
+#         'data': {
+#             'Date': str(report.entry_date),
+#             'Part Name': report.part_name,
+#             'Part No': report.part_no,
+#             'Defect Detail': report.defect_detail,
+#             'Quantity': report.quantity,
+#             'Remarks': report.remarks or '—',
+#             'Prepared By': prep_by,
+#             'Approved By': app_by,
+#         }
+#     }
+
+
+# def handle_rework_view(rid, prep_by, app_by):
+#     r = ReworkEntry.objects.get(id=rid)
+#     details = parse_json_field(r.dynamic_details) if r.dynamic_details else {}
+#     status_val = details.get('status', '')
+#     observations = details.get('observations', [])
     
-    if status_val == 'ok':
-        final_status = ' OK'
-    elif status_val == 'notok':
-        final_status = 'NOT OK'
-    else:
-        final_status = '—'
+#     if status_val == 'ok':
+#         final_status = ' OK'
+#     elif status_val == 'notok':
+#         final_status = 'NOT OK'
+#     else:
+#         final_status = '—'
 
-    data = {
-        'Date': str(r.date),
-        'Part Name': r.part_name,
-        'Part No': r.part_no,
-        'Spec': r.spec,
-        'Non Conformance': r.non_conformance,
-        'Rework Qty': r.rework_qty,
-        'Status': final_status,
-        'Inspected By': r.inspected_by or '—',
-        'Remark': r.remark or '—',
-        'Prepared By': prep_by,
-        'Approved By': app_by,
-    }
+#     data = {
+#         'Date': str(r.date),
+#         'Part Name': r.part_name,
+#         'Part No': r.part_no,
+#         'Spec': r.spec,
+#         'Non Conformance': r.non_conformance,
+#         'Rework Qty': r.rework_qty,
+#         'Status': final_status,
+#         'Inspected By': r.inspected_by or '—',
+#         'Remark': r.remark or '—',
+#         'Prepared By': prep_by,
+#         'Approved By': app_by,
+#     }
     
-    for i, val in enumerate(observations):
-        data[f'Obs {i+1}'] = val if val else '—'
+#     for i, val in enumerate(observations):
+#         data[f'Obs {i+1}'] = val if val else '—'
         
-    return {'data': data}
+#     return {'data': data}
 
 
-def handle_deviation_view(rid, prep_by, app_by):
-    report = DeviationApproval.objects.get(id=rid)
-    return {
-        'data': {
-            'Date': str(report.date),
-            'Tool Name/No.': report.tool_name_no or '—',
-            'Location': report.location or '—',
-            'Problem': report.problem or '—',
-            'Reason for Deviation': report.reason_for_deviation or '—',
-            'Duration': report.duration or '—',
-            'Prod Incharge': report.prod_incharge or '—',
-            'QA Incharge': report.qa_incharge or '—',
-            'Remarks': report.remarks or '—',
-            'Prepared By': prep_by,
-            'Approved By': app_by,
-        }
-    }
+# def handle_deviation_view(rid, prep_by, app_by):
+#     report = DeviationApproval.objects.get(id=rid)
+#     return {
+#         'data': {
+#             'Date': str(report.date),
+#             'Tool Name/No.': report.tool_name_no or '—',
+#             'Location': report.location or '—',
+#             'Problem': report.problem or '—',
+#             'Reason for Deviation': report.reason_for_deviation or '—',
+#             'Duration': report.duration or '—',
+#             'Prod Incharge': report.prod_incharge or '—',
+#             'QA Incharge': report.qa_incharge or '—',
+#             'Remarks': report.remarks or '—',
+#             'Prepared By': prep_by,
+#             'Approved By': app_by,
+#         }
+#     }
 
 
-def handle_good_receipt(rid, prep_by, app_by):
-    report = GoodReceiptEntry.objects.get(id=rid)
-    return {
-        'data': {
-            'Date': str(report.received_date),
-            'Requested By': report.requested_by,
-            'Item Name': report.item_name,
-            'Department': report.department,
-            'Quantity': report.qty,
-            'Specification': report.specification or '—',
-            'Received By': report.received_by,
-            'Remark': report.remark or '—',
-            'Prepared By': prep_by,
-            'Approved By': app_by,
-        }
-    }
+# def handle_good_receipt(rid, prep_by, app_by):
+#     report = GoodReceiptEntry.objects.get(id=rid)
+#     return {
+#         'data': {
+#             'Date': str(report.received_date),
+#             'Requested By': report.requested_by,
+#             'Item Name': report.item_name,
+#             'Department': report.department,
+#             'Quantity': report.qty,
+#             'Specification': report.specification or '—',
+#             'Received By': report.received_by,
+#             'Remark': report.remark or '—',
+#             'Prepared By': prep_by,
+#             'Approved By': app_by,
+#         }
+#     }
 
 
-def handle_process_audit_view(rid, prep_by, app_by):
-    report = ProcessAuditChecksheet.objects.get(id=rid)
-    common = {
-        'Date': str(report.date) if report.date else '—',
-        'Part Name & No': report.part_name_no or '—',
-        'Machine Model': report.machine_model or '—',
-        'Auditor': report.auditor or '—',
-        'Auditee': report.auditee or '—',
-        'Prepared By': prep_by,
-        'Approved By': app_by,
-    }
+# def handle_process_audit_view(rid, prep_by, app_by):
+#     report = ProcessAuditChecksheet.objects.get(id=rid)
+#     common = {
+#         'Date': str(report.date) if report.date else '—',
+#         'Part Name & No': report.part_name_no or '—',
+#         'Machine Model': report.machine_model or '—',
+#         'Auditor': report.auditor or '—',
+#         'Auditee': report.auditee or '—',
+#         'Prepared By': prep_by,
+#         'Approved By': app_by,
+#     }
     
-    audit_details = parse_json_field(report.audit_details)
-    if not audit_details:
-        return {'data': [common], 'common': common}
+#     audit_details = parse_json_field(report.audit_details)
+#     if not audit_details:
+#         return {'data': [common], 'common': common}
     
-    rows = []
-    for detail in audit_details:
-        row = common.copy()
-        if isinstance(detail, dict):
-            for k, v in detail.items():
-                row[k.capitalize()] = v
-        else:
-            row['Detail'] = str(detail)
-        rows.append(row)
+#     rows = []
+#     for detail in audit_details:
+#         row = common.copy()
+#         if isinstance(detail, dict):
+#             for k, v in detail.items():
+#                 row[k.capitalize()] = v
+#         else:
+#             row['Detail'] = str(detail)
+#         rows.append(row)
         
-    return {'data': rows, 'common': common}
+#     return {'data': rows, 'common': common}
 
 
-def handle_coherence_view(rid, prep_by, app_by):
-    report = CoherenceChecklist.objects.get(id=rid)
-    common = {
-        'Date': str(report.date) if report.date else '—',
-        'Part Name': report.part_name or '—',
-        'Part No': report.part_no or '—',
-        'Model Name': report.model_name or '—',
-        'Verified By': report.verified_by or '—',
-        'Prepared By': prep_by,
-        'Approved By': app_by,
-    }
+# def handle_coherence_view(rid, prep_by, app_by):
+#     report = CoherenceChecklist.objects.get(id=rid)
+#     common = {
+#         'Date': str(report.date) if report.date else '—',
+#         'Part Name': report.part_name or '—',
+#         'Part No': report.part_no or '—',
+#         'Model Name': report.model_name or '—',
+#         'Verified By': report.verified_by or '—',
+#         'Prepared By': prep_by,
+#         'Approved By': app_by,
+#     }
     
-    operations = parse_json_field(report.operations)
-    if not operations:
-        return {'data': [common], 'common': common}
+#     operations = parse_json_field(report.operations)
+#     if not operations:
+#         return {'data': [common], 'common': common}
         
-    rows = []
-    for op in operations:
-        row = common.copy()
-        if isinstance(op, dict):
-            for k, v in op.items():
-                row[f"Op {k.capitalize()}"] = v
-        rows.append(row)
+#     rows = []
+#     for op in operations:
+#         row = common.copy()
+#         if isinstance(op, dict):
+#             for k, v in op.items():
+#                 row[f"Op {k.capitalize()}"] = v
+#         rows.append(row)
         
-    return {'data': rows, 'common': common}
+#     return {'data': rows, 'common': common}
 
 
-def handle_layout_inspection_view(rid, prep_by, app_by):
-    report = LayoutInspection.objects.get(id=rid)
-    common = {
-        'Date': str(report.date) if report.date else '—',
-        'Customer Name': report.customer_name or '—',
-        'Part Name': report.part_name or '—',
-        'Part No': report.part_no or '—',
-        'Model Name': report.model_name or '—',
-        'Sample Size': report.sample_size or '—',
-        'Verified By': report.verified_by or '—',
-        'Prepared By': prep_by,
-        'Approved By': app_by,
-    }
+# def handle_layout_inspection_view(rid, prep_by, app_by):
+#     report = LayoutInspection.objects.get(id=rid)
+#     common = {
+#         'Date': str(report.date) if report.date else '—',
+#         'Customer Name': report.customer_name or '—',
+#         'Part Name': report.part_name or '—',
+#         'Part No': report.part_no or '—',
+#         'Model Name': report.model_name or '—',
+#         'Sample Size': report.sample_size or '—',
+#         'Verified By': report.verified_by or '—',
+#         'Prepared By': prep_by,
+#         'Approved By': app_by,
+#     }
     
-    inspections = parse_json_field(report.inspections)
-    if not inspections:
-        return {'data': [common], 'common': common}
+#     inspections = parse_json_field(report.inspections)
+#     if not inspections:
+#         return {'data': [common], 'common': common}
         
-    rows = []
-    for insp in inspections:
-        row = common.copy()
-        if isinstance(insp, dict):
-            for k, v in insp.items():
-                row[k.capitalize()] = v
-        rows.append(row)
+#     rows = []
+#     for insp in inspections:
+#         row = common.copy()
+#         if isinstance(insp, dict):
+#             for k, v in insp.items():
+#                 row[k.capitalize()] = v
+#         rows.append(row)
         
-    return {'data': rows, 'common': common}
+#     return {'data': rows, 'common': common}
 
 
-def handle_product_audit_plan_view(rid, prep_by, app_by):
-    report = ProductAuditPlan.objects.get(id=rid)
-    common = {
-        'Date': str(report.date) if report.date else '—',
-        'Doc No': report.doc_no or '—',
-        'Rev No': report.rev_no or '—',
-        'Plan Year': report.plan_year or '—',
-        'Prepared By': prep_by,
-        'Approved By': app_by,
-    }
+# def handle_product_audit_plan_view(rid, prep_by, app_by):
+#     report = ProductAuditPlan.objects.get(id=rid)
+#     common = {
+#         'Date': str(report.date) if report.date else '—',
+#         'Doc No': report.doc_no or '—',
+#         'Rev No': report.rev_no or '—',
+#         'Plan Year': report.plan_year or '—',
+#         'Prepared By': prep_by,
+#         'Approved By': app_by,
+#     }
     
-    audit_rows = parse_json_field(report.audit_rows)
-    if not audit_rows:
-        return {'data': [common], 'common': common}
+#     audit_rows = parse_json_field(report.audit_rows)
+#     if not audit_rows:
+#         return {'data': [common], 'common': common}
         
-    rows = []
-    for a_row in audit_rows:
-        row = common.copy()
-        if isinstance(a_row, dict):
-            for k, v in a_row.items():
-                row[k.capitalize()] = v
-        rows.append(row)
+#     rows = []
+#     for a_row in audit_rows:
+#         row = common.copy()
+#         if isinstance(a_row, dict):
+#             for k, v in a_row.items():
+#                 row[k.capitalize()] = v
+#         rows.append(row)
         
-    return {'data': rows, 'common': common}
+#     return {'data': rows, 'common': common}
 
 
-def handle_customer_complaint_view(rid, prep_by, app_by):
-    report = CustomerComplaint.objects.get(id=rid)
-    return {
-        'data': {
-            'Date': str(report.date) if report.date else '—',
-            'Customer Name': report.customer_name or '—',
-            'Part Details': report.part_details or '—',
-            'Model Name': report.model_name or '—',
-            'Problem Description': report.problem_description or '—',
-            'Counter Measure': report.counter_measure or '—',
-            'Target Date': str(report.target_date) if report.target_date else '—',
-            'Horizontal Action': report.horizontal_action or '—',
-            'Status': report.status or '—',
-            'Prepared By': prep_by,
-            'Approved By': app_by,
-        }
-    }
+# def handle_customer_complaint_view(rid, prep_by, app_by):
+#     report = CustomerComplaint.objects.get(id=rid)
+#     return {
+#         'data': {
+#             'Date': str(report.date) if report.date else '—',
+#             'Customer Name': report.customer_name or '—',
+#             'Part Details': report.part_details or '—',
+#             'Model Name': report.model_name or '—',
+#             'Problem Description': report.problem_description or '—',
+#             'Counter Measure': report.counter_measure or '—',
+#             'Target Date': str(report.target_date) if report.target_date else '—',
+#             'Horizontal Action': report.horizontal_action or '—',
+#             'Status': report.status or '—',
+#             'Prepared By': prep_by,
+#             'Approved By': app_by,
+#         }
+#     }
 
 
-def handle_customer_satisfaction_view(rid, prep_by, app_by):
-    report = CustomerSatisfaction.objects.get(id=rid)
-    data = {
-        'Customer Name': report.customer_name or '—',
-        'Month Year': report.month_year or '—',
-        'Prepared By': prep_by,
-        'Approved By': app_by,
-    }
+# def handle_customer_satisfaction_view(rid, prep_by, app_by):
+#     report = CustomerSatisfaction.objects.get(id=rid)
+#     data = {
+#         'Customer Name': report.customer_name or '—',
+#         'Month Year': report.month_year or '—',
+#         'Prepared By': prep_by,
+#         'Approved By': app_by,
+#     }
     
-    indicators = parse_json_field(report.performance_indicators)
-    if isinstance(indicators, dict):
-        for k, v in indicators.items():
-            data[k.replace('_', ' ').title()] = v
+#     indicators = parse_json_field(report.performance_indicators)
+#     if isinstance(indicators, dict):
+#         for k, v in indicators.items():
+#             data[k.replace('_', ' ').title()] = v
             
-    return {'data': data}
+#     return {'data': data}
 
 
-def handle_warranty_claim_view(rid, prep_by, app_by):
-    report = WarrantyClaim.objects.get(id=rid)
-    return {
-        'data': {
-            'Date': str(report.date) if report.date else '—',
-            'Customer Name': report.customer_name or '—',
-            'Part Details': report.part_details or '—',
-            'Claim Qty': report.claim_qty or '—',
-            'Warranty Defect': report.warranty_defect or '—',
-            'Decision': report.decision or '—',
-            'Rejection Root Cause': report.rejection_root_cause or '—',
-            'Disposal Action': report.disposal_action or '—',
-            'CAPA Analysis': report.capa_analysis or '—',
-            'Prepared By': prep_by,
-            'Approved By': app_by,
-        }
-    }
+# def handle_warranty_claim_view(rid, prep_by, app_by):
+#     report = WarrantyClaim.objects.get(id=rid)
+#     return {
+#         'data': {
+#             'Date': str(report.date) if report.date else '—',
+#             'Customer Name': report.customer_name or '—',
+#             'Part Details': report.part_details or '—',
+#             'Claim Qty': report.claim_qty or '—',
+#             'Warranty Defect': report.warranty_defect or '—',
+#             'Decision': report.decision or '—',
+#             'Rejection Root Cause': report.rejection_root_cause or '—',
+#             'Disposal Action': report.disposal_action or '—',
+#             'CAPA Analysis': report.capa_analysis or '—',
+#             'Prepared By': prep_by,
+#             'Approved By': app_by,
+#         }
+#     }
 
 
-def handle_mom_view(rid, prep_by, app_by):
-    report = MinutesOfMeeting.objects.get(id=rid)
-    common = {
-        'Date': str(report.date) if report.date else '—',
-        'Time': str(report.time) if report.time else '—',
-        'Subject': report.subject or '—',
-        'AOT Members': report.aot_members or '—',
-        'Supplier Members': report.supplier_members or '—',
-        'Prepared By': prep_by,
-        'Approved By': app_by,
-    }
+# def handle_mom_view(rid, prep_by, app_by):
+#     report = MinutesOfMeeting.objects.get(id=rid)
+#     common = {
+#         'Date': str(report.date) if report.date else '—',
+#         'Time': str(report.time) if report.time else '—',
+#         'Subject': report.subject or '—',
+#         'AOT Members': report.aot_members or '—',
+#         'Supplier Members': report.supplier_members or '—',
+#         'Prepared By': prep_by,
+#         'Approved By': app_by,
+#     }
     
-    discussions = parse_json_field(report.discussions)
-    if not discussions:
-        return {'data': [common], 'common': common}
+#     discussions = parse_json_field(report.discussions)
+#     if not discussions:
+#         return {'data': [common], 'common': common}
         
-    rows = []
-    for disc in discussions:
-        row = common.copy()
-        if isinstance(disc, dict):
-            for k, v in disc.items():
-                row[k.capitalize()] = v
-        rows.append(row)
+#     rows = []
+#     for disc in discussions:
+#         row = common.copy()
+#         if isinstance(disc, dict):
+#             for k, v in disc.items():
+#                 row[k.capitalize()] = v
+#         rows.append(row)
         
-    return {'data': rows, 'common': common}
+#     return {'data': rows, 'common': common}
 
 
-def handle_incoming_inspection_view(rid, prep_by, app_by):
-    report = IncomingMaterialInspection.objects.get(id=rid)
-    common = {
-        'Date': str(report.date) if report.date else '—',
-        'Supplier': report.supplier or '—',
-        'Customer': report.customer or '—',
-        'Part Name': report.part_name or '—',
-        'Part No': report.part_no or '—',
-        'Grade': report.grade or '—',
-        'MTC': report.mtc or '—',
-        'GA/NGA': report.ga_nga or '—',
-        'Coil No': report.coil_no or '—',
-        'Invoice No': report.invoice_no or '—',
-        'QTY': report.qty or '—',
-        'Checked By': report.checked_by or '—',
-        'Prepared By': prep_by,
-        'Approved By': app_by,
-    }
+# def handle_incoming_inspection_view(rid, prep_by, app_by):
+#     report = IncomingMaterialInspection.objects.get(id=rid)
+#     common = {
+#         'Date': str(report.date) if report.date else '—',
+#         'Supplier': report.supplier or '—',
+#         'Customer': report.customer or '—',
+#         'Part Name': report.part_name or '—',
+#         'Part No': report.part_no or '—',
+#         'Grade': report.grade or '—',
+#         'MTC': report.mtc or '—',
+#         'GA/NGA': report.ga_nga or '—',
+#         'Coil No': report.coil_no or '—',
+#         'Invoice No': report.invoice_no or '—',
+#         'QTY': report.qty or '—',
+#         'Checked By': report.checked_by or '—',
+#         'Prepared By': prep_by,
+#         'Approved By': app_by,
+#     }
 
-    insp_rows = parse_json_field(report.inspection_data)
-    if not insp_rows:
-        return {'data': [common], 'common': common}
+#     insp_rows = parse_json_field(report.inspection_data)
+#     if not insp_rows:
+#         return {'data': [common], 'common': common}
         
-    rows = []
-    for i_row in insp_rows:
-        row = common.copy()
-        row['Parameter'] = i_row.get('parameter', '—')
-        row['Specification'] = i_row.get('specification', '—')
-        row['Insp Method'] = i_row.get('inspMethod', '—')
+#     rows = []
+#     for i_row in insp_rows:
+#         row = common.copy()
+#         row['Parameter'] = i_row.get('parameter', '—')
+#         row['Specification'] = i_row.get('specification', '—')
+#         row['Insp Method'] = i_row.get('inspMethod', '—')
         
-        observations = i_row.get('observations', [])
-        for i in range(5):
-            val = observations[i] if i < len(observations) else ''
-            row[f'Obs {i+1}'] = val if val else '—'
+#         observations = i_row.get('observations', [])
+#         for i in range(5):
+#             val = observations[i] if i < len(observations) else ''
+#             row[f'Obs {i+1}'] = val if val else '—'
         
-        row['Remark'] = i_row.get('remark', '—')
-        rows.append(row)
+#         row['Remark'] = i_row.get('remark', '—')
+#         rows.append(row)
         
-    return {'data': rows, 'common': common}
+#     return {'data': rows, 'common': common}
 
-# ══════════════════════════════════════════════════════════
-# 3. REGISTRY (Mapping Form Keys to Functions)
-# ══════════════════════════════════════════════════════════
-FORM_HANDLERS = {
-    'inspection-view': handle_inspection_view,
-    'redbin-view': handle_redbin_view,
-    'redbin-attendance-view': handle_redbin_attendance_view,
-    'scrap-note-view': handle_scrap_note_view,
-    'rework-view': handle_rework_view,
-    'deviation-view': handle_deviation_view,
-    'good-receipt': handle_good_receipt,
-    'process-audit-view': handle_process_audit_view,
-    'coherence-view': handle_coherence_view,
-    'layout-inspection-view': handle_layout_inspection_view,
-    'product-audit-plan-view': handle_product_audit_plan_view,
-    'customer-complaint-view': handle_customer_complaint_view,
-    'customer-satisfaction-view': handle_customer_satisfaction_view,
-    'warranty-claim-view': handle_warranty_claim_view,
-    'mom-view': handle_mom_view,
-    'incoming-inspection-view': handle_incoming_inspection_view,
-}
+# # ══════════════════════════════════════════════════════════
+# # 3. REGISTRY (Mapping Form Keys to Functions)
+# # ══════════════════════════════════════════════════════════
+# FORM_HANDLERS = {
+#     'inspection-view': handle_inspection_view,
+#     'redbin-view': handle_redbin_view,
+#     'redbin-attendance-view': handle_redbin_attendance_view,
+#     'scrap-note-view': handle_scrap_note_view,
+#     'rework-view': handle_rework_view,
+#     'deviation-view': handle_deviation_view,
+#     'good-receipt': handle_good_receipt,
+#     'process-audit-view': handle_process_audit_view,
+#     'coherence-view': handle_coherence_view,
+#     'layout-inspection-view': handle_layout_inspection_view,
+#     'product-audit-plan-view': handle_product_audit_plan_view,
+#     'customer-complaint-view': handle_customer_complaint_view,
+#     'customer-satisfaction-view': handle_customer_satisfaction_view,
+#     'warranty-claim-view': handle_warranty_claim_view,
+#     'mom-view': handle_mom_view,
+#     'incoming-inspection-view': handle_incoming_inspection_view,
+# }
 
-# ══════════════════════════════════════════════════════════
-# 4. THE MAIN VIEW (Clean & Modular)
-# ══════════════════════════════════════════════════════════
-@api_view(['GET'])
-def get_qa_record_by_id(request, form_key, record_id):
+# # ══════════════════════════════════════════════════════════
+# # 4. THE MAIN VIEW (Clean & Modular)
+# # ══════════════════════════════════════════════════════════
+# @api_view(['GET'])
+# def get_qa_record_by_id(request, form_key, record_id):
 
-    start_time = time.time() # ⏱️ Timer Start
+#     start_time = time.time() # ⏱️ Timer Start
 
-    # ... (Aapka pura function ka code yahan aayega) ...
+#     # ... (Aapka pura function ka code yahan aayega) ...
 
-    end_time = time.time() # ⏱️ Timer Stop
-    execution_time = (end_time - start_time) * 1000 # Milliseconds mein convert kiya
+#     end_time = time.time() # ⏱️ Timer Stop
+#     execution_time = (end_time - start_time) * 1000 # Milliseconds mein convert kiya
     
-    print(f"🔥 YEH API CHALNE MEIN {execution_time:.2f} ms LAGE! 🔥")
-    """
-    Ek specific QA record ko uske ID se fetch karta hai.
-    Sath hi Prepared By aur Approved By logs bhi fetch karta hai.
-    """
-    try:
-        rid = int(record_id)
-    except (ValueError, TypeError):
-        return JsonResponse({'data': None, 'error': 'Invalid record_id'}, status=400)
+#     print(f"🔥 YEH API CHALNE MEIN {execution_time:.2f} ms LAGE! 🔥")
+#     """
+#     Ek specific QA record ko uske ID se fetch karta hai.
+#     Sath hi Prepared By aur Approved By logs bhi fetch karta hai.
+#     """
+#     try:
+#         rid = int(record_id)
+#     except (ValueError, TypeError):
+#         return JsonResponse({'data': None, 'error': 'Invalid record_id'}, status=400)
 
-    # 1. Check if the form key exists in our registry
-    handler_func = FORM_HANDLERS.get(form_key)
-    if not handler_func:
-        return JsonResponse({'data': None, 'error': f'QA Form key "{form_key}" not supported'}, status=400)
+#     # 1. Check if the form key exists in our registry
+#     handler_func = FORM_HANDLERS.get(form_key)
+#     if not handler_func:
+#         return JsonResponse({'data': None, 'error': f'QA Form key "{form_key}" not supported'}, status=400)
 
-    # 2. Fetch Logs for 'Prepared By' & 'Approved By'
-    prep_by, app_by = get_log_details(rid)
+#     # 2. Fetch Logs for 'Prepared By' & 'Approved By'
+#     prep_by, app_by = get_log_details(rid)
 
-    # 3. Execute the handler and return response
-    try:
-        response_data = handler_func(rid, prep_by, app_by)
-        return JsonResponse(response_data)
+#     # 3. Execute the handler and return response
+#     try:
+#         response_data = handler_func(rid, prep_by, app_by)
+#         return JsonResponse(response_data)
         
-    except ObjectDoesNotExist:
-        return JsonResponse({'data': None, 'error': f'Record #{rid} not found'}, status=404)
+#     except ObjectDoesNotExist:
+#         return JsonResponse({'data': None, 'error': f'Record #{rid} not found'}, status=404)
         
-    except Exception as e:
-        logger.exception(f"Error in {form_key} for ID {rid}: {e}")
-        return JsonResponse({'data': None, 'error': str(e)}, status=500)
+#     except Exception as e:
+#         logger.exception(f"Error in {form_key} for ID {rid}: {e}")
+#         return JsonResponse({'data': None, 'error': str(e)}, status=500)
 
 
 

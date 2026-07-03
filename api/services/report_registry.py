@@ -106,7 +106,6 @@ REPORT_ROUTE_MAP = {
         "hub": "production-hub",
         "target_group": "Production_Approvers",
     },
-
     # =========================
     # QA HUB
     # =========================
@@ -235,7 +234,6 @@ REPORT_ROUTE_MAP = {
         "hub": "qa-hub",
         "target_group": "Quality_Approvers",
     },
-
     # =========================
     # MAINTENANCE HUB
     # =========================
@@ -256,6 +254,211 @@ REPORT_ROUTE_MAP = {
     },
     normalize_report_name("Tool Preventive Maintenance"): {
         "form_key": "tool-preventive-maintenance",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Machine History Card"): {
+        "form_key": "machine-history",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Machine History Form"): {
+        "form_key": "machine-history",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Daily Power Press Checksheet"): {
+        "form_key": "power-press-checksheet",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Power Press Checksheet"): {
+        "form_key": "power-press-checksheet",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Machine Breakdown Slip"): {
+        "form_key": "machine-breakdown",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Poka Yoke Monitoring"): {
+        "form_key": "poka-yoke",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Vertical Milling Machine Check Sheet"): {
+        "form_key": "vmm",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("VMM Maintenance Form"): {
+        "form_key": "vmm",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Machine Preventive Maintenance"): {
+        "form_key": "preventive-maintenance",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Projection Welding PM Check Sheet"): {
+        "form_key": "projection-welding",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Projection Welding Maintenance"): {
+        "form_key": "projection-welding",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("CNC Maintenance Report"): {
+        "form_key": "cnc",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("CNC Preventive Maintenance"): {
+        "form_key": "cnc",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Power Press PM Check Sheet"): {
+        "form_key": "power-press-pm",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Power Press Preventive Maintenance"): {
+        "form_key": "power-press-pm",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Hydraulic PM Check Sheet"): {
+        "form_key": "hydraulic-pm",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Hydraulic Preventive Maintenance"): {
+        "form_key": "hydraulic-pm",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("TIG Welding Maintenance"): {
+        "form_key": "tig-welding-maintenance",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("TIG Maintenance Form"): {
+        "form_key": "tig-welding-maintenance",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Spot Welding Maintenance"): {
+        "form_key": "spot-welding-maintenance",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Spot Welding Maintenance Form"): {
+        "form_key": "spot-welding-maintenance",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Compressor Maintenance"): {
+        "form_key": "compressor-maintenance",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Compressor Maintenance Form"): {
+        "form_key": "compressor-maintenance",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Lathe Machine Maintenance"): {
+        "form_key": "lathe-machine-maintenance",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Lathe Maintenance Form"): {
+        "form_key": "lathe-machine-maintenance",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Vertical Drill Machine Maintenance"): {
+        "form_key": "vertical-drill-maintenance",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Drill Machine Maintenance"): {
+        "form_key": "vertical-drill-maintenance",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Surface Grinder Maintenance"): {
+        "form_key": "surface-grinder",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Surface Grinder Maintenance Form"): {
+        "form_key": "surface-grinder",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Belt Grinder Maintenance"): {
+        "form_key": "belt-grinder",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Belt Grinder Maintenance Form"): {
+        "form_key": "belt-grinder",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Base Grinder Maintenance"): {
+        "form_key": "base-grinder",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Base Grinder Maintenance Form"): {
+        "form_key": "base-grinder",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Pipe Cutting Maintenance"): {
+        "form_key": "pipe-cutting",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Pipe Cutting Maintenance Form"): {
+        "form_key": "pipe-cutting",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Vibra Maintenance"): {
+        "form_key": "vibra",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Vibra Maintenance Form"): {
+        "form_key": "vibra",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Dip Molding Maintenance"): {
+        "form_key": "dip-molding",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Dip Molding Maintenance Form"): {
+        "form_key": "dip-molding",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Servo Press Maintenance"): {
+        "form_key": "servo-press",
+        "hub": "maintenance-hub",
+        "target_group": "Maintenance_Approvers",
+    },
+    normalize_report_name("Servo Press Maintenance Form"): {
+        "form_key": "servo-press",
         "hub": "maintenance-hub",
         "target_group": "Maintenance_Approvers",
     },

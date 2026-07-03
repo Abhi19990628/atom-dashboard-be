@@ -1339,9 +1339,6 @@ def convert_to_naive_ist(timestamp):
 
 
 def log_machine_event(plant_no, machine_no, event_type, timestamp, shift, details=""):
-    """
-    Ye function chup-chaap Machine_Event_Logs table mein data save karega.
-    """
     try:
         from django.db import connection
         import pytz
@@ -1352,18 +1349,20 @@ def log_machine_event(plant_no, machine_no, event_type, timestamp, shift, detail
         else:
             ist_timestamp = IST.localize(timestamp)
 
-        timestamp_str = ist_timestamp.strftime('%Y-%m-%d %H:%M:%S')
+        # ✅ FIX: +05:30 force kiya aur WITH TIME ZONE lagaya
+        timestamp_str = ist_timestamp.strftime('%Y-%m-%d %H:%M:%S+05:30')
 
         with connection.cursor() as cursor:
             cursor.execute("""
                 INSERT INTO "Machine_Event_Logs" 
                 (plant_no, machine_no, event_type, timestamp, shift, details)
-                VALUES (%s, %s, %s, %s::timestamp WITHOUT TIME ZONE, %s, %s)
+                VALUES (%s, %s, %s, %s::timestamp WITH TIME ZONE, %s, %s)
             """, (plant_no, str(machine_no), event_type, timestamp_str, shift, details))
             
         print(f"📝 EVENT SAVED | P{plant_no}-M{machine_no} | {event_type} | {timestamp_str}")
     except Exception as e:
         print(f"❌ Event Log Error P{plant_no}-M{machine_no}: {e}")
+
 
 
 class StrictIdlePolicy:
@@ -1634,7 +1633,7 @@ class Plant2ExactRequirementState:
                     # ghanta change hone par reason RAM se na hate aur agle ghante bhi carry forward ho.
 
                 try:
-                    timestamp_str = now_ist.strftime('%Y-%m-%d %H:%M:%S')
+                    timestamp_str = now_ist.strftime('%Y-%m-%d %H:%M:%S+05:30')
                     
                     with connection.cursor() as cursor:
                         cursor.execute("""
@@ -1900,7 +1899,7 @@ class Plant2ExactRequirementState:
             else:
                 ist_timestamp = IST.localize(timestamp)
 
-            timestamp_str = ist_timestamp.strftime('%Y-%m-%d %H:%M:%S')
+            timestamp_str = ist_timestamp.strftime('%Y-%m-%d %H:%M:%S+05:30')
 
             with connection.cursor() as cursor:
                 cursor.execute("""
@@ -1969,7 +1968,7 @@ class Plant2ExactRequirementState:
             else:
                 ist_timestamp = IST.localize(timestamp)
 
-            timestamp_str = ist_timestamp.strftime('%Y-%m-%d %H:%M:%S')
+            timestamp_str = ist_timestamp.strftime('%Y-%m-%d %H:%M:%S+05:30')
 
             with connection.cursor() as cursor:
                 cursor.execute("""
@@ -2363,22 +2362,17 @@ def save_hourly_idle_to_db(machine_no, timestamp, tool_id, shut_height, idle_tim
         else:
             ist_timestamp = IST.localize(timestamp)
 
-        timestamp_str = ist_timestamp.strftime('%Y-%m-%d %H:%M:%S')
+        # ✅ FIX: +05:30 force kiya
+        timestamp_str = ist_timestamp.strftime('%Y-%m-%d %H:%M:%S+05:30')
 
         with connection.cursor() as cursor:
             cursor.execute("""
                 INSERT INTO "Plant2_hourly_idle"
                 (timestamp, tool_id, machine_no, idle_time, shut_height, shift)
-                VALUES (%s::timestamp WITHOUT TIME ZONE, %s, %s, %s, %s, %s)
+                VALUES (%s::timestamp WITH TIME ZONE, %s, %s, %s, %s, %s)
             """, (
-                timestamp_str,
-                clean_tool_id,
-                str(machine_no),
-                clean_idle_time,
-                clean_shut_height,
-                shift
+                timestamp_str, clean_tool_id, str(machine_no), clean_idle_time, clean_shut_height, shift
             ))
-
     except Exception as e:
         pass
 
