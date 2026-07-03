@@ -3413,51 +3413,6 @@ class GetQANotificationsView(APIView):
 # 🏭 ENTERPRISE DYNAMIC ROUTING (LOCATION + DEPARTMENT AWARE)
 # ==============================================================================
 
-# from api.services.report_logging import auto_log_report
-
-
-# class SaveReportLogView(APIView):
-#     permission_classes = []
-
-#     def post(self, request):
-#         username = request.data.get("username")
-#         report_name = request.data.get("report_name")
-#         record_id = request.data.get("record_id")
-#         department_name = request.data.get("department_name")
-#         target_group = request.data.get("target_group")
-
-#         if not username or not report_name:
-#             return Response(
-#                 {"error": "username and report_name are required."},
-#                 status=status.HTTP_400_BAD_REQUEST,
-#             )
-
-#         log = auto_log_report(
-#         username=username,
-#         report_name=report_name,
-#         record_id=record_id,
-#         department_name=department_name,
-#         target_group=target_group,
-#         )
-
-#         if not log:
-#             return Response(
-#                 {"error": "Activity log failed. Check backend console."},
-#                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-#             )
-
-#         route_config = get_route_config(report_name)
-
-#         return Response(
-#             {
-#                 "success": True,
-#                 "message": "Activity log and notification created successfully.",
-#                 "log_id": log.id,
-#                 "form_key": route_config.get("form_key", ""),
-#                 "hub": route_config.get("hub", ""),
-#             },
-#             status=status.HTTP_201_CREATED,
-#         )
 
 
 from django.contrib.auth.models import User
