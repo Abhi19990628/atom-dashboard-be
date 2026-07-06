@@ -194,6 +194,11 @@ REPORT_ROUTE_MAP = {
         "hub": "qa-hub",
         "target_group": "Quality_Approvers",
     },
+    normalize_report_name("Coherence Checklist"): {
+        "form_key": "coherence",
+        "hub": "qa-hub",
+        "target_group": "Quality_Approvers",
+    },
     normalize_report_name("Layout Inspection"): {
         "form_key": "layout-inspection",
         "hub": "qa-hub",
