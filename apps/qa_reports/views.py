@@ -4,7 +4,7 @@ from datetime import datetime
 import pytz
 import logging
 import time
-
+from django.contrib.auth.models import User
 
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import connection, transaction
@@ -596,7 +596,27 @@ class SaveProcessAuditView(APIView):
                 or "Unknown User"
             )
 
-            department_name = str(raw_data.get("department_name") or "QA").strip()
+            department_name_for_notification = "QA"
+
+            user_obj = User.objects.filter(username=username).first()
+            profile = (
+                getattr(user_obj, "userprofile", None)
+                or getattr(user_obj, "profile", None)
+                if user_obj
+                else None
+            )
+
+            plant_name = str(getattr(profile, "location", "") or "").strip()
+
+            if not plant_name:
+                plant_name = (
+                    raw_data.get("plant")
+                    or raw_data.get("location")
+                    or raw_data.get("plant_name")
+                    or "Plant 1"
+                )
+
+            department_name_for_table = f"{plant_name} (QA)"
 
             mapped_data = {
                 "part_name_no": f"{raw_data.get('part_name', '')} - {raw_data.get('part_no', '')}",
@@ -621,7 +641,7 @@ class SaveProcessAuditView(APIView):
                 username=username,
                 report_name="Process Audit",
                 record_id=obj.id,
-                department_name=department_name,
+                department_name=department_name_for_notification,
                 target_group="Quality_Approvers",
             )
 
@@ -630,6 +650,9 @@ class SaveProcessAuditView(APIView):
                     "Process Audit saved, but activity log/notification failed."
                 )
 
+            log.department_name = department_name_for_table
+            log.save(update_fields=["department_name"])
+
             return Response(
                 {
                     "success": True,
@@ -637,7 +660,7 @@ class SaveProcessAuditView(APIView):
                     "record_id": obj.id,
                     "log_id": log.id,
                     "report_name": "Process Audit",
-                    "department_name": department_name,
+                    "department_name": department_name_for_table,
                 },
                 status=status.HTTP_201_CREATED,
             )
@@ -654,7 +677,34 @@ class SaveCoherenceChecklistView(APIView):
     @transaction.atomic
     def post(self, request):
         try:
-            raw_data = request.data
+            raw_data = request.data.copy()
+
+            username = (
+                raw_data.get("username") or raw_data.get("preparedBy") or "Unknown User"
+            )
+
+            department_name_for_notification = "QA"
+
+            user_obj = User.objects.filter(username=username).first()
+            profile = (
+                getattr(user_obj, "userprofile", None)
+                or getattr(user_obj, "profile", None)
+                if user_obj
+                else None
+            )
+
+            plant_name = str(getattr(profile, "location", "") or "").strip()
+
+            if not plant_name:
+                plant_name = (
+                    raw_data.get("plant")
+                    or raw_data.get("location")
+                    or raw_data.get("plant_name")
+                    or "Plant 1"
+                )
+
+            department_name_for_table = f"{plant_name} (QA)"
+
             mapped_data = {
                 "part_name": raw_data.get("partName", ""),
                 "part_no": raw_data.get("partNo", ""),
@@ -664,22 +714,47 @@ class SaveCoherenceChecklistView(APIView):
                 "verified_by": raw_data.get("verifiedBy", ""),
                 "operations": raw_data.get("operations", []),
             }
+
             serializer = CoherenceChecklistSerializer(data=mapped_data)
-            if serializer.is_valid():
-                obj = serializer.save()
+
+            if not serializer.is_valid():
                 return Response(
-                    {
-                        "success": True,
-                        "message": "Coherence Checklist Saved!",
-                        "record_id": obj.id,
-                    },
-                    status=status.HTTP_201_CREATED,
+                    {"success": False, "error": serializer.errors},
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
-            return Response(
-                {"success": False, "error": serializer.errors},
-                status=status.HTTP_400_BAD_REQUEST,
+
+            obj = serializer.save()
+
+            log = auto_log_report(
+                username=username,
+                report_name="Coherence Checklist",
+                record_id=obj.id,
+                department_name=department_name_for_notification,
+                target_group="Quality_Approvers",
             )
+
+            if not log:
+                raise Exception(
+                    "Coherence Checklist saved, but activity log/notification failed."
+                )
+
+            log.department_name = department_name_for_table
+            log.save(update_fields=["department_name"])
+
+            return Response(
+                {
+                    "success": True,
+                    "message": "Coherence Checklist Saved!",
+                    "record_id": obj.id,
+                    "log_id": log.id,
+                    "report_name": "Coherence Checklist",
+                    "department_name": department_name_for_table,
+                },
+                status=status.HTTP_201_CREATED,
+            )
+
         except Exception as e:
+            traceback.print_exc()
             return Response(
                 {"success": False, "error": str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -690,7 +765,34 @@ class SaveLayoutInspectionView(APIView):
     @transaction.atomic
     def post(self, request):
         try:
-            raw_data = request.data
+            raw_data = request.data.copy()
+
+            username = (
+                raw_data.get("username") or raw_data.get("preparedBy") or "Unknown User"
+            )
+
+            department_name_for_notification = "QA"
+
+            user_obj = User.objects.filter(username=username).first()
+            profile = (
+                getattr(user_obj, "userprofile", None)
+                or getattr(user_obj, "profile", None)
+                if user_obj
+                else None
+            )
+
+            plant_name = str(getattr(profile, "location", "") or "").strip()
+
+            if not plant_name:
+                plant_name = (
+                    raw_data.get("plant")
+                    or raw_data.get("location")
+                    or raw_data.get("plant_name")
+                    or "Plant 1"
+                )
+
+            department_name_for_table = f"{plant_name} (QA)"
+
             mapped_data = {
                 "part_name": raw_data.get("partName", ""),
                 "part_no": raw_data.get("partNo", ""),
@@ -702,22 +804,47 @@ class SaveLayoutInspectionView(APIView):
                 "verified_by": raw_data.get("verifiedBy", ""),
                 "inspections": raw_data.get("inspections", []),
             }
+
             serializer = LayoutInspectionSerializer(data=mapped_data)
-            if serializer.is_valid():
-                obj = serializer.save()
+
+            if not serializer.is_valid():
                 return Response(
-                    {
-                        "success": True,
-                        "message": "Layout Inspection Saved!",
-                        "record_id": obj.id,
-                    },
-                    status=status.HTTP_201_CREATED,
+                    {"success": False, "error": serializer.errors},
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
-            return Response(
-                {"success": False, "error": serializer.errors},
-                status=status.HTTP_400_BAD_REQUEST,
+
+            obj = serializer.save()
+
+            log = auto_log_report(
+                username=username,
+                report_name="Layout Inspection",
+                record_id=obj.id,
+                department_name=department_name_for_notification,
+                target_group="Quality_Approvers",
             )
+
+            if not log:
+                raise Exception(
+                    "Layout Inspection saved, but activity log/notification failed."
+                )
+
+            log.department_name = department_name_for_table
+            log.save(update_fields=["department_name"])
+
+            return Response(
+                {
+                    "success": True,
+                    "message": "Layout Inspection Saved!",
+                    "record_id": obj.id,
+                    "log_id": log.id,
+                    "report_name": "Layout Inspection",
+                    "department_name": department_name_for_table,
+                },
+                status=status.HTTP_201_CREATED,
+            )
+
         except Exception as e:
+            traceback.print_exc()
             return Response(
                 {"success": False, "error": str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -728,7 +855,36 @@ class SaveProductAuditPlanView(APIView):
     @transaction.atomic
     def post(self, request):
         try:
-            raw_data = request.data
+            raw_data = request.data.copy()
+
+            username = (
+                raw_data.get("username")
+                or raw_data.get("prepared_by")
+                or "Unknown User"
+            )
+
+            department_name_for_notification = "QA"
+
+            user_obj = User.objects.filter(username=username).first()
+            profile = (
+                getattr(user_obj, "userprofile", None)
+                or getattr(user_obj, "profile", None)
+                if user_obj
+                else None
+            )
+
+            plant_name = str(getattr(profile, "location", "") or "").strip()
+
+            if not plant_name:
+                plant_name = (
+                    raw_data.get("plant")
+                    or raw_data.get("location")
+                    or raw_data.get("plant_name")
+                    or "Plant 1"
+                )
+
+            department_name_for_table = f"{plant_name} (QA)"
+
             mapped_data = {
                 "doc_no": raw_data.get("doc_no", ""),
                 "rev_no": raw_data.get("rev_no", ""),
@@ -738,22 +894,47 @@ class SaveProductAuditPlanView(APIView):
                 "approved_by": raw_data.get("approved_by", ""),
                 "audit_rows": raw_data.get("rows", []),
             }
+
             serializer = ProductAuditPlanSerializer(data=mapped_data)
-            if serializer.is_valid():
-                obj = serializer.save()
+
+            if not serializer.is_valid():
                 return Response(
-                    {
-                        "success": True,
-                        "message": "Product Audit Plan Saved!",
-                        "record_id": obj.id,
-                    },
-                    status=status.HTTP_201_CREATED,
+                    {"success": False, "error": serializer.errors},
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
-            return Response(
-                {"success": False, "error": serializer.errors},
-                status=status.HTTP_400_BAD_REQUEST,
+
+            obj = serializer.save()
+
+            log = auto_log_report(
+                username=username,
+                report_name="Product Audit Plan",
+                record_id=obj.id,
+                department_name=department_name_for_notification,
+                target_group="Quality_Approvers",
             )
+
+            if not log:
+                raise Exception(
+                    "Product Audit Plan saved, but activity log/notification failed."
+                )
+
+            log.department_name = department_name_for_table
+            log.save(update_fields=["department_name"])
+
+            return Response(
+                {
+                    "success": True,
+                    "message": "Product Audit Plan Saved!",
+                    "record_id": obj.id,
+                    "log_id": log.id,
+                    "report_name": "Product Audit Plan",
+                    "department_name": department_name_for_table,
+                },
+                status=status.HTTP_201_CREATED,
+            )
+
         except Exception as e:
+            traceback.print_exc()
             return Response(
                 {"success": False, "error": str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -764,7 +945,36 @@ class SaveCustomerComplaintView(APIView):
     @transaction.atomic
     def post(self, request):
         try:
-            raw_data = request.data
+            raw_data = request.data.copy()
+
+            username = (
+                raw_data.get("username")
+                or raw_data.get("customer_name")
+                or "Unknown User"
+            )
+
+            department_name_for_notification = "QA"
+
+            user_obj = User.objects.filter(username=username).first()
+            profile = (
+                getattr(user_obj, "userprofile", None)
+                or getattr(user_obj, "profile", None)
+                if user_obj
+                else None
+            )
+
+            plant_name = str(getattr(profile, "location", "") or "").strip()
+
+            if not plant_name:
+                plant_name = (
+                    raw_data.get("plant")
+                    or raw_data.get("location")
+                    or raw_data.get("plant_name")
+                    or "Plant 1"
+                )
+
+            department_name_for_table = f"{plant_name} (QA)"
+
             mapped_data = {
                 "date": clean_val(raw_data.get("date")),
                 "part_details": raw_data.get("part_details", ""),
@@ -776,22 +986,47 @@ class SaveCustomerComplaintView(APIView):
                 "horizontal_action": raw_data.get("horizontal_action", ""),
                 "status": raw_data.get("status", "OPEN"),
             }
+
             serializer = CustomerComplaintSerializer(data=mapped_data)
-            if serializer.is_valid():
-                obj = serializer.save()
+
+            if not serializer.is_valid():
                 return Response(
-                    {
-                        "success": True,
-                        "message": "Customer Complaint Saved!",
-                        "record_id": obj.id,
-                    },
-                    status=status.HTTP_201_CREATED,
+                    {"success": False, "error": serializer.errors},
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
-            return Response(
-                {"success": False, "error": serializer.errors},
-                status=status.HTTP_400_BAD_REQUEST,
+
+            obj = serializer.save()
+
+            log = auto_log_report(
+                username=username,
+                report_name="Customer Complaint",
+                record_id=obj.id,
+                department_name=department_name_for_notification,
+                target_group="Quality_Approvers",
             )
+
+            if not log:
+                raise Exception(
+                    "Customer Complaint saved, but activity log/notification failed."
+                )
+
+            log.department_name = department_name_for_table
+            log.save(update_fields=["department_name"])
+
+            return Response(
+                {
+                    "success": True,
+                    "message": "Customer Complaint Saved!",
+                    "record_id": obj.id,
+                    "log_id": log.id,
+                    "report_name": "Customer Complaint",
+                    "department_name": department_name_for_table,
+                },
+                status=status.HTTP_201_CREATED,
+            )
+
         except Exception as e:
+            traceback.print_exc()
             return Response(
                 {"success": False, "error": str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -802,7 +1037,36 @@ class SaveCustomerSatisfactionView(APIView):
     @transaction.atomic
     def post(self, request):
         try:
-            raw_data = request.data
+            raw_data = request.data.copy()
+
+            username = (
+                raw_data.get("username")
+                or raw_data.get("customerName")
+                or "Unknown User"
+            )
+
+            department_name_for_notification = "QA"
+
+            user_obj = User.objects.filter(username=username).first()
+            profile = (
+                getattr(user_obj, "userprofile", None)
+                or getattr(user_obj, "profile", None)
+                if user_obj
+                else None
+            )
+
+            plant_name = str(getattr(profile, "location", "") or "").strip()
+
+            if not plant_name:
+                plant_name = (
+                    raw_data.get("plant")
+                    or raw_data.get("location")
+                    or raw_data.get("plant_name")
+                    or "Plant 1"
+                )
+
+            department_name_for_table = f"{plant_name} (QA)"
+
             mapped_data = {
                 "customer_name": raw_data.get("customerName", ""),
                 "month_year": raw_data.get("monthYear", ""),
@@ -819,22 +1083,47 @@ class SaveCustomerSatisfactionView(APIView):
                     "customer_audit_score": raw_data.get("customerAuditScore", ""),
                 },
             }
+
             serializer = CustomerSatisfactionSerializer(data=mapped_data)
-            if serializer.is_valid():
-                obj = serializer.save()
+
+            if not serializer.is_valid():
                 return Response(
-                    {
-                        "success": True,
-                        "message": "Customer Satisfaction Saved!",
-                        "record_id": obj.id,
-                    },
-                    status=status.HTTP_201_CREATED,
+                    {"success": False, "error": serializer.errors},
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
-            return Response(
-                {"success": False, "error": serializer.errors},
-                status=status.HTTP_400_BAD_REQUEST,
+
+            obj = serializer.save()
+
+            log = auto_log_report(
+                username=username,
+                report_name="Customer Satisfaction",
+                record_id=obj.id,
+                department_name=department_name_for_notification,
+                target_group="Quality_Approvers",
             )
+
+            if not log:
+                raise Exception(
+                    "Customer Satisfaction saved, but activity log/notification failed."
+                )
+
+            log.department_name = department_name_for_table
+            log.save(update_fields=["department_name"])
+
+            return Response(
+                {
+                    "success": True,
+                    "message": "Customer Satisfaction Saved!",
+                    "record_id": obj.id,
+                    "log_id": log.id,
+                    "report_name": "Customer Satisfaction",
+                    "department_name": department_name_for_table,
+                },
+                status=status.HTTP_201_CREATED,
+            )
+
         except Exception as e:
+            traceback.print_exc()
             return Response(
                 {"success": False, "error": str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -845,7 +1134,34 @@ class SaveWarrantyClaimView(APIView):
     @transaction.atomic
     def post(self, request):
         try:
-            raw_data = request.data
+            raw_data = request.data.copy()
+
+            username = (
+                raw_data.get("username") or raw_data.get("verifiedBy") or "Unknown User"
+            )
+
+            department_name_for_notification = "QA"
+
+            user_obj = User.objects.filter(username=username).first()
+            profile = (
+                getattr(user_obj, "userprofile", None)
+                or getattr(user_obj, "profile", None)
+                if user_obj
+                else None
+            )
+
+            plant_name = str(getattr(profile, "location", "") or "").strip()
+
+            if not plant_name:
+                plant_name = (
+                    raw_data.get("plant")
+                    or raw_data.get("location")
+                    or raw_data.get("plant_name")
+                    or "Plant 1"
+                )
+
+            department_name_for_table = f"{plant_name} (QA)"
+
             mapped_data = {
                 "date": raw_data.get("date") or None,
                 "customer_name": raw_data.get("customerName", ""),
@@ -857,22 +1173,47 @@ class SaveWarrantyClaimView(APIView):
                 "disposal_action": raw_data.get("disposalAction", ""),
                 "capa_analysis": raw_data.get("capaAnalysis", ""),
             }
+
             serializer = WarrantyClaimSerializer(data=mapped_data)
-            if serializer.is_valid():
-                obj = serializer.save()
+
+            if not serializer.is_valid():
                 return Response(
-                    {
-                        "success": True,
-                        "message": "Warranty Claim Saved!",
-                        "record_id": obj.id,
-                    },
-                    status=status.HTTP_201_CREATED,
+                    {"success": False, "error": serializer.errors},
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
-            return Response(
-                {"success": False, "error": serializer.errors},
-                status=status.HTTP_400_BAD_REQUEST,
+
+            obj = serializer.save()
+
+            log = auto_log_report(
+                username=username,
+                report_name="Warranty Claim",
+                record_id=obj.id,
+                department_name=department_name_for_notification,
+                target_group="Quality_Approvers",
             )
+
+            if not log:
+                raise Exception(
+                    "Warranty Claim saved, but activity log/notification failed."
+                )
+
+            log.department_name = department_name_for_table
+            log.save(update_fields=["department_name"])
+
+            return Response(
+                {
+                    "success": True,
+                    "message": "Warranty Claim Saved!",
+                    "record_id": obj.id,
+                    "log_id": log.id,
+                    "report_name": "Warranty Claim",
+                    "department_name": department_name_for_table,
+                },
+                status=status.HTTP_201_CREATED,
+            )
+
         except Exception as e:
+            traceback.print_exc()
             return Response(
                 {"success": False, "error": str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -883,7 +1224,36 @@ class SaveMinutesOfMeetingView(APIView):
     @transaction.atomic
     def post(self, request):
         try:
-            raw_data = request.data
+            raw_data = request.data.copy()
+
+            username = (
+                raw_data.get("username")
+                or raw_data.get("responsibility")
+                or "Unknown User"
+            )
+
+            department_name_for_notification = "QA"
+
+            user_obj = User.objects.filter(username=username).first()
+            profile = (
+                getattr(user_obj, "userprofile", None)
+                or getattr(user_obj, "profile", None)
+                if user_obj
+                else None
+            )
+
+            plant_name = str(getattr(profile, "location", "") or "").strip()
+
+            if not plant_name:
+                plant_name = (
+                    raw_data.get("plant")
+                    or raw_data.get("location")
+                    or raw_data.get("plant_name")
+                    or "Plant 1"
+                )
+
+            department_name_for_table = f"{plant_name} (QA)"
+
             mapped_data = {
                 "date": raw_data.get("date") or None,
                 "time": raw_data.get("time") or None,
@@ -903,22 +1273,47 @@ class SaveMinutesOfMeetingView(APIView):
                     }
                 ],
             }
+
             serializer = MinutesOfMeetingSerializer(data=mapped_data)
-            if serializer.is_valid():
-                obj = serializer.save()
+
+            if not serializer.is_valid():
                 return Response(
-                    {
-                        "success": True,
-                        "message": "MOM Saved Successfully!",
-                        "record_id": obj.id,
-                    },
-                    status=status.HTTP_201_CREATED,
+                    {"success": False, "error": serializer.errors},
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
-            return Response(
-                {"success": False, "error": serializer.errors},
-                status=status.HTTP_400_BAD_REQUEST,
+
+            obj = serializer.save()
+
+            log = auto_log_report(
+                username=username,
+                report_name="MOM",
+                record_id=obj.id,
+                department_name=department_name_for_notification,
+                target_group="Quality_Approvers",
             )
+
+            if not log:
+                raise Exception(
+                    "Minutes of Meeting saved, but activity log/notification failed."
+                )
+
+            log.department_name = department_name_for_table
+            log.save(update_fields=["department_name"])
+
+            return Response(
+                {
+                    "success": True,
+                    "message": "Minutes of Meeting Saved!",
+                    "record_id": obj.id,
+                    "log_id": log.id,
+                    "report_name": "MOM",
+                    "department_name": department_name_for_table,
+                },
+                status=status.HTTP_201_CREATED,
+            )
+
         except Exception as e:
+            traceback.print_exc()
             return Response(
                 {"success": False, "error": str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
