@@ -10,6 +10,7 @@ from apps.machines.machine_map import COUNT52_GROUP
 from apps.machines.machine_state import MACHINE_STATE
 from .models import Plant2HourlyIdletime
 from apps.mqtt.simple_plant2 import EXACT_REQUIREMENT_STATE
+from .models import Operator, OperatorAssignment
 
 # from apps.data_storage.hourly_idle_tracker import HOURLY_IDLE_TRACKERER
 from rest_framework.views import APIView
@@ -470,991 +471,3056 @@ def plant2_raw(request):
             {"success": False, "error": str(e), "total_messages": 0, "raw_messages": []}
         )
 
+# ==============================================================
+# PLANT 1 + PLANT 2 API UPDATE ONLY
+# Paste this block in api/views.py and replace old:
+#   - get_tool_info_from_tid_map
+#   - plant1_live
+#   - plant2_live
+#   - get_plant1_machine_history
+#   - get_machine_history
+# Nothing here changes MQTT / Redis / DB insert logic.
+# ============================================================== 
 
-from .models import Operator
-from django.utils import timezone
-
-
-@never_cache
-@api_view(["GET"])
-def plant1_live(request):
-    """Plant 1 - LIVE DASHBOARD (Fixed to match Plant 2)"""
-    try:
-        from apps.machines.machine_state import MACHINE_STATE
-        from apps.mqtt.simple_plant1 import (
-            PLANT1_EXACT_REQUIREMENT_STATE,
-            J_TOPIC_MACHINE_MAPPING,
-            COUNT_TOPIC_MACHINE_MAPPING,
-        )
-
-        all_mapped_machines = list(range(1, 58))
-        live_machines = MACHINE_STATE.summarize(plant_filter=1, stale_after_seconds=300)
-
-        enhanced_machines = []
-        problem_machines = []
-
-        ist_tz = pytz.timezone("Asia/Kolkata")
-        now_ist = datetime.now(ist_tz)
-
-        for machine_no in all_mapped_machines:
-            machine_data = None
-
-            for m in live_machines:
-                if m["machine_no"] == machine_no and m.get("plant") == 1:
-                    machine_data = m
-                    break
-
-            try:
-                idle_status = (
-                    PLANT1_EXACT_REQUIREMENT_STATE.idle_tracker.get_idle_status(
-                        machine_no, now_ist
-                    )
-                )
-                exact_data = PLANT1_EXACT_REQUIREMENT_STATE.get_machine_data(machine_no)
-
-                is_on = idle_status["on_since"] is not None
-                is_producing = (
-                    idle_status["count_seconds_ago"] is not None
-                    and idle_status["count_seconds_ago"] <= 180
-                )
-
-                if is_on and not machine_data:
-                    tool_id = exact_data.get("current_tool_id", "N/A")
-                    shut_height = exact_data.get("current_shut_height", 0.0)
-
-                    machine_data = {
-                        "plant": 1,
-                        "machine_no": machine_no,
-                        "tool_id": tool_id,
-                        "count": 0,
-                        "shut_height": shut_height,
-                        "last_seen": "JSON only",
-                        "status": idle_status["status"],
-                        "current_hour_count": 0,
-                        "last_hour_count": 0,
-                        "cumulative_count": 0,
-                        "shift": exact_data.get("shift", "A"),
-                        "idle_time": idle_status["hourly_idle_total"],
-                    }
-
-                if machine_data:
-                    machine_data.update(exact_data)
-
-                    problem_detected = (
-                        is_on and not is_producing and idle_status["is_idle"]
-                    )
-                    machine_data["problem_detected"] = problem_detected
-
-                    if problem_detected:
-                        problem_machines.append(machine_no)
-
-                    current_shift = PLANT1_EXACT_REQUIREMENT_STATE.get_shift_from_time(
-                        now_ist
-                    )
-
-                    if idle_status["last_count_time"]:
-                        machine_data["last_activity"] = idle_status[
-                            "last_count_time"
-                        ].strftime("%H:%M:%S")
-                    else:
-                        machine_data["last_activity"] = "Never"
-
-                    # ✅ FIX: Use exact_data which has DB-fetched last_hour_count
-                    machine_data["last_hour_count"] = exact_data.get(
-                        "last_hour_count", 0
-                    )
-                    machine_data["current_hour_count"] = exact_data.get(
-                        "current_hour_count", 0
-                    )
-                    machine_data["cumulative_count"] = exact_data.get(
-                        "cumulative_count", 0
-                    )
-                    machine_data["total_shift_idle_time"] = exact_data.get(
-                        "total_shift_idle_time", 0
-                    )
-
-                    machine_data["shut_height"] = exact_data.get(
-                        "current_shut_height", 0.0
-                    )
-                    machine_data["first_count_at"] = exact_data.get("first_count_at")
-                    machine_data["time_to_first_count"] = exact_data.get(
-                        "time_to_first_count"
-                    )
-
-                    machine_data.update(
-                        {
-                            "live_idle_time": idle_status["live_idle_time"],
-                            "accumulated_idle_time": idle_status[
-                                "accumulated_idle_time"
-                            ],
-                            "hourly_idle_total": idle_status["hourly_idle_total"],
-                            "idle_time": idle_status["hourly_idle_total"],
-                            "is_idle": idle_status["is_idle"],
-                            "idle_type": idle_status["idle_type"],
-                            "status": idle_status["status"],
-                            "data_source": idle_status["data_source"],
-                            "on_since": (
-                                idle_status["on_since"].strftime("%H:%M:%S")
-                                if idle_status["on_since"]
-                                else None
-                            ),
-                            "count_seconds_ago": idle_status["count_seconds_ago"],
-                            "json_seconds_ago": idle_status["json_seconds_ago"],
-                            "machine_on": is_on,
-                            "is_producing": is_producing,
-                        }
-                    )
-
-            except Exception as e:
-                print(f"⚠️ Plant 1 M{machine_no} error: {e}")
-                import traceback
-
-                traceback.print_exc()
-
-            if machine_data:
-                tool_id = machine_data.get("tool_id", "")
-                tool_info = get_tool_info_from_tid_map(tool_id)
-
-                machine_data.update(
-                    {
-                        "tool_customer": tool_info.get("customer", "N/A"),
-                        "tool_model": tool_info.get("model", "N/A"),
-                        "tool_part_name": tool_info.get("part_name", "N/A"),
-                        "tool_name": tool_info.get("tool_name", "N/A"),
-                        "tool_part_number": tool_info.get("part_number", "N/A"),
-                        "tool_tpm": tool_info.get("tpm", 0),
-                        "tool_epc": tool_info.get("epc", "N/A"),
-                    }
-                )
-
-                machine_data["plant"] = 1
-                enhanced_machines.append(machine_data)
-            else:
-                idle_status = (
-                    PLANT1_EXACT_REQUIREMENT_STATE.idle_tracker.get_idle_status(
-                        machine_no, now_ist
-                    )
-                )
-
-                enhanced_machines.append(
-                    {
-                        "plant": 1,
-                        "machine_no": machine_no,
-                        "tool_id": f"PLANT1_M{machine_no:02d}",
-                        "count": 0,
-                        "shut_height": 0.0,
-                        "first_count_at": None,
-                        "time_to_first_count": None,
-                        "last_seen": "Not active",
-                        "status": idle_status["status"],
-                        "current_hour_count": 0,
-                        "last_hour_count": 0,
-                        "cumulative_count": 0,
-                        "shift": "A",
-                        "idle_time": idle_status["hourly_idle_total"],
-                        "is_idle": idle_status["is_idle"],
-                        "idle_type": idle_status["idle_type"],
-                        "live_idle_time": idle_status["live_idle_time"],
-                        "accumulated_idle_time": idle_status["accumulated_idle_time"],
-                        "hourly_idle_total": idle_status["hourly_idle_total"],
-                        "last_activity": "Never",
-                        "tool_customer": "N/A",
-                        "tool_model": "N/A",
-                        "tool_part_name": "N/A",
-                        "tool_name": "N/A",
-                        "tool_part_number": "N/A",
-                        "tool_tpm": 0,
-                        "tool_epc": "N/A",
-                        "machine_on": False,
-                        "is_producing": False,
-                        "problem_detected": False,
-                        "on_since": None,
-                        "data_source": idle_status["data_source"],
-                    }
-                )
-
-        enhanced_machines.sort(key=lambda x: x["machine_no"])
-
-        on_machines = [m for m in enhanced_machines if m.get("machine_on")]
-        producing_machines = [m for m in enhanced_machines if m.get("is_producing")]
-
-        response = Response(
-            {
-                "success": True,
-                "total_machines": len(enhanced_machines),
-                "on_count": len(on_machines),
-                "producing_count": len(producing_machines),
-                "problem_count": len(problem_machines),
-                "problem_machines": problem_machines,
-                "machines": enhanced_machines,
-                "plant": 1,
-                "message": f"Plant 1 - ON:{len(on_machines)} | Producing:{len(producing_machines)} | Problems:{len(problem_machines)}",
-            }
-        )
-
-        response["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
-        response["Pragma"] = "no-cache"
-        response["Expires"] = "0"
-
-        return response
-
-    except Exception as e:
-        print(f"❌ Plant 1 API ERROR: {e}")
-        import traceback
-
-        traceback.print_exc()
-
-        return Response(
-            {"success": False, "error": str(e), "machines": [], "plant": 1}, status=500
-        )
-
-
-# backend/apps/api/views.py (Plant 2 section update)
-# backend/api/views.py
-
-# 🔥 HELPER FUNCTION - Define this FIRST (before plant2_live)
-
-
-# backend/api/views.py
+from django.views.decorators.cache import never_cache
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from django.db import connection
 
 
 def get_tool_info_from_tid_map(tool_id):
-    """Query tid_map table - handles uppercase column names"""
+    """EPC / Tool ID se public.tid_map table se full tool/part info fetch karta hai.
 
-    if not tool_id or tool_id == "NULL" or tool_id.startswith("PLANT2_M"):
+    Supports uppercase/lowercase column names and EPC with/without leading e.
+    If data is not found, returns {} so UI can show N/A but still show tool_id.
+    """
+    if not tool_id:
         return {}
 
-    clean_tool_id = tool_id[:24] if len(tool_id) >= 24 else tool_id
+    raw_tool_id = str(tool_id).strip()
+    if not raw_tool_id:
+        return {}
+
+    upper = raw_tool_id.upper()
+    if upper in ["NULL", "UNKNOWN", "N/A", "NO DATA", "FAILED", "NONE"]:
+        return {}
+    if upper.startswith("PLANT1_M") or upper.startswith("PLANT2_M"):
+        return {}
+
+    clean_24 = raw_tool_id[:24].strip().lower()
+    candidates = []
+    for val in [clean_24, raw_tool_id.lower(), raw_tool_id[:24].lower()]:
+        val = str(val).strip().lower()
+        if not val:
+            continue
+        if val not in candidates:
+            candidates.append(val)
+        if val.startswith("e") and val[1:] and val[1:] not in candidates:
+            candidates.append(val[1:])
+        if (not val.startswith("e")) and len(val) >= 23:
+            e_val = "e" + val
+            if e_val not in candidates:
+                candidates.append(e_val)
 
     try:
         with connection.cursor() as cursor:
-            # Get actual column names from table
-            cursor.execute("""
-                SELECT column_name 
-                FROM information_schema.columns 
-                WHERE table_schema = 'public' 
-                AND table_name = 'tid_map'
+            cursor.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'tid_map'
                 ORDER BY ordinal_position
-            """)
-
+                """
+            )
             columns = [row[0] for row in cursor.fetchall()]
+            if not columns:
+                print("❌ public.tid_map table not found")
+                return {}
 
-            # Find EPC column (case-insensitive)
-            epc_column = None
-            for col in columns:
-                if col.upper() == "EPC":
-                    epc_column = col
-                    break
-
+            epc_column = next((col for col in columns if col.upper() == "EPC"), None)
             if not epc_column:
-                print(f"❌ EPC column not found! Available: {columns}")
+                print(f"❌ EPC column not found in public.tid_map. Available columns: {columns}")
                 return {}
 
-            # Query with proper column name using double quotes
-            query = f'SELECT * FROM public.tid_map WHERE "{epc_column}" = %s LIMIT 1'
-
-            cursor.execute(query, [clean_tool_id])
+            placeholders = ",".join(["%s"] * len(candidates))
+            query = (
+                f'SELECT * FROM public.tid_map '
+                f'WHERE LOWER(TRIM("{epc_column}"::text)) IN ({placeholders}) '
+                f'LIMIT 1'
+            )
+            cursor.execute(query, candidates)
             result = cursor.fetchone()
-
-            if result:
-                # Create dictionary with actual column names
-                row_dict = dict(zip(columns, result))
-
-                # Helper function for case-insensitive lookup
-                def get_value(search_key):
-                    for col_name, col_value in row_dict.items():
-                        if col_name.upper() == search_key.upper():
-                            return col_value if col_value else "N/A"
-                    return "N/A"
-
-                # Extract data
-                tool_data = {
-                    "customer": get_value("CUSTOMER"),
-                    "model": get_value("MODEL"),
-                    "part_name": get_value("PART_NAME"),
-                    "tool_name": get_value("TOOL_NAME"),
-                    "epc": get_value("EPC"),
-                    "part_number": get_value("PART_NUMBER"),
-                    "tpm": 0,
-                }
-
-                # Handle TPM
-                tpm_val = get_value("TPM")
-                if tpm_val != "N/A":
-                    try:
-                        tool_data["tpm"] = int(tpm_val)
-                    except:
-                        tool_data["tpm"] = 0
-
-                print(f"✅ FOUND: {tool_data['customer']} - {tool_data['part_name']}")
-                return tool_data
-
-            else:
+            if not result:
                 return {}
 
+            row_dict = dict(zip(columns, result))
+
+            def get_value(search_key, default="N/A"):
+                for col_name, col_value in row_dict.items():
+                    if str(col_name).upper() == str(search_key).upper():
+                        if col_value in [None, "", "NULL", "None"]:
+                            return default
+                        return str(col_value).strip()
+                return default
+
+            tpm = 0
+            try:
+                raw_tpm = get_value("TPM")
+                if raw_tpm != "N/A":
+                    tpm = int(float(raw_tpm))
+            except Exception:
+                tpm = 0
+
+            model_value = get_value("MODEL")
+            data = {
+                "customer": get_value("CUSTOMER"),
+                "customer_name": get_value("CUSTOMER"),
+                "model": model_value,
+                "model_name": model_value,
+                "part_name": get_value("PART_NAME"),
+                "part_number": get_value("PART_NUMBER"),
+                "tool_name": get_value("TOOL_NAME"),
+                "epc": get_value("EPC", clean_24 or raw_tool_id),
+                "tpm": tpm,
+            }
+            return data
     except Exception as e:
-        print(f"❌ ERROR: {e}")
+        print(f"❌ TID map lookup error for {tool_id}: {e}")
         return {}
 
 
-@never_cache
-@api_view(["GET"])
-def plant2_live(request):
-    """
-    Plant 2 - LIVE DASHBOARD DATA
-    🌟 FINAL FIX: JSON Heartbeat Reset Bug Fixed. Continuous Idle Timer.
-    🌟 FIX 2: Shut Height logic improved to ensure UI visibility.
-    🌟 FIX 3: Timezone Offset & Last Hour Cumulative Count Bug Fixed.
-    """
+def get_safe_tid_value(tool_info, key, default="N/A"):
+    value = (tool_info or {}).get(key, default)
+    if value in [None, "", "None", "NULL"]:
+        return default
+    return value
+
+
+def _seconds_to_display(total_seconds):
+    total_seconds = int(total_seconds or 0)
+    if total_seconds < 0:
+        total_seconds = 0
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
+    if hours > 0:
+        return f"{hours} hr {minutes} min {seconds} sec"
+    if minutes > 0:
+        return f"{minutes} min {seconds} sec"
+    return f"{seconds} sec"
+
+
+def _normalize_tool_id(tool_id):
+    if tool_id in [None, "", "NULL", "UNKNOWN", "N/A", "No data", "Failed", "None"]:
+        return None
+    clean = str(tool_id).strip().lower()[:24]
+    if len(clean) != 24:
+        return None
+    if any(ch not in "0123456789abcdef" for ch in clean):
+        return None
+    if clean.startswith("e000"):
+        return None
+    if not clean.startswith("e2"):
+        return None
+    return clean
+
+
+def _parse_valid_shut_height(value):
+    if value in [None, "", "0", "0.0", "0.00", 0, 0.0, "No data", "Failed", "None", "N/A"]:
+        return None
+    try:
+        num = float(value)
+    except Exception:
+        return None
+    if num <= 10.0:
+        return None
+    return num
+
+
+def _is_failed_shut_height_reading(value):
+    if value in ["Failed", "failed", "FAILED"]:
+        return True
+    if value in [None, "", "0", "0.0", "0.00", 0, 0.0, "No data", "None", "N/A"]:
+        return False
+    try:
+        num = float(value)
+    except Exception:
+        return False
+    return 0 < num <= 10.0
+
+
+def _extract_tool_id_from_text(text):
+    try:
+        import re
+        matches = re.findall(r"e2[0-9a-fA-F]{22}", str(text or ""))
+        for match in matches:
+            clean = _normalize_tool_id(match)
+            if clean:
+                return clean
+    except Exception:
+        pass
+    return None
+
+
+def _tid_payload(tool_id):
+    clean_tool_id = _normalize_tool_id(tool_id)
+    if not clean_tool_id:
+        return {
+            "tool_id": tool_id or "N/A",
+            "epc": tool_id or "N/A",
+            "customer": "N/A",
+            "customer_name": "N/A",
+            "model": "N/A",
+            "model_name": "N/A",
+            "part_name": "N/A",
+            "part_number": "N/A",
+            "tool_name": "N/A",
+            "tool_tpm": 0,
+            "tool_customer": "N/A",
+            "tool_model": "N/A",
+            "tool_part_name": "N/A",
+            "tool_part_number": "N/A",
+            "tool_epc": tool_id or "N/A",
+        }
+
+    info = get_tool_info_from_tid_map(clean_tool_id)
+    customer = get_safe_tid_value(info, "customer")
+    model = get_safe_tid_value(info, "model_name")
+    part_name = get_safe_tid_value(info, "part_name")
+    part_number = get_safe_tid_value(info, "part_number")
+    tool_name = get_safe_tid_value(info, "tool_name")
+    epc = get_safe_tid_value(info, "epc", clean_tool_id)
+    tpm = int((info or {}).get("tpm", 0) or 0)
+    return {
+        "tool_id": clean_tool_id,
+        "epc": epc,
+        "customer": customer,
+        "customer_name": customer,
+        "model": model,
+        "model_name": model,
+        "part_name": part_name,
+        "part_number": part_number,
+        "tool_name": tool_name,
+        "tool_tpm": tpm,
+        # old FE keys
+        "tool_customer": customer,
+        "tool_model": model,
+        "tool_part_name": part_name,
+        "tool_part_number": part_number,
+        "tool_epc": epc,
+    }
+
+
+def _to_ist_naive(dt, ist_tz):
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        return dt.astimezone(ist_tz).replace(tzinfo=None, microsecond=0)
+    return dt.replace(microsecond=0)
+
+
+def _get_current_hour_count_from_db(data_table, machine_no, start_naive, end_naive):
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT COALESCE(SUM(count), 0)
+                FROM {data_table}
+                WHERE machine_no = %s
+                  AND timestamp >= %s
+                  AND timestamp < %s
+                """,
+                [str(machine_no), start_naive, end_naive],
+            )
+            row = cursor.fetchone()
+            return int(row[0] or 0) if row else 0
+    except Exception:
+        return 0
+
+
+def _plant_live_common(request, plant_no, plant_location, data_table, state_obj, topic_mapping, get_machine_group_func, group_names):
     try:
         from apps.machines.machine_state import MACHINE_STATE
-        from apps.mqtt.simple_plant2 import (
-            PLANT2_EXACT_REQUIREMENT_STATE,
-            TOPIC_MACHINE_MAPPING,
-            get_machine_group,
-        )
-        from django.db import connection
         import pytz
         from datetime import datetime, timedelta
-
-        all_mapped_machines = set()
-        for machines_list in TOPIC_MACHINE_MAPPING.values():
-            all_mapped_machines.update(machines_list)
-        all_mapped_machines = sorted(list(all_mapped_machines))
-
-        live_machines = MACHINE_STATE.summarize(plant_filter=2, stale_after_seconds=300)
-
-        enhanced_machines = []
-        problem_machines = []
 
         ist_tz = pytz.timezone("Asia/Kolkata")
         now_ist = datetime.now(ist_tz)
 
-        # =====================================================================
-        # 🚀 STEP 1: BULK DB QUERIES
-        # =====================================================================
-        current_shift = PLANT2_EXACT_REQUIREMENT_STATE.get_shift_from_time(now_ist)
+        all_mapped_machines = set()
+        for machines in topic_mapping.values():
+            all_mapped_machines.update(machines)
+        all_mapped_machines = sorted(all_mapped_machines)
+
+        live_machines = MACHINE_STATE.summarize(plant_filter=plant_no, stale_after_seconds=300)
+        live_by_machine = {
+            int(m.get("machine_no")): dict(m)
+            for m in live_machines
+            if m.get("plant") == plant_no and m.get("machine_no") is not None
+        }
+
+        current_shift = state_obj.get_shift_from_time(now_ist)
         current_hour = now_ist.replace(minute=0, second=0, microsecond=0)
         previous_hour_start = current_hour - timedelta(hours=1)
-        shift_start = PLANT2_EXACT_REQUIREMENT_STATE.get_shift_start_datetime(now_ist)
+        shift_start = state_obj.get_shift_start_datetime(now_ist)
+        today_start = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
 
+        now_naive = _to_ist_naive(now_ist, ist_tz)
+        today_start_naive = _to_ist_naive(today_start, ist_tz)
+        shift_start_naive = _to_ist_naive(shift_start, ist_tz)
+        current_hour_naive = _to_ist_naive(current_hour, ist_tz)
+        previous_hour_start_naive = _to_ist_naive(previous_hour_start, ist_tz)
+
+        bulk_current_hour = {}
         bulk_last_hour = {}
         bulk_cumulative = {}
-        bulk_shift_idle = {}
+        bulk_ideal_today = {}
+        bulk_ideal_shift = {}
+        bulk_ideal_hour = {}
+        bulk_latest_tool = {}
+        bulk_latest_shut_height = {}
 
-        # 🌟 FIX APPLIED HERE: Strip timezone info to match your 'timestamp without time zone' DB column
-        naive_current_hour = current_hour.replace(tzinfo=None)
-        naive_previous_hour_start = previous_hour_start.replace(tzinfo=None)
+        def add_ideal_row(target, machine_key, online_seconds, offline_seconds):
+            target[str(machine_key).strip()] = {
+                "ONLINE": int(online_seconds or 0),
+                "OFFLINE": int(offline_seconds or 0),
+            }
+
+        def empty_ideal_summary():
+            return {"ONLINE": 0, "OFFLINE": 0}
 
         try:
             with connection.cursor() as cursor:
-                # 🌟 FIX APPLIED HERE: Use MAX(cumulative) - MIN(cumulative) for accurate last hour count
+                # Current hour count - direct DB sum, so restart ke baad bhi count sahi rahega.
                 cursor.execute(
-                    """
-                    SELECT machine_no, COALESCE((MAX(cumulative_count) - MIN(cumulative_count)), 0) 
-                    FROM Plant2_data 
+                    f"""
+                    SELECT TRIM(machine_no::text), COALESCE(SUM(count), 0)
+                    FROM {data_table}
                     WHERE timestamp >= %s AND timestamp < %s
-                    GROUP BY machine_no
-                """,
-                    [naive_previous_hour_start, naive_current_hour],
+                    GROUP BY TRIM(machine_no::text)
+                    """,
+                    [current_hour_naive, now_naive],
                 )
-                for row in cursor.fetchall():
-                    bulk_last_hour[str(row[0]).strip()] = int(row[1])
+                for machine_key, total_count in cursor.fetchall():
+                    bulk_current_hour[str(machine_key).strip()] = int(total_count or 0)
 
+                # Last completed hour count.
                 cursor.execute(
-                    """
-                    SELECT p1.machine_no, p1.cumulative_count
-                    FROM Plant2_data p1
-                    INNER JOIN (
-                        SELECT machine_no, MAX(timestamp) as max_ts
-                        FROM Plant2_data
-                        WHERE shift = %s AND timestamp >= %s
-                        GROUP BY machine_no
-                    ) p2 ON p1.machine_no = p2.machine_no AND p1.timestamp = p2.max_ts
-                """,
-                    [current_shift, shift_start],
+                    f"""
+                    SELECT TRIM(machine_no::text), COALESCE(SUM(count), 0)
+                    FROM {data_table}
+                    WHERE timestamp >= %s AND timestamp < %s
+                    GROUP BY TRIM(machine_no::text)
+                    """,
+                    [previous_hour_start_naive, current_hour_naive],
                 )
-                for row in cursor.fetchall():
-                    bulk_cumulative[str(row[0]).strip()] = int(row[1])
+                for machine_key, total_count in cursor.fetchall():
+                    bulk_last_hour[str(machine_key).strip()] = int(total_count or 0)
 
+                # Latest shift cumulative.
                 cursor.execute(
-                    """
-                    SELECT machine_no, COALESCE(SUM(idle_time), 0)
-                    FROM "Plant2_hourly_idle"
-                    WHERE shift = %s AND timestamp >= %s AND timestamp < %s
-                    GROUP BY machine_no
-                """,
-                    [current_shift, shift_start, now_ist],
+                    f"""
+                    SELECT DISTINCT ON (TRIM(machine_no::text))
+                        TRIM(machine_no::text) AS machine_key,
+                        COALESCE(cumulative_count, 0) AS cumulative_count
+                    FROM {data_table}
+                    WHERE shift = %s
+                      AND timestamp >= %s
+                      AND timestamp < %s
+                    ORDER BY TRIM(machine_no::text), timestamp DESC
+                    """,
+                    [current_shift, shift_start_naive, now_naive],
                 )
-                for row in cursor.fetchall():
-                    bulk_shift_idle[str(row[0]).strip()] = int(row[1])
+                for machine_key, cumulative_count in cursor.fetchall():
+                    bulk_cumulative[str(machine_key).strip()] = int(cumulative_count or 0)
+
+                # Ideal summaries: today, current shift, current hour.
+                for target, start_bound, end_bound, with_shift in [
+                    (bulk_ideal_today, today_start_naive, now_naive, False),
+                    (bulk_ideal_shift, shift_start_naive, now_naive, True),
+                    (bulk_ideal_hour, current_hour_naive, now_naive, False),
+                ]:
+                    params = [plant_location]
+                    shift_sql = ""
+                    if with_shift:
+                        shift_sql = " AND TRIM(shift) = %s"
+                        params.append(current_shift)
+                    params.extend([start_bound, end_bound])
+                    cursor.execute(
+                        f"""
+                        SELECT
+                            TRIM(machine_no::text) AS machine_key,
+                            COALESCE(SUM(CASE WHEN UPPER(TRIM(ideal_mode)) = 'ONLINE' THEN COALESCE(ideal_time, 0) ELSE 0 END), 0) AS online_seconds,
+                            COALESCE(SUM(CASE WHEN UPPER(TRIM(ideal_mode)) = 'OFFLINE' THEN COALESCE(ideal_time, 0) ELSE 0 END), 0) AS offline_seconds
+                        FROM live_data.ideal_time_segments_reason
+                        WHERE TRIM(plant_location) = %s
+                          {shift_sql}
+                          AND ideal_start_at >= %s
+                          AND ideal_start_at < %s
+                        GROUP BY TRIM(machine_no::text)
+                        """,
+                        params,
+                    )
+                    for row in cursor.fetchall():
+                        add_ideal_row(target, row[0], row[1], row[2])
+
+                # Latest valid tool id in current shift.
+                cursor.execute(
+                    f"""
+                    SELECT DISTINCT ON (TRIM(machine_no::text))
+                        TRIM(machine_no::text) AS machine_key,
+                        LOWER(LEFT(TRIM(tool_id::text), 24)) AS clean_tool_id
+                    FROM {data_table}
+                    WHERE timestamp >= %s
+                      AND timestamp < %s
+                      AND tool_id IS NOT NULL
+                      AND LOWER(LEFT(TRIM(tool_id::text), 24)) ~ '^e2[0-9a-f]{{22}}$'
+                      AND LOWER(LEFT(TRIM(tool_id::text), 24)) NOT LIKE 'e000%%'
+                    ORDER BY TRIM(machine_no::text), timestamp DESC
+                    """,
+                    [shift_start_naive, now_naive],
+                )
+                for machine_key, tool_id in cursor.fetchall():
+                    bulk_latest_tool[str(machine_key).strip()] = tool_id
+
+                # Latest valid shut height in current shift.
+                cursor.execute(
+                    f"""
+                    WITH valid_height AS (
+                        SELECT
+                            TRIM(machine_no::text) AS machine_key,
+                            timestamp,
+                            CASE
+                                WHEN TRIM(shut_height::text) ~ '^[0-9]+(\\.[0-9]+)?$'
+                                THEN TRIM(shut_height::text)::numeric
+                                ELSE NULL
+                            END AS height_value
+                        FROM {data_table}
+                        WHERE timestamp >= %s
+                          AND timestamp < %s
+                    )
+                    SELECT DISTINCT ON (machine_key)
+                        machine_key,
+                        height_value
+                    FROM valid_height
+                    WHERE height_value > 10
+                    ORDER BY machine_key, timestamp DESC
+                    """,
+                    [shift_start_naive, now_naive],
+                )
+                for machine_key, height_value in cursor.fetchall():
+                    bulk_latest_shut_height[str(machine_key).strip()] = float(height_value)
+
         except Exception as e:
-            print(f"❌ Bulk Data Query Error: {e}")
+            print(f"❌ Plant {plant_no} live bulk query error: {e}")
 
-        # =====================================================================
-        # 🚀 STEP 2: LOOP THROUGH MACHINES
-        # =====================================================================
-        collected_tools = set()
-        intermediate_machine_data = []
+        enhanced_machines = []
+        problem_machines = []
 
         for machine_no in all_mapped_machines:
-            machine_data = None
-            for m in live_machines:
-                if m["machine_no"] == machine_no and m.get("plant") == 2:
-                    machine_data = m
-                    break
-
+            m_str = str(machine_no)
+            machine_data = live_by_machine.get(machine_no)
             try:
-                idle_status = (
-                    PLANT2_EXACT_REQUIREMENT_STATE.idle_tracker.get_idle_status(
-                        machine_no, now_ist
-                    )
-                )
-                status_info = PLANT2_EXACT_REQUIREMENT_STATE.get_machine_status(
-                    machine_no
-                )
+                idle_status = state_obj.idle_tracker.get_idle_status(machine_no, now_ist)
+                status_info = state_obj.get_machine_status(machine_no)
 
-                m_str = str(machine_no)
-                db_last_hour = bulk_last_hour.get(m_str, 0)
-                db_cumulative = bulk_cumulative.get(m_str, 0)
-                db_shift_idle = bulk_shift_idle.get(m_str, 0)
+                is_on = bool(status_info.get("machine_on"))
+                is_producing = bool(status_info.get("is_producing"))
 
-                total_shift_idle = db_shift_idle + idle_status["hourly_idle_total"]
+                db_ideal_today = bulk_ideal_today.get(m_str, empty_ideal_summary())
+                db_ideal_shift = bulk_ideal_shift.get(m_str, empty_ideal_summary())
+                db_ideal_hour = bulk_ideal_hour.get(m_str, empty_ideal_summary())
 
-                is_on = status_info["machine_on"]
-                is_producing = status_info["is_producing"]
+                live_ideal_mode = None
+                live_ideal_seconds = 0
+                live_ideal_hour_seconds = 0
 
-                # 🌟 FIX 1: OFFLINE TIME TRACKING (Uses both JSON + COUNT to know when machine died)
                 last_signal_time = None
-                if (
-                    machine_no in PLANT2_EXACT_REQUIREMENT_STATE.last_count_time
-                    and machine_no in PLANT2_EXACT_REQUIREMENT_STATE.machine_json_status
-                ):
-                    last_signal_time = max(
-                        PLANT2_EXACT_REQUIREMENT_STATE.last_count_time[machine_no],
-                        PLANT2_EXACT_REQUIREMENT_STATE.machine_json_status[machine_no][
-                            "last_json_time"
-                        ],
-                    )
-                elif machine_no in PLANT2_EXACT_REQUIREMENT_STATE.last_count_time:
-                    last_signal_time = PLANT2_EXACT_REQUIREMENT_STATE.last_count_time[
-                        machine_no
-                    ]
-                elif machine_no in PLANT2_EXACT_REQUIREMENT_STATE.machine_json_status:
-                    last_signal_time = (
-                        PLANT2_EXACT_REQUIREMENT_STATE.machine_json_status[machine_no][
-                            "last_json_time"
-                        ]
-                    )
+                last_count_time_map = getattr(state_obj, "last_count_time", {})
+                machine_json_status = getattr(state_obj, "machine_json_status", {})
+                if machine_no in last_count_time_map and machine_no in machine_json_status:
+                    last_signal_time = max(last_count_time_map[machine_no], machine_json_status[machine_no]["last_json_time"])
+                elif machine_no in last_count_time_map:
+                    last_signal_time = last_count_time_map[machine_no]
+                elif machine_no in machine_json_status:
+                    last_signal_time = machine_json_status[machine_no]["last_json_time"]
 
-                # Ignore yesterday's signal
                 if last_signal_time and last_signal_time < shift_start:
                     last_signal_time = None
 
                 offline_since_str = None
                 offline_duration_minutes = None
 
-                if not is_on:  # Completely offline
-                    if last_signal_time:
-                        offline_since_obj = last_signal_time
-                    else:
-                        offline_since_obj = shift_start
-
+                if not is_on:
+                    offline_since_obj = last_signal_time or shift_start
                     offline_since_str = offline_since_obj.strftime("%H:%M:%S")
-                    offline_duration_minutes = int(
-                        (now_ist - offline_since_obj).total_seconds() / 60
-                    )
+                    offline_duration_minutes = int(max(0, (now_ist - offline_since_obj).total_seconds()) / 60)
+                    live_ideal_mode = "OFFLINE"
+                    live_ideal_seconds = max(0, int((now_ist - offline_since_obj).total_seconds()))
+                    live_ideal_hour_seconds = max(0, int((now_ist - max(offline_since_obj, current_hour)).total_seconds()))
 
                 on_since_str = None
                 first_count_str = None
                 time_to_first_count = None
+                machine_on_since = getattr(state_obj, "machine_on_since", {})
+                first_count_time = getattr(state_obj, "first_count_time", {})
 
-                if (
-                    is_on
-                    and machine_no in PLANT2_EXACT_REQUIREMENT_STATE.machine_on_since
-                ):
-                    on_since = PLANT2_EXACT_REQUIREMENT_STATE.machine_on_since[
-                        machine_no
-                    ]
+                if is_on and machine_no in machine_on_since:
+                    on_since = machine_on_since[machine_no]
                     if on_since >= shift_start:
                         on_since_str = on_since.strftime("%H:%M:%S")
-                        if (
-                            machine_no
-                            in PLANT2_EXACT_REQUIREMENT_STATE.first_count_time
-                        ):
-                            first_count = (
-                                PLANT2_EXACT_REQUIREMENT_STATE.first_count_time[
-                                    machine_no
-                                ]
-                            )
-                            if first_count >= shift_start:
-                                first_count_str = first_count.strftime("%H:%M:%S")
-                                delay = (first_count - on_since).total_seconds()
-                                time_to_first_count = int(delay / 60)
+                        if machine_no in first_count_time and first_count_time[machine_no] >= shift_start:
+                            first_count = first_count_time[machine_no]
+                            first_count_str = first_count.strftime("%H:%M:%S")
+                            time_to_first_count = int((first_count - on_since).total_seconds() / 60)
 
-                # 🌟 FIX 2: IMPROVED SHUT HEIGHT FETCHING 🌟
-                segment_info = PLANT2_EXACT_REQUIREMENT_STATE.machine_segments.get(
-                    machine_no, {}
+                segment_info = getattr(state_obj, "machine_segments", {}).get(machine_no, {})
+                segment_shut_height = segment_info.get("shut_height") if isinstance(segment_info, dict) else None
+                status_shut_height = status_info.get("shut_height")
+
+                if _is_failed_shut_height_reading(status_shut_height):
+                    final_shut_height = "Failed"
+                else:
+                    final_shut_height = (
+                        _parse_valid_shut_height(status_shut_height)
+                        or _parse_valid_shut_height(segment_shut_height)
+                        or bulk_latest_shut_height.get(m_str)
+                        or "No data"
+                    )
+
+                safe_current_tool_id = (
+                    _normalize_tool_id(status_info.get("tool_id"))
+                    or _normalize_tool_id(segment_info.get("tool_id") if isinstance(segment_info, dict) else None)
+                    or bulk_latest_tool.get(m_str)
+                    or "N/A"
                 )
-                segment_shut_height = segment_info.get("shut_height")
 
-                final_shut_height = 0.0
-                if segment_shut_height and str(segment_shut_height) not in [
-                    "No data",
-                    "Failed",
-                    "None",
-                    "0",
-                    "0.0",
-                    "",
-                ]:
-                    try:
-                        final_shut_height = float(segment_shut_height)
-                    except:
-                        pass
-                elif (
-                    status_info["shut_height"]
-                    and status_info["shut_height"] != "No data"
-                ):
-                    try:
-                        final_shut_height = float(status_info["shut_height"])
-                    except:
-                        pass
+                if is_on and (not is_producing) and idle_status.get("is_idle"):
+                    live_ideal_mode = "ONLINE"
+                    online_start_obj = last_count_time_map.get(machine_no)
+                    if not online_start_obj or online_start_obj < shift_start:
+                        online_start_obj = machine_on_since.get(machine_no, shift_start)
+                    live_ideal_seconds = max(0, int((now_ist - online_start_obj).total_seconds()))
+                    live_ideal_hour_seconds = max(0, int((now_ist - max(online_start_obj, current_hour)).total_seconds()))
+
+                online_ideal_today_seconds = db_ideal_today["ONLINE"] + (live_ideal_seconds if live_ideal_mode == "ONLINE" else 0)
+                offline_ideal_today_seconds = db_ideal_today["OFFLINE"] + (live_ideal_seconds if live_ideal_mode == "OFFLINE" else 0)
+                online_ideal_shift_seconds = db_ideal_shift["ONLINE"] + (live_ideal_seconds if live_ideal_mode == "ONLINE" else 0)
+                offline_ideal_shift_seconds = db_ideal_shift["OFFLINE"] + (live_ideal_seconds if live_ideal_mode == "OFFLINE" else 0)
+                online_ideal_hour_seconds = db_ideal_hour["ONLINE"] + (live_ideal_hour_seconds if live_ideal_mode == "ONLINE" else 0)
+                offline_ideal_hour_seconds = db_ideal_hour["OFFLINE"] + (live_ideal_hour_seconds if live_ideal_mode == "OFFLINE" else 0)
 
                 exact_data = {
                     "machine_no": machine_no,
-                    "current_hour_count": PLANT2_EXACT_REQUIREMENT_STATE.current_hour_counts.get(
-                        machine_no, 0
-                    ),
-                    "last_hour_count": db_last_hour,
-                    "cumulative_count": db_cumulative,
-                    "idle_time": idle_status["hourly_idle_total"],
-                    "total_shift_idle_time": total_shift_idle,
+                    "current_hour_count": bulk_current_hour.get(m_str, 0),
+                    "last_hour_count": bulk_last_hour.get(m_str, 0),
+                    "cumulative_count": bulk_cumulative.get(m_str, 0),
+                    "idle_time": online_ideal_hour_seconds + offline_ideal_hour_seconds,
+                    "total_shift_idle_time": online_ideal_shift_seconds + offline_ideal_shift_seconds,
+                    "live_ideal_mode": live_ideal_mode,
+                    "live_ideal_time": live_ideal_seconds,
+                    "live_ideal_display": _seconds_to_display(live_ideal_seconds),
+                    "online_ideal_this_hour": online_ideal_hour_seconds,
+                    "offline_ideal_this_hour": offline_ideal_hour_seconds,
+                    "total_ideal_this_hour": online_ideal_hour_seconds + offline_ideal_hour_seconds,
+                    "online_ideal_this_hour_display": _seconds_to_display(online_ideal_hour_seconds),
+                    "offline_ideal_this_hour_display": _seconds_to_display(offline_ideal_hour_seconds),
+                    "total_ideal_this_hour_display": _seconds_to_display(online_ideal_hour_seconds + offline_ideal_hour_seconds),
+                    "online_ideal_shift": online_ideal_shift_seconds,
+                    "offline_ideal_shift": offline_ideal_shift_seconds,
+                    "total_ideal_shift": online_ideal_shift_seconds + offline_ideal_shift_seconds,
+                    "online_ideal_shift_display": _seconds_to_display(online_ideal_shift_seconds),
+                    "offline_ideal_shift_display": _seconds_to_display(offline_ideal_shift_seconds),
+                    "total_ideal_shift_display": _seconds_to_display(online_ideal_shift_seconds + offline_ideal_shift_seconds),
+                    "online_ideal_today": online_ideal_today_seconds,
+                    "offline_ideal_today": offline_ideal_today_seconds,
+                    "total_ideal_today": online_ideal_today_seconds + offline_ideal_today_seconds,
+                    "online_ideal_today_display": _seconds_to_display(online_ideal_today_seconds),
+                    "offline_ideal_today_display": _seconds_to_display(offline_ideal_today_seconds),
+                    "total_ideal_today_display": _seconds_to_display(online_ideal_today_seconds + offline_ideal_today_seconds),
                     "shift": current_shift,
                     "machine_on": is_on,
                     "is_producing": is_producing,
-                    "has_count_data": status_info["has_count_data"],
-                    "has_json_data": status_info["has_json_data"],
-                    "count_seconds_ago": status_info["count_seconds_ago"],
-                    "json_seconds_ago": status_info["json_seconds_ago"],
-                    "current_tool_id": status_info["tool_id"],
-                    # ✅ ULTIMATE FIX: Key ka naam 'shut_height' hona chahiye (Pehle 'current_shut_height' tha)
+                    "has_count_data": status_info.get("has_count_data", False),
+                    "has_json_data": status_info.get("has_json_data", False),
+                    "count_seconds_ago": status_info.get("count_seconds_ago"),
+                    "json_seconds_ago": status_info.get("json_seconds_ago"),
+                    "current_tool_id": safe_current_tool_id,
+                    "tool_id": safe_current_tool_id,
                     "shut_height": final_shut_height,
-                    "data_source": status_info["data_source"],
+                    "current_shut_height": final_shut_height,
+                    "data_source": status_info.get("data_source", "NONE"),
                     "on_since": on_since_str,
                     "first_count_at": first_count_str,
                     "time_to_first_count": time_to_first_count,
                     "offline_since": offline_since_str,
                     "offline_duration_minutes": offline_duration_minutes,
+                    "last_activity": last_count_time_map[machine_no].strftime("%H:%M:%S") if machine_no in last_count_time_map and last_count_time_map[machine_no] >= shift_start else "Never",
+                    "live_idle_time": idle_status.get("live_idle_time", "0m"),
+                    "accumulated_idle_time": idle_status.get("accumulated_idle_time", "0m"),
+                    "hourly_idle_total": idle_status.get("hourly_idle_total", 0),
+                    "is_idle": idle_status.get("is_idle", False),
+                    "idle_type": idle_status.get("idle_type"),
+                    "status": "OFFLINE" if not is_on else idle_status.get("status", "ONLINE"),
+                    "machine_group": get_machine_group_func(machine_no),
+                    "plant": plant_no,
                 }
 
-                tool_id = exact_data.get("current_tool_id", "N/A")
-
                 m_data = machine_data or {
-                    "plant": 2,
+                    "plant": plant_no,
                     "machine_no": machine_no,
-                    "tool_id": tool_id if is_on else f"PLANT2_M{machine_no:02d}",
+                    "tool_id": safe_current_tool_id if safe_current_tool_id != "N/A" else f"PLANT{plant_no}_M{machine_no:02d}",
                     "count": 0,
                     "shut_height": final_shut_height,
                     "last_seen": "JSON only" if is_on else "Not active",
-                    "status": "OFFLINE" if not is_on else idle_status["status"],
-                    "current_hour_count": 0,
-                    "last_hour_count": 0,
-                    "cumulative_count": 0,
-                    "shift": exact_data.get("shift", "A"),
-                    "idle_time": idle_status["hourly_idle_total"],
+                    "status": exact_data["status"],
                 }
-
                 m_data.update(exact_data)
+                m_data.update(_tid_payload(safe_current_tool_id))
+                m_data["tool_id"] = safe_current_tool_id
+                m_data["current_tool_id"] = safe_current_tool_id
+                m_data["machine_group"] = get_machine_group_func(machine_no)
 
-                problem_detected = is_on and not is_producing and idle_status["is_idle"]
+                problem_detected = is_on and (not is_producing) and idle_status.get("is_idle")
                 m_data["problem_detected"] = problem_detected
                 if problem_detected:
                     problem_machines.append(machine_no)
 
-                # 🌟 MASTER FIX 3: IDLE TIMER FIX 🌟
-                last_count_obj = PLANT2_EXACT_REQUIREMENT_STATE.last_count_time.get(
-                    machine_no
-                )
-                if last_count_obj and last_count_obj >= shift_start:
-                    m_data["last_activity"] = last_count_obj.strftime("%H:%M:%S")
-                else:
-                    m_data["last_activity"] = "Never"
-
-                m_data.update(
-                    {
-                        "live_idle_time": idle_status["live_idle_time"],
-                        "accumulated_idle_time": idle_status["accumulated_idle_time"],
-                        "hourly_idle_total": idle_status["hourly_idle_total"],
-                        "idle_time": idle_status["hourly_idle_total"],
-                        "is_idle": idle_status["is_idle"],
-                        "idle_type": idle_status["idle_type"],
-                    }
-                )
-
-                tool_id_for_bulk = m_data.get("tool_id", "")
-                if (
-                    tool_id_for_bulk
-                    and tool_id_for_bulk != "N/A"
-                    and not tool_id_for_bulk.startswith("PLANT2_M")
-                ):
-                    collected_tools.add(tool_id_for_bulk[:24])
-
-                intermediate_machine_data.append(
-                    {
-                        "has_data": True,
-                        "data": m_data,
-                        "machine_no": machine_no,
-                        "idle_status": idle_status,
-                    }
-                )
-
+                enhanced_machines.append(m_data)
             except Exception as e:
-                print(f"⚠️ M{machine_no} error: {e}")
-                intermediate_machine_data.append(
-                    {
-                        "has_data": False,
-                        "data": None,
-                        "machine_no": machine_no,
-                        "idle_status": None,
-                    }
-                )
+                print(f"⚠️ Plant {plant_no} M{machine_no} live API error: {e}")
+                enhanced_machines.append({
+                    "plant": plant_no,
+                    "machine_no": machine_no,
+                    "tool_id": f"PLANT{plant_no}_M{machine_no:02d}",
+                    "current_tool_id": "N/A",
+                    "count": 0,
+                    "shut_height": "No data",
+                    "current_hour_count": 0,
+                    "last_hour_count": 0,
+                    "cumulative_count": 0,
+                    "shift": current_shift,
+                    "machine_group": get_machine_group_func(machine_no),
+                    "machine_on": False,
+                    "is_producing": False,
+                    "problem_detected": False,
+                    "status": "OFFLINE",
+                    "idle_time": 0,
+                    "total_shift_idle_time": 0,
+                    "tool_customer": "N/A",
+                    "tool_model": "N/A",
+                    "tool_part_name": "N/A",
+                    "tool_part_number": "N/A",
+                    "tool_name": "N/A",
+                    "tool_epc": "N/A",
+                })
 
-        # =====================================================================
-        # 🚀 STEP 3: BULK TOOL FETCH
-        # =====================================================================
-        bulk_tool_info = {}
-        if collected_tools:
-            try:
-                with connection.cursor() as cursor:
-                    cursor.execute(
-                        "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'tid_map'"
-                    )
-                    columns = [row[0] for row in cursor.fetchall()]
-                    epc_column = next(
-                        (col for col in columns if col.upper() == "EPC"), None
-                    )
-
-                    if epc_column:
-                        format_strings = ",".join(["%s"] * len(collected_tools))
-                        query = f'SELECT * FROM public.tid_map WHERE "{epc_column}" IN ({format_strings})'
-                        cursor.execute(query, tuple(collected_tools))
-
-                        for result in cursor.fetchall():
-                            row_dict = dict(zip(columns, result))
-
-                            def get_value(search_key):
-                                for col_name, col_value in row_dict.items():
-                                    if col_name.upper() == search_key.upper():
-                                        return col_value if col_value else "N/A"
-                                return "N/A"
-
-                            epc = get_value("EPC")
-                            bulk_tool_info[epc] = {
-                                "customer": get_value("CUSTOMER"),
-                                "model": get_value("MODEL"),
-                                "part_name": get_value("PART_NAME"),
-                                "tool_name": get_value("TOOL_NAME"),
-                                "epc": epc,
-                                "part_number": get_value("PART_NUMBER"),
-                                "tpm": (
-                                    int(get_value("TPM"))
-                                    if get_value("TPM") != "N/A"
-                                    else 0
-                                ),
-                            }
-            except Exception as e:
-                print(f"❌ Bulk Tool Fetch Error: {e}")
-
-        # =====================================================================
-        # 🚀 STEP 4: FINAL ASSEMBLY
-        # =====================================================================
-        for item in intermediate_machine_data:
-            machine_no = item["machine_no"]
-            if item["has_data"]:
-                machine_data = item["data"]
-                tool_id = machine_data.get("tool_id", "")
-                clean_tool_id = tool_id[:24] if tool_id else ""
-                tool_info = bulk_tool_info.get(clean_tool_id, {})
-
-                machine_data.update(
-                    {
-                        "machine_group": get_machine_group(machine_no),
-                        "tool_customer": tool_info.get("customer", "N/A"),
-                        "tool_model": tool_info.get("model", "N/A"),
-                        "tool_part_name": tool_info.get("part_name", "N/A"),
-                        "tool_name": tool_info.get("tool_name", "N/A"),
-                        "tool_part_number": tool_info.get("part_number", "N/A"),
-                        "tool_tpm": tool_info.get("tpm", 0),
-                        "tool_epc": tool_info.get("epc", "N/A"),
-                        "plant": 2,
-                    }
-                )
-                enhanced_machines.append(machine_data)
-
-        enhanced_machines.sort(key=lambda x: x["machine_no"])
-
+        enhanced_machines.sort(key=lambda x: int(x.get("machine_no", 0)))
         on_machines = [m for m in enhanced_machines if m.get("machine_on")]
         producing_machines = [m for m in enhanced_machines if m.get("is_producing")]
 
         groups_summary = {}
-        for group in ["J1", "J2", "J3", "J4", "J5", "J6", "J7", "J8", "J9"]:
-            group_machines = [
-                m for m in enhanced_machines if m.get("machine_group") == group
-            ]
+        for group in group_names:
+            group_machines = [m for m in enhanced_machines if m.get("machine_group") == group]
             if group_machines:
                 groups_summary[group] = {
                     "total": len(group_machines),
                     "on": len([m for m in group_machines if m.get("machine_on")]),
-                    "producing": len(
-                        [m for m in group_machines if m.get("is_producing")]
-                    ),
-                    "problems": len(
-                        [m for m in group_machines if m.get("problem_detected")]
-                    ),
+                    "producing": len([m for m in group_machines if m.get("is_producing")]),
+                    "problems": len([m for m in group_machines if m.get("problem_detected")]),
                 }
 
-        response = Response(
-            {
-                "success": True,
-                "total_machines": len(enhanced_machines),
-                "on_count": len(on_machines),
-                "producing_count": len(producing_machines),
-                "problem_count": len(problem_machines),
-                "problem_machines": problem_machines,
-                "groups_summary": groups_summary,
-                "machines": enhanced_machines,
-                "plant": 2,
-            }
-        )
+        response = Response({
+            "success": True,
+            "total_machines": len(enhanced_machines),
+            "on_count": len(on_machines),
+            "producing_count": len(producing_machines),
+            "problem_count": len(problem_machines),
+            "problem_machines": problem_machines,
+            "groups_summary": groups_summary,
+            "machines": enhanced_machines,
+            "plant": plant_no,
+        })
         response["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
+        response["Pragma"] = "no-cache"
+        response["Expires"] = "0"
         return response
-
     except Exception as e:
         import traceback
-
         traceback.print_exc()
-        return Response(
-            {"success": False, "error": str(e), "machines": [], "plant": 2}, status=500
-        )
+        return Response({"success": False, "error": str(e), "machines": [], "plant": plant_no}, status=500)
+
+
+@never_cache
+@api_view(["GET"])
+def plant1_live(request):
+    from apps.mqtt.simple_plant1 import PLANT1_EXACT_REQUIREMENT_STATE, TOPIC_MACHINE_MAPPING, get_machine_group
+    return _plant_live_common(
+        request=request,
+        plant_no=1,
+        plant_location="Plant 1",
+        data_table="live_data.plant1_data",
+        state_obj=PLANT1_EXACT_REQUIREMENT_STATE,
+        topic_mapping=TOPIC_MACHINE_MAPPING,
+        get_machine_group_func=get_machine_group,
+        group_names=["JJ5", "JJ6", "JJ7", "JJ8", "JJ9", "JJ10", "JJ11", "JJ12", "JJ13", "JJ14", "JJ15"],
+    )
+
+
+@never_cache
+@api_view(["GET"])
+def plant2_live(request):
+    from apps.mqtt.simple_plant2 import PLANT2_EXACT_REQUIREMENT_STATE, TOPIC_MACHINE_MAPPING, get_machine_group
+    return _plant_live_common(
+        request=request,
+        plant_no=2,
+        plant_location="Plant 2",
+        data_table="live_data.plant2_data",
+        state_obj=PLANT2_EXACT_REQUIREMENT_STATE,
+        topic_mapping=TOPIC_MACHINE_MAPPING,
+        get_machine_group_func=get_machine_group,
+        group_names=["J1", "J2", "J3", "J4", "J5", "J6", "J7", "J8", "J9"],
+    )
+
+
+def _plant_history_common(request, plant_no, plant_location, data_table, lunch_start_tuple, lunch_end_tuple):
+    try:
+        import pytz
+        from datetime import datetime, timedelta, time
+
+        request_plant_no = int(request.GET.get("plant_no", plant_no))
+        # Force correct endpoint plant no; request param should not switch tables.
+        request_plant_no = plant_no
+
+        machine_no = str(request.GET.get("machine_no", "")).strip()
+        date_str = request.GET.get("date", "").strip()
+        shift_param = str(request.GET.get("shift", "A")).strip().upper()
+
+        ist_tz = pytz.timezone("Asia/Kolkata")
+        now_ist = datetime.now(ist_tz)
+
+        if not date_str:
+            date_str = now_ist.strftime("%Y-%m-%d")
+        if not machine_no:
+            return Response({"success": False, "error": "machine_no is required"}, status=400)
+
+        target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+
+        def localize_ist(dt):
+            if dt.tzinfo is None:
+                return ist_tz.localize(dt)
+            return dt.astimezone(ist_tz)
+
+        def to_naive_str(dt):
+            return localize_ist(dt).replace(tzinfo=None, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+
+        def title_time(dt):
+            return localize_ist(dt).strftime("%I:%M %p")
+
+        def system_time(dt):
+            return localize_ist(dt).strftime("%Y-%m-%d %H:%M:%S")
+
+        def get_shift_window(date_obj, shift_name):
+            """A = 08:30-20:00, B = 20:00-next 08:30, ALL = 08:30-next 08:30."""
+            shift_name = (shift_name or "A").upper()
+            if shift_name == "B":
+                start = ist_tz.localize(datetime.combine(date_obj, time(20, 0, 0)))
+                end = ist_tz.localize(datetime.combine(date_obj + timedelta(days=1), time(8, 30, 0)))
+                return start, end, "B"
+            if shift_name == "ALL":
+                start = ist_tz.localize(datetime.combine(date_obj, time(8, 30, 0)))
+                end = ist_tz.localize(datetime.combine(date_obj + timedelta(days=1), time(8, 30, 0)))
+                return start, end, "ALL"
+            start = ist_tz.localize(datetime.combine(date_obj, time(8, 30, 0)))
+            end = ist_tz.localize(datetime.combine(date_obj, time(20, 0, 0)))
+            return start, end, "A"
+
+        shift_start, shift_end, selected_shift = get_shift_window(target_date, shift_param)
+        effective_end = shift_end
+        if shift_start <= now_ist <= shift_end:
+            effective_end = min(shift_end, now_ist)
+
+        start_str_naive = to_naive_str(shift_start)
+        end_str_naive = to_naive_str(effective_end)
+        start_str_tz = localize_ist(shift_start).strftime("%Y-%m-%d %H:%M:%S+05:30")
+        end_str_tz = localize_ist(effective_end).strftime("%Y-%m-%d %H:%M:%S+05:30")
+
+        hour_buckets = []
+        cursor_time = shift_start
+        while cursor_time < effective_end:
+            if cursor_time.minute != 0 or cursor_time.second != 0:
+                next_time = cursor_time.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+            else:
+                next_time = cursor_time + timedelta(hours=1)
+            if next_time > shift_end:
+                next_time = shift_end
+            bucket_end = min(next_time, effective_end)
+            hour_buckets.append({
+                "bucket_key": to_naive_str(cursor_time),
+                "start": cursor_time,
+                "end": bucket_end,
+                "scheduled_end": next_time,
+                "count": 0,
+                "latest_cumulative": 0,
+                "online_ideal_seconds": 0,
+                "offline_ideal_seconds": 0,
+                "total_ideal_seconds": 0,
+                "ideal_segments": [],
+                "machine_events": [],
+                "on_off_events": [],
+                "tool_changes": [],
+                "shut_height_changes": [],
+            })
+            cursor_time = next_time
+
+        bucket_by_key = {b["bucket_key"]: b for b in hour_buckets}
+
+        def find_bucket_for_time(dt):
+            dt = localize_ist(dt)
+            for bucket in hour_buckets:
+                if bucket["start"] <= dt < bucket["scheduled_end"]:
+                    return bucket
+            if hour_buckets and dt == hour_buckets[-1]["scheduled_end"]:
+                return hour_buckets[-1]
+            return None
+
+        def add_timeline_event(events, dt, event_type, title, details, shift="", extra=None):
+            dt = localize_ist(dt)
+            payload = {
+                "timestamp": dt.timestamp(),
+                "time": dt.strftime("%I:%M %p"),
+                "time_str": dt.strftime("%I:%M %p"),
+                "system_time": dt.strftime("%Y-%m-%d %H:%M:%S"),
+                "type": event_type,
+                "title": title,
+                "details": details or "",
+                "shift": shift or ("A" if selected_shift == "ALL" else selected_shift),
+            }
+            if extra:
+                payload.update(extra)
+            events.append(payload)
+            return payload
+
+        events = []
+        machine_meta = {
+            "customer": "N/A",
+            "customer_name": "N/A",
+            "model": "N/A",
+            "model_name": "N/A",
+            "part_name": "N/A",
+            "part_number": "N/A",
+            "tool_name": "N/A",
+            "tool_id": "N/A",
+            "epc": "N/A",
+            "shut_height": "N/A",
+        }
+
+        if shift_start <= now_ist or target_date < now_ist.date():
+            add_timeline_event(
+                events,
+                shift_start,
+                "SHIFT_START",
+                f"Shift {selected_shift} Started" if selected_shift != "ALL" else "Production Day Started",
+                f"History window started at {shift_start.strftime('%I:%M %p')}.",
+                selected_shift,
+            )
+
+        lunch_start = ist_tz.localize(datetime.combine(target_date, time(lunch_start_tuple[0], lunch_start_tuple[1], 0)))
+        lunch_end = ist_tz.localize(datetime.combine(target_date, time(lunch_end_tuple[0], lunch_end_tuple[1], 0)))
+        if shift_start <= lunch_start < effective_end:
+            add_timeline_event(events, lunch_start, "LUNCH_START", "Lunch Break Started", f"Scheduled lunch break started at {lunch_start.strftime('%I:%M %p')}.", "A")
+        if shift_start <= lunch_end < effective_end:
+            add_timeline_event(events, lunch_end, "LUNCH_END", "Lunch Break Ended", f"Scheduled lunch break ended at {lunch_end.strftime('%I:%M %p')}.", "A")
+
+        if selected_shift == "A" and shift_end <= effective_end:
+            add_timeline_event(events, shift_end, "SHIFT_END", "Shift A Ended", "Shift A ended at 08:00 PM.", "A")
+        elif selected_shift == "B" and shift_end <= effective_end:
+            add_timeline_event(events, shift_end, "SHIFT_END", "Shift B Ended", "Shift B ended at 08:30 AM.", "B")
+        elif selected_shift == "ALL":
+            shift_a_end = ist_tz.localize(datetime.combine(target_date, time(20, 0, 0)))
+            if shift_start <= shift_a_end <= effective_end:
+                add_timeline_event(events, shift_a_end, "SHIFT_END", "Shift A Ended", "Shift A ended at 08:00 PM.", "A")
+
+        count_summary = {
+            "total_count": 0,
+            "first_count_time": None,
+            "last_count_time": None,
+            "latest_cumulative": 0,
+        }
+        shift_ideal_summary = {
+            "online_ideal_seconds": 0,
+            "offline_ideal_seconds": 0,
+            "total_ideal_seconds": 0,
+            "online_ideal_display": "0 sec",
+            "offline_ideal_display": "0 sec",
+            "total_ideal_display": "0 sec",
+        }
+
+        with connection.cursor() as cursor:
+            # 1) Latest tool metadata.
+            cursor.execute(
+                f"""
+                SELECT LOWER(LEFT(TRIM(tool_id::text), 24)) AS clean_tool_id
+                FROM {data_table}
+                WHERE machine_no = %s
+                  AND timestamp >= %s::timestamp WITHOUT TIME ZONE
+                  AND timestamp <  %s::timestamp WITHOUT TIME ZONE
+                  AND tool_id IS NOT NULL
+                  AND LOWER(LEFT(TRIM(tool_id::text), 24)) ~ '^e2[0-9a-f]{{22}}$'
+                  AND LOWER(LEFT(TRIM(tool_id::text), 24)) NOT LIKE 'e000%%'
+                ORDER BY timestamp DESC
+                LIMIT 1
+                """,
+                [machine_no, start_str_naive, end_str_naive],
+            )
+            tool_res = cursor.fetchone()
+            if tool_res and tool_res[0]:
+                tool_id = _normalize_tool_id(tool_res[0])
+                if tool_id:
+                    machine_meta.update(_tid_payload(tool_id))
+                    machine_meta["tool_id"] = tool_id
+
+            # Latest shut height.
+            cursor.execute(
+                f"""
+                SELECT shut_height
+                FROM {data_table}
+                WHERE machine_no = %s
+                  AND timestamp >= %s::timestamp WITHOUT TIME ZONE
+                  AND timestamp <  %s::timestamp WITHOUT TIME ZONE
+                ORDER BY timestamp DESC
+                LIMIT 1
+                """,
+                [machine_no, start_str_naive, end_str_naive],
+            )
+            latest_raw_height_res = cursor.fetchone()
+            latest_raw_height = latest_raw_height_res[0] if latest_raw_height_res else None
+            if _is_failed_shut_height_reading(latest_raw_height):
+                machine_meta["shut_height"] = "Failed"
+            else:
+                cursor.execute(
+                    f"""
+                    WITH valid_height AS (
+                        SELECT
+                            timestamp,
+                            CASE
+                                WHEN TRIM(shut_height::text) ~ '^[0-9]+(\\.[0-9]+)?$'
+                                THEN TRIM(shut_height::text)::numeric
+                                ELSE NULL
+                            END AS height_value
+                        FROM {data_table}
+                        WHERE machine_no = %s
+                          AND timestamp >= %s::timestamp WITHOUT TIME ZONE
+                          AND timestamp <  %s::timestamp WITHOUT TIME ZONE
+                    )
+                    SELECT height_value
+                    FROM valid_height
+                    WHERE height_value > 10
+                    ORDER BY timestamp DESC
+                    LIMIT 1
+                    """,
+                    [machine_no, start_str_naive, end_str_naive],
+                )
+                height_res = cursor.fetchone()
+                if height_res and height_res[0] is not None:
+                    machine_meta["shut_height"] = f"{float(height_res[0]):.2f}"
+
+            # 2) Hour-wise production count.
+            first_bucket_end = hour_buckets[0]["scheduled_end"] if hour_buckets else effective_end
+            first_bucket_start_str = to_naive_str(shift_start)
+            first_bucket_end_str = to_naive_str(first_bucket_end)
+
+            cursor.execute(
+                f"""
+                SELECT
+                    CASE
+                        WHEN timestamp >= %s::timestamp WITHOUT TIME ZONE
+                         AND timestamp <  %s::timestamp WITHOUT TIME ZONE
+                        THEN %s::timestamp WITHOUT TIME ZONE
+                        ELSE date_trunc('hour', timestamp)
+                    END AS bucket_start,
+                    COALESCE(SUM(count), 0) AS total_count,
+                    COALESCE(MAX(cumulative_count), 0) AS latest_cumulative,
+                    MIN(timestamp) AS first_count_time,
+                    MAX(timestamp) AS last_count_time
+                FROM {data_table}
+                WHERE machine_no = %s
+                  AND timestamp >= %s::timestamp WITHOUT TIME ZONE
+                  AND timestamp <  %s::timestamp WITHOUT TIME ZONE
+                GROUP BY bucket_start
+                ORDER BY bucket_start ASC
+                """,
+                [first_bucket_start_str, first_bucket_end_str, first_bucket_start_str, machine_no, start_str_naive, end_str_naive],
+            )
+            for bucket_start, total_count, latest_cumulative, first_count_time, last_count_time in cursor.fetchall():
+                bucket_key = bucket_start.strftime("%Y-%m-%d %H:%M:%S")
+                bucket = bucket_by_key.get(bucket_key)
+                if bucket:
+                    bucket["count"] = int(total_count or 0)
+                    bucket["latest_cumulative"] = int(latest_cumulative or 0)
+                    count_summary["total_count"] += int(total_count or 0)
+                    count_summary["latest_cumulative"] = max(count_summary["latest_cumulative"], int(latest_cumulative or 0))
+                    if first_count_time and (not count_summary["first_count_time"] or first_count_time < count_summary["first_count_time"]):
+                        count_summary["first_count_time"] = first_count_time
+                    if last_count_time and (not count_summary["last_count_time"] or last_count_time > count_summary["last_count_time"]):
+                        count_summary["last_count_time"] = last_count_time
+
+            # 3) Machine events.
+            cursor.execute(
+                """
+                SELECT event_type, timestamp, shift, details
+                FROM live_data."Machine_Event_Logs"
+                WHERE plant_no = %s
+                  AND machine_no = %s
+                  AND timestamp >= %s::timestamp WITH TIME ZONE
+                  AND timestamp <  %s::timestamp WITH TIME ZONE
+                ORDER BY timestamp ASC
+                """,
+                [plant_no, machine_no, start_str_tz, end_str_tz],
+            )
+            machine_event_rows = cursor.fetchall()
+            event_titles = {
+                "ON": "Machine Powered ON",
+                "OFF": "Machine Offline",
+                "SHUT_HEIGHT_CHANGE": "Shut Height Adjusted",
+                "TOOL_CHANGE": "Tool ID Changed",
+            }
+            for event_type, ts_obj, shift_val, details in machine_event_rows:
+                details_text_raw = str(details or "")
+                if event_type == "TOOL_CHANGE" and "e000" in details_text_raw.lower():
+                    continue
+                if event_type == "SHUT_HEIGHT_CHANGE" and ("1.01" in details_text_raw or "0.01" in details_text_raw):
+                    continue
+                ts_obj = localize_ist(ts_obj)
+                title = event_titles.get(event_type, str(event_type).replace("_", " ").title())
+                event_tool_id = _extract_tool_id_from_text(details_text_raw)
+                event_extra = _tid_payload(event_tool_id) if event_tool_id else {}
+                event_payload = add_timeline_event(events, ts_obj, event_type, title, details, shift_val, extra=event_extra if event_extra else None)
+                bucket = find_bucket_for_time(ts_obj)
+                if bucket:
+                    bucket_event = {
+                        "type": event_type,
+                        "title": title,
+                        "time": ts_obj.strftime("%I:%M:%S %p"),
+                        "system_time": system_time(ts_obj),
+                        "details": details or "",
+                        **event_extra,
+                    }
+                    bucket["machine_events"].append(bucket_event)
+                    if event_type in ["ON", "OFF"]:
+                        bucket["on_off_events"].append(bucket_event)
+                    elif event_type == "TOOL_CHANGE":
+                        bucket["tool_changes"].append(bucket_event)
+                    elif event_type == "SHUT_HEIGHT_CHANGE":
+                        bucket["shut_height_changes"].append(bucket_event)
+
+            # 4) Ideal segments.
+            ideal_params = [plant_location, int(machine_no), end_str_naive, start_str_naive]
+            shift_filter_sql = ""
+            if selected_shift in ["A", "B"]:
+                shift_filter_sql = " AND shift = %s"
+                ideal_params.append(selected_shift)
+
+            cursor.execute(
+                f"""
+                SELECT
+                    id,
+                    ideal_mode,
+                    ideal_start_at,
+                    ideal_end_at,
+                    ideal_time,
+                    closed_by,
+                    reason,
+                    specific_reason,
+                    remark,
+                    shift
+                FROM live_data.ideal_time_segments_reason
+                WHERE plant_location = %s
+                  AND machine_no = %s
+                  AND ideal_start_at <  %s::timestamp WITHOUT TIME ZONE
+                  AND ideal_end_at   >  %s::timestamp WITHOUT TIME ZONE
+                  AND ideal_time >= 180
+                  {shift_filter_sql}
+                ORDER BY ideal_start_at ASC
+                """,
+                ideal_params,
+            )
+            ideal_rows = cursor.fetchall()
+            for row in ideal_rows:
+                ideal_id, ideal_mode, ideal_start_at, ideal_end_at, ideal_time, closed_by, reason, specific_reason, remark, shift_val = row
+                ideal_start_at = localize_ist(ideal_start_at)
+                ideal_end_at = localize_ist(ideal_end_at)
+                ideal_mode = str(ideal_mode or "").upper()
+                ideal_time = int(ideal_time or 0)
+                segment_payload = {
+                    "id": ideal_id,
+                    "mode": ideal_mode,
+                    "start_time": ideal_start_at.strftime("%I:%M:%S %p"),
+                    "end_time": ideal_end_at.strftime("%I:%M:%S %p"),
+                    "start_system_time": system_time(ideal_start_at),
+                    "end_system_time": system_time(ideal_end_at),
+                    "duration_seconds": ideal_time,
+                    "duration_display": _seconds_to_display(ideal_time),
+                    "closed_by": closed_by,
+                    "reason": reason or "Uncategorized",
+                    "specific_reason": specific_reason or "Reason Not Provided",
+                    "remark": remark or "",
+                    "shift": shift_val,
+                }
+                title = "Online Ideal" if ideal_mode == "ONLINE" else "Offline Ideal"
+                details = f"{title}: {segment_payload['duration_display']} ({segment_payload['start_time']} - {segment_payload['end_time']}). Reason: {segment_payload['reason']} / {segment_payload['specific_reason']}"
+                add_timeline_event(events, ideal_start_at, f"IDEAL_{ideal_mode}", title, details, shift_val, extra={"ideal_segment": segment_payload})
+
+                for bucket in hour_buckets:
+                    overlap_start = max(ideal_start_at, bucket["start"])
+                    overlap_end = min(ideal_end_at, bucket["scheduled_end"], effective_end)
+                    if overlap_end <= overlap_start:
+                        continue
+                    overlap_seconds = int((overlap_end - overlap_start).total_seconds())
+                    if overlap_seconds <= 0:
+                        continue
+                    bucket_segment = dict(segment_payload)
+                    bucket_segment["bucket_overlap_seconds"] = overlap_seconds
+                    bucket_segment["bucket_overlap_display"] = _seconds_to_display(overlap_seconds)
+                    bucket["ideal_segments"].append(bucket_segment)
+                    if ideal_mode == "ONLINE":
+                        bucket["online_ideal_seconds"] += overlap_seconds
+                        shift_ideal_summary["online_ideal_seconds"] += overlap_seconds
+                    elif ideal_mode == "OFFLINE":
+                        bucket["offline_ideal_seconds"] += overlap_seconds
+                        shift_ideal_summary["offline_ideal_seconds"] += overlap_seconds
+
+        hourly_summary = []
+        for bucket in hour_buckets:
+            bucket["total_ideal_seconds"] = int(bucket["online_ideal_seconds"] + bucket["offline_ideal_seconds"])
+            bucket["online_ideal_display"] = _seconds_to_display(bucket["online_ideal_seconds"])
+            bucket["offline_ideal_display"] = _seconds_to_display(bucket["offline_ideal_seconds"])
+            bucket["total_ideal_display"] = _seconds_to_display(bucket["total_ideal_seconds"])
+            bucket["tool_change_count"] = len(bucket["tool_changes"])
+            bucket["shut_height_change_count"] = len(bucket["shut_height_changes"])
+            bucket["on_off_event_count"] = len(bucket["on_off_events"])
+
+            summary_details = f"Production: {bucket['count']} pieces."
+            if bucket["online_ideal_seconds"] > 0:
+                summary_details += f" | Online ideal: {bucket['online_ideal_display']}."
+            if bucket["offline_ideal_seconds"] > 0:
+                summary_details += f" | Offline ideal: {bucket['offline_ideal_display']}."
+            if bucket["shut_height_change_count"] > 0:
+                summary_details += f" | Shut height changed {bucket['shut_height_change_count']} time(s)."
+            if bucket["tool_change_count"] > 0:
+                summary_details += f" | Tool changed {bucket['tool_change_count']} time(s)."
+
+            hour_payload = {
+                "bucket_start": system_time(bucket["start"]),
+                "bucket_end": system_time(bucket["scheduled_end"]),
+                "bucket_start_display": title_time(bucket["start"]),
+                "bucket_end_display": title_time(bucket["scheduled_end"]),
+                "count": int(bucket["count"]),
+                "latest_cumulative": int(bucket["latest_cumulative"]),
+                "online_ideal_seconds": int(bucket["online_ideal_seconds"]),
+                "offline_ideal_seconds": int(bucket["offline_ideal_seconds"]),
+                "total_ideal_seconds": int(bucket["total_ideal_seconds"]),
+                "online_ideal_display": bucket["online_ideal_display"],
+                "offline_ideal_display": bucket["offline_ideal_display"],
+                "total_ideal_display": bucket["total_ideal_display"],
+                "ideal_segments": bucket["ideal_segments"],
+                "machine_events": bucket["machine_events"],
+                "on_off_events": bucket["on_off_events"],
+                "tool_changes": bucket["tool_changes"],
+                "shut_height_changes": bucket["shut_height_changes"],
+                "tool_change_count": bucket["tool_change_count"],
+                "shut_height_change_count": bucket["shut_height_change_count"],
+                "on_off_event_count": bucket["on_off_event_count"],
+                "details": summary_details,
+            }
+            hourly_summary.append(hour_payload)
+            add_timeline_event(
+                events,
+                bucket["scheduled_end"] - timedelta(seconds=1),
+                "HOUR_SUMMARY",
+                f"Hourly Summary ({title_time(bucket['start'])} - {title_time(bucket['scheduled_end'])})",
+                summary_details,
+                selected_shift,
+                extra=hour_payload,
+            )
+
+        shift_ideal_summary["total_ideal_seconds"] = int(shift_ideal_summary["online_ideal_seconds"] + shift_ideal_summary["offline_ideal_seconds"])
+        shift_ideal_summary["online_ideal_display"] = _seconds_to_display(shift_ideal_summary["online_ideal_seconds"])
+        shift_ideal_summary["offline_ideal_display"] = _seconds_to_display(shift_ideal_summary["offline_ideal_seconds"])
+        shift_ideal_summary["total_ideal_display"] = _seconds_to_display(shift_ideal_summary["total_ideal_seconds"])
+
+        if count_summary["first_count_time"]:
+            count_summary["first_count_time"] = system_time(count_summary["first_count_time"])
+        if count_summary["last_count_time"]:
+            count_summary["last_count_time"] = system_time(count_summary["last_count_time"])
+
+        events.sort(key=lambda x: x["timestamp"])
+
+        response_data = {
+            "success": True,
+            "plant_no": request_plant_no,
+            "machine_no": machine_no,
+            "date": date_str,
+            "shift": selected_shift,
+            "shift_start": system_time(shift_start),
+            "shift_end": system_time(shift_end),
+            "effective_end": system_time(effective_end),
+            "machine_meta": machine_meta,
+            "schedule": {
+                "lunch_start": f"{lunch_start.strftime('%I:%M %p')}",
+                "lunch_end": f"{lunch_end.strftime('%I:%M %p')}",
+                "shift_a_start": "08:30 AM",
+                "shift_a_end": "08:00 PM",
+                "shift_b_start": "08:00 PM",
+                "shift_b_end": "08:30 AM",
+            },
+            "summary": {
+                "production": count_summary,
+                "ideal": shift_ideal_summary,
+                "total_hours": len(hourly_summary),
+                "total_events": len(events),
+            },
+            "hourly_summary": hourly_summary,
+            "events": events,
+            "total_events": len(events),
+        }
+        response = Response(response_data)
+        response["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
+        response["Pragma"] = "no-cache"
+        response["Expires"] = "0"
+        return response
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return Response({"success": False, "error": str(e), "events": [], "hourly_summary": []}, status=500)
+
+
+@never_cache
+@api_view(["GET"])
+def get_plant1_machine_history(request):
+    return _plant_history_common(
+        request=request,
+        plant_no=1,
+        plant_location="Plant 1",
+        data_table="live_data.plant1_data",
+        lunch_start_tuple=(12, 45),
+        lunch_end_tuple=(13, 15),
+    )
 
 
 @never_cache
 @api_view(["GET"])
 def get_machine_history(request):
-    """
-    🌟 ADVANCED STORY BUILDER API 🌟
-    ✅ 100% BULLETPROOF TIMEZONE FIX (Forced +05:30 and WITH TIME ZONE)
-    """
-    try:
-        from django.db import connection
-        import pytz
-        from datetime import datetime, timedelta
+    return _plant_history_common(
+        request=request,
+        plant_no=2,
+        plant_location="Plant 2",
+        data_table="live_data.plant2_data",
+        lunch_start_tuple=(12, 15),
+        lunch_end_tuple=(12, 45),
+    )
 
-        plant_no = int(request.GET.get("plant_no", 2))
-        machine_no = str(request.GET.get("machine_no", "")).strip()
-        date_str = request.GET.get("date", "").strip()
+# from .models import Operator
+# from django.utils import timezone
 
-        ist_tz = pytz.timezone("Asia/Kolkata")
 
-        if not date_str:
-            date_str = datetime.now(ist_tz).strftime("%Y-%m-%d")
+# @never_cache
+# @api_view(["GET"])
+# def plant1_live(request):
+#     """Plant 1 - LIVE DASHBOARD (Fixed to match Plant 2)"""
+#     try:
+#         from apps.machines.machine_state import MACHINE_STATE
+#         from apps.mqtt.simple_plant1 import (
+#             PLANT1_EXACT_REQUIREMENT_STATE,
+#             J_TOPIC_MACHINE_MAPPING,
+#             COUNT_TOPIC_MACHINE_MAPPING,
+#         )
 
-        if not machine_no:
-            return Response(
-                {"success": False, "error": "machine_no is required"}, status=400
-            )
+#         all_mapped_machines = list(range(1, 58))
+#         live_machines = MACHINE_STATE.summarize(plant_filter=1, stale_after_seconds=300)
 
-        target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
-        now_ist = datetime.now(ist_tz)
+#         enhanced_machines = []
+#         problem_machines = []
 
-        shift_a_start = ist_tz.localize(
-            datetime.combine(
-                target_date, datetime.strptime("08:30:00", "%H:%M:%S").time()
-            )
-        )
-        shift_a_end = shift_a_start + timedelta(hours=12)  # 20:30:00
+#         ist_tz = pytz.timezone("Asia/Kolkata")
+#         now_ist = datetime.now(ist_tz)
 
-        # 🛑 FIX: Append +05:30 so Postgres doesn't guess the timezone!
-        start_str = shift_a_start.strftime("%Y-%m-%d %H:%M:%S+05:30")
-        end_str = shift_a_end.strftime("%Y-%m-%d %H:%M:%S+05:30")
+#         for machine_no in all_mapped_machines:
+#             machine_data = None
 
-        events = []
-        machine_meta = {
-            "customer_name": "N/A",
-            "part_name": "N/A",
-            "part_number": "N/A",
-            "tool_id": "N/A",
-        }
+#             for m in live_machines:
+#                 if m["machine_no"] == machine_no and m.get("plant") == 1:
+#                     machine_data = m
+#                     break
 
-        with connection.cursor() as cursor:
-            # 🚀 META DATA
-            cursor.execute(
-                """
-                SELECT tool_id FROM Plant2_data 
-                WHERE machine_no = %s 
-                AND timestamp >= %s::timestamp WITH TIME ZONE 
-                AND timestamp <= %s::timestamp WITH TIME ZONE 
-                AND tool_id IS NOT NULL AND tool_id != 'N/A'
-                ORDER BY timestamp DESC LIMIT 1
-            """,
-                [machine_no, start_str, end_str],
-            )
-            tool_res = cursor.fetchone()
+#             try:
+#                 idle_status = (
+#                     PLANT1_EXACT_REQUIREMENT_STATE.idle_tracker.get_idle_status(
+#                         machine_no, now_ist
+#                     )
+#                 )
+#                 exact_data = PLANT1_EXACT_REQUIREMENT_STATE.get_machine_data(machine_no)
 
-            if tool_res and tool_res[0]:
-                tool_id = tool_res[0][:24]
-                machine_meta["tool_id"] = tool_id
-                cursor.execute(
-                    'SELECT "CUSTOMER", "PART_NAME", "PART_NUMBER" FROM public.tid_map WHERE "EPC" = %s LIMIT 1',
-                    [tool_id],
-                )
-                meta_res = cursor.fetchone()
-                if meta_res:
-                    machine_meta["customer_name"] = meta_res[0] or "N/A"
-                    machine_meta["part_name"] = meta_res[1] or "N/A"
-                    machine_meta["part_number"] = meta_res[2] or "N/A"
+#                 is_on = idle_status["on_since"] is not None
+#                 is_producing = (
+#                     idle_status["count_seconds_ago"] is not None
+#                     and idle_status["count_seconds_ago"] <= 180
+#                 )
 
-            # 🚀 MACHINE EVENTS
-            cursor.execute(
-                """
-                SELECT event_type, timestamp, shift, details 
-                FROM "Machine_Event_Logs" 
-                WHERE plant_no = %s AND machine_no = %s 
-                AND timestamp >= %s::timestamp WITH TIME ZONE 
-                AND timestamp <= %s::timestamp WITH TIME ZONE 
-            """,
-                [plant_no, machine_no, start_str, end_str],
-            )
+#                 if is_on and not machine_data:
+#                     tool_id = exact_data.get("current_tool_id", "N/A")
+#                     shut_height = exact_data.get("current_shut_height", 0.0)
 
-            for row in cursor.fetchall():
-                evt_type = row[0]
-                ts_obj = row[1]
+#                     machine_data = {
+#                         "plant": 1,
+#                         "machine_no": machine_no,
+#                         "tool_id": tool_id,
+#                         "count": 0,
+#                         "shut_height": shut_height,
+#                         "last_seen": "JSON only",
+#                         "status": idle_status["status"],
+#                         "current_hour_count": 0,
+#                         "last_hour_count": 0,
+#                         "cumulative_count": 0,
+#                         "shift": exact_data.get("shift", "A"),
+#                         "idle_time": idle_status["hourly_idle_total"],
+#                     }
 
-                # 🟢 FORCE PROPER TIMEZONE FIX
-                if ts_obj.tzinfo is None:
-                    ts_obj = ist_tz.localize(ts_obj)
-                else:
-                    ts_obj = ts_obj.astimezone(ist_tz)
+#                 if machine_data:
+#                     machine_data.update(exact_data)
 
-                title = evt_type
-                if evt_type == "ON":
-                    title = "Machine Powered ON"
-                elif evt_type == "OFF":
-                    title = "Machine Offline"
-                elif evt_type == "SHUT_HEIGHT_CHANGE":
-                    title = "Shut Height Adjusted"
-                elif evt_type == "TOOL_CHANGE":
-                    title = "New Part / Tool Started"
+#                     problem_detected = (
+#                         is_on and not is_producing and idle_status["is_idle"]
+#                     )
+#                     machine_data["problem_detected"] = problem_detected
 
-                events.append(
-                    {
-                        "timestamp": ts_obj.timestamp(),
-                        "time_str": ts_obj.strftime("%I:%M %p"),
-                        "type": evt_type,
-                        "title": title,
-                        "details": row[3],
-                        "shift": row[2],
-                    }
-                )
+#                     if problem_detected:
+#                         problem_machines.append(machine_no)
 
-            # 🚀 HOURLY POST-MORTEM
-            hour_boundaries = [shift_a_start]
-            for hr in range(9, 21):
-                hour_boundaries.append(
-                    shift_a_start.replace(hour=hr, minute=0, second=0)
-                )
-            hour_boundaries.append(shift_a_end)
+#                     current_shift = PLANT1_EXACT_REQUIREMENT_STATE.get_shift_from_time(
+#                         now_ist
+#                     )
 
-            for i in range(len(hour_boundaries) - 1):
-                t1 = hour_boundaries[i]
-                t2 = hour_boundaries[i + 1]
+#                     if idle_status["last_count_time"]:
+#                         machine_data["last_activity"] = idle_status[
+#                             "last_count_time"
+#                         ].strftime("%H:%M:%S")
+#                     else:
+#                         machine_data["last_activity"] = "Never"
 
-                if t1 > now_ist:
-                    break
+#                     # ✅ FIX: Use exact_data which has DB-fetched last_hour_count
+#                     machine_data["last_hour_count"] = exact_data.get(
+#                         "last_hour_count", 0
+#                     )
+#                     machine_data["current_hour_count"] = exact_data.get(
+#                         "current_hour_count", 0
+#                     )
+#                     machine_data["cumulative_count"] = exact_data.get(
+#                         "cumulative_count", 0
+#                     )
+#                     machine_data["total_shift_idle_time"] = exact_data.get(
+#                         "total_shift_idle_time", 0
+#                     )
 
-                # 🛑 FIX: Append +05:30
-                t1_str = t1.strftime("%Y-%m-%d %H:%M:%S+05:30")
-                t2_str = t2.strftime("%Y-%m-%d %H:%M:%S+05:30")
+#                     machine_data["shut_height"] = exact_data.get(
+#                         "current_shut_height", 0.0
+#                     )
+#                     machine_data["first_count_at"] = exact_data.get("first_count_at")
+#                     machine_data["time_to_first_count"] = exact_data.get(
+#                         "time_to_first_count"
+#                     )
 
-                cursor.execute(
-                    """
-                    SELECT COALESCE(SUM(count), 0) FROM Plant2_data 
-                    WHERE machine_no = %s 
-                    AND timestamp > %s::timestamp WITH TIME ZONE 
-                    AND timestamp <= %s::timestamp WITH TIME ZONE
-                """,
-                    [machine_no, t1_str, t2_str],
-                )
-                hr_count = cursor.fetchone()[0] or 0
+#                     machine_data.update(
+#                         {
+#                             "live_idle_time": idle_status["live_idle_time"],
+#                             "accumulated_idle_time": idle_status[
+#                                 "accumulated_idle_time"
+#                             ],
+#                             "hourly_idle_total": idle_status["hourly_idle_total"],
+#                             "idle_time": idle_status["hourly_idle_total"],
+#                             "is_idle": idle_status["is_idle"],
+#                             "idle_type": idle_status["idle_type"],
+#                             "status": idle_status["status"],
+#                             "data_source": idle_status["data_source"],
+#                             "on_since": (
+#                                 idle_status["on_since"].strftime("%H:%M:%S")
+#                                 if idle_status["on_since"]
+#                                 else None
+#                             ),
+#                             "count_seconds_ago": idle_status["count_seconds_ago"],
+#                             "json_seconds_ago": idle_status["json_seconds_ago"],
+#                             "machine_on": is_on,
+#                             "is_producing": is_producing,
+#                         }
+#                     )
 
-                cursor.execute(
-                    """
-                    SELECT COALESCE(SUM(idle_time), 0) FROM "Plant2_hourly_idle" 
-                    WHERE machine_no = %s 
-                    AND timestamp >= %s::timestamp WITH TIME ZONE 
-                    AND timestamp < %s::timestamp WITH TIME ZONE
-                """,
-                    [machine_no, t1_str, t2_str],
-                )
-                hr_idle = cursor.fetchone()[0] or 0
+#             except Exception as e:
+#                 print(f"⚠️ Plant 1 M{machine_no} error: {e}")
+#                 import traceback
 
-                cursor.execute(
-                    """
-                    SELECT COUNT(*) FROM "Machine_Event_Logs" 
-                    WHERE machine_no = %s AND event_type = 'SHUT_HEIGHT_CHANGE'
-                    AND timestamp > %s::timestamp WITH TIME ZONE 
-                    AND timestamp <= %s::timestamp WITH TIME ZONE
-                """,
-                    [machine_no, t1_str, t2_str],
-                )
-                hr_shut_changes = cursor.fetchone()[0] or 0
+#                 traceback.print_exc()
 
-                details_text = f"Production: {hr_count} pieces."
-                if hr_idle > 0:
-                    details_text += (
-                        f" | ⚠️ Machine was idle/offline for {hr_idle} mins."
-                    )
-                if hr_shut_changes > 0:
-                    details_text += (
-                        f" | 🔧 Shut height changed {hr_shut_changes} times."
-                    )
+#             if machine_data:
+#                 tool_id = machine_data.get("tool_id", "")
+#                 tool_info = get_tool_info_from_tid_map(tool_id)
 
-                events.append(
-                    {
-                        "timestamp": min((t2.timestamp() - 1), now_ist.timestamp()),
-                        "time_str": (
-                            t2.strftime("%I:%M %p")
-                            if t2 <= now_ist
-                            else now_ist.strftime("%I:%M %p")
-                        ),
-                        "type": "HOUR_CHANGE",
-                        "title": f"Hourly Summary ({t1.strftime('%I %p')} - {t2.strftime('%I:%M %p')})",
-                        "details": details_text,
-                        "count": hr_count,
-                        "idle_mins": hr_idle,
-                        "shut_changes": hr_shut_changes,
-                    }
-                )
+#                 machine_data.update(
+#                     {
+#                         "tool_customer": tool_info.get("customer", "N/A"),
+#                         "tool_model": tool_info.get("model", "N/A"),
+#                         "tool_part_name": tool_info.get("part_name", "N/A"),
+#                         "tool_name": tool_info.get("tool_name", "N/A"),
+#                         "tool_part_number": tool_info.get("part_number", "N/A"),
+#                         "tool_tpm": tool_info.get("tpm", 0),
+#                         "tool_epc": tool_info.get("epc", "N/A"),
+#                     }
+#                 )
 
-        events.sort(key=lambda x: x["timestamp"])
+#                 machine_data["plant"] = 1
+#                 enhanced_machines.append(machine_data)
+#             else:
+#                 idle_status = (
+#                     PLANT1_EXACT_REQUIREMENT_STATE.idle_tracker.get_idle_status(
+#                         machine_no, now_ist
+#                     )
+#                 )
 
-        return Response(
-            {
-                "success": True,
-                "plant_no": plant_no,
-                "machine_no": machine_no,
-                "date": date_str,
-                "machine_meta": machine_meta,
-                "total_events": len(events),
-                "events": events,
-            }
-        )
+#                 enhanced_machines.append(
+#                     {
+#                         "plant": 1,
+#                         "machine_no": machine_no,
+#                         "tool_id": f"PLANT1_M{machine_no:02d}",
+#                         "count": 0,
+#                         "shut_height": 0.0,
+#                         "first_count_at": None,
+#                         "time_to_first_count": None,
+#                         "last_seen": "Not active",
+#                         "status": idle_status["status"],
+#                         "current_hour_count": 0,
+#                         "last_hour_count": 0,
+#                         "cumulative_count": 0,
+#                         "shift": "A",
+#                         "idle_time": idle_status["hourly_idle_total"],
+#                         "is_idle": idle_status["is_idle"],
+#                         "idle_type": idle_status["idle_type"],
+#                         "live_idle_time": idle_status["live_idle_time"],
+#                         "accumulated_idle_time": idle_status["accumulated_idle_time"],
+#                         "hourly_idle_total": idle_status["hourly_idle_total"],
+#                         "last_activity": "Never",
+#                         "tool_customer": "N/A",
+#                         "tool_model": "N/A",
+#                         "tool_part_name": "N/A",
+#                         "tool_name": "N/A",
+#                         "tool_part_number": "N/A",
+#                         "tool_tpm": 0,
+#                         "tool_epc": "N/A",
+#                         "machine_on": False,
+#                         "is_producing": False,
+#                         "problem_detected": False,
+#                         "on_since": None,
+#                         "data_source": idle_status["data_source"],
+#                     }
+#                 )
 
-    except Exception as e:
-        import traceback
+#         enhanced_machines.sort(key=lambda x: x["machine_no"])
 
-        traceback.print_exc()
-        return Response({"success": False, "error": str(e)}, status=500)
+#         on_machines = [m for m in enhanced_machines if m.get("machine_on")]
+#         producing_machines = [m for m in enhanced_machines if m.get("is_producing")]
+
+#         response = Response(
+#             {
+#                 "success": True,
+#                 "total_machines": len(enhanced_machines),
+#                 "on_count": len(on_machines),
+#                 "producing_count": len(producing_machines),
+#                 "problem_count": len(problem_machines),
+#                 "problem_machines": problem_machines,
+#                 "machines": enhanced_machines,
+#                 "plant": 1,
+#                 "message": f"Plant 1 - ON:{len(on_machines)} | Producing:{len(producing_machines)} | Problems:{len(problem_machines)}",
+#             }
+#         )
+
+#         response["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
+#         response["Pragma"] = "no-cache"
+#         response["Expires"] = "0"
+
+#         return response
+
+#     except Exception as e:
+#         print(f"❌ Plant 1 API ERROR: {e}")
+#         import traceback
+
+#         traceback.print_exc()
+
+#         return Response(
+#             {"success": False, "error": str(e), "machines": [], "plant": 1}, status=500
+#         )
+
+
+
+
+
+# # ==============================================================
+# # ✅ TID MAP HELPER - EPC / TOOL ID se full tool-part info
+# # Put this helper in api/views.py above plant2_live and get_machine_history
+# # ============================================================== 
+# def get_tool_info_from_tid_map(tool_id):
+#     from django.db import connection
+#     """Query public.tid_map table and return full tool/part info.
+
+#     Handles uppercase/lowercase column names and EPC values.
+#     Also supports matching EPC with/without leading 'e' where needed.
+#     """
+#     if not tool_id:
+#         return {}
+
+#     raw_tool_id = str(tool_id).strip()
+#     if not raw_tool_id or raw_tool_id.upper() in ["NULL", "UNKNOWN", "N/A", "NO DATA", "FAILED"]:
+#         return {}
+#     if raw_tool_id.upper().startswith("PLANT2_M"):
+#         return {}
+
+#     clean_tool_id = raw_tool_id[:24].lower()
+
+#     # Candidate EPC values. Some master sheets may store e200..., some may store 200...
+#     candidates = []
+#     for val in [clean_tool_id, raw_tool_id.lower(), raw_tool_id[:24].lower()]:
+#         val = str(val).strip().lower()
+#         if val and val not in candidates:
+#             candidates.append(val)
+#         if val.startswith("e") and val[1:] and val[1:] not in candidates:
+#             candidates.append(val[1:])
+#         if (not val.startswith("e")) and len(val) >= 23:
+#             e_val = "e" + val
+#             if e_val not in candidates:
+#                 candidates.append(e_val)
+
+#     try:
+#         with connection.cursor() as cursor:
+#             cursor.execute("""
+#                 SELECT column_name
+#                 FROM information_schema.columns
+#                 WHERE table_schema = 'public'
+#                   AND table_name = 'tid_map'
+#                 ORDER BY ordinal_position
+#             """)
+#             columns = [row[0] for row in cursor.fetchall()]
+
+#             if not columns:
+#                 print("❌ tid_map table not found in public schema")
+#                 return {}
+
+#             epc_column = None
+#             for col in columns:
+#                 if col.upper() == "EPC":
+#                     epc_column = col
+#                     break
+
+#             if not epc_column:
+#                 print(f"❌ EPC column not found in public.tid_map. Available: {columns}")
+#                 return {}
+
+#             placeholders = ",".join(["%s"] * len(candidates))
+#             query = (
+#                 f'SELECT * FROM public.tid_map '
+#                 f'WHERE LOWER(TRIM("{epc_column}"::text)) IN ({placeholders}) '
+#                 f'LIMIT 1'
+#             )
+#             cursor.execute(query, candidates)
+#             result = cursor.fetchone()
+
+#             if not result:
+#                 return {}
+
+#             row_dict = dict(zip(columns, result))
+
+#             def get_value(search_key):
+#                 for col_name, col_value in row_dict.items():
+#                     if col_name.upper() == search_key.upper():
+#                         return str(col_value).strip() if col_value not in [None, ""] else "N/A"
+#                 return "N/A"
+
+#             tpm = 0
+#             try:
+#                 tpm_raw = get_value("TPM")
+#                 if tpm_raw != "N/A":
+#                     tpm = int(float(tpm_raw))
+#             except Exception:
+#                 tpm = 0
+
+#             model_value = get_value("MODEL")
+#             tool_data = {
+#                 "customer": get_value("CUSTOMER"),
+#                 "customer_name": get_value("CUSTOMER"),
+#                 "model": model_value,
+#                 "model_name": model_value,
+#                 "part_name": get_value("PART_NAME"),
+#                 "tool_name": get_value("TOOL_NAME"),
+#                 "epc": get_value("EPC"),
+#                 "part_number": get_value("PART_NUMBER"),
+#                 "tpm": tpm,
+#             }
+
+#             print(
+#                 f"✅ TID MAP FOUND | EPC={tool_data['epc']} | "
+#                 f"{tool_data['customer']} | {tool_data['model_name']} | "
+#                 f"{tool_data['part_name']} | {tool_data['part_number']}"
+#             )
+#             return tool_data
+
+#     except Exception as e:
+#         print(f"❌ TID map lookup error for {tool_id}: {e}")
+#         return {}
+
+
+# def get_safe_tid_value(tool_info, key, default="N/A"):
+#     """Small helper for clean API values."""
+#     value = (tool_info or {}).get(key, default)
+#     if value in [None, "", "None", "NULL"]:
+#         return default
+#     return value
+
+
+# @never_cache
+# @api_view(["GET"])
+# def plant2_live(request):
+#     """
+#     Plant 2 - LIVE DASHBOARD DATA
+#     🌟 FINAL FIX: JSON Heartbeat Reset Bug Fixed. Continuous Idle Timer.
+#     🌟 FIX 2: Shut Height logic improved to ensure UI visibility.
+#     🌟 FIX 3: Timezone Offset & Last Hour Cumulative Count Bug Fixed.
+#     """
+#     try:
+#         from apps.machines.machine_state import MACHINE_STATE
+#         from apps.mqtt.simple_plant2 import (
+#             PLANT2_EXACT_REQUIREMENT_STATE,
+#             TOPIC_MACHINE_MAPPING,
+#             get_machine_group,
+#         )
+#         from django.db import connection
+#         import pytz
+#         from datetime import datetime, timedelta
+
+#         all_mapped_machines = set()
+#         for machines_list in TOPIC_MACHINE_MAPPING.values():
+#             all_mapped_machines.update(machines_list)
+#         all_mapped_machines = sorted(list(all_mapped_machines))
+
+#         live_machines = MACHINE_STATE.summarize(plant_filter=2, stale_after_seconds=300)
+
+#         enhanced_machines = []
+#         problem_machines = []
+
+#         ist_tz = pytz.timezone("Asia/Kolkata")
+#         now_ist = datetime.now(ist_tz)
+
+#         def seconds_to_display(total_seconds):
+#             total_seconds = int(total_seconds or 0)
+#             hours = total_seconds // 3600
+#             minutes = (total_seconds % 3600) // 60
+#             seconds = total_seconds % 60
+#             if hours > 0:
+#                 return f"{hours} hour {minutes} min {seconds} sec"
+#             if minutes > 0:
+#                 return f"{minutes} min {seconds} sec"
+#             return f"{seconds} sec"
+
+#         def empty_ideal_summary():
+#             return {"ONLINE": 0, "OFFLINE": 0}
+
+#         def add_ideal_row(target, machine_no, online_seconds, offline_seconds):
+#             key = str(machine_no).strip()
+#             target[key] = {
+#                 "ONLINE": int(online_seconds or 0),
+#                 "OFFLINE": int(offline_seconds or 0),
+#             }
+
+#         # ✅ IMPORTANT FIX:
+#         # ideal_time_segments_reason table ke time columns timestamp WITHOUT time zone hain.
+#         # Isliye API me bhi boundary times ko simple IST naive datetime me pass karna zaroori hai.
+#         # Nahi to PostgreSQL comparison 5:30 hour shift / zero summary issue de sakta hai.
+#         def to_ist_naive(dt):
+#             if dt is None:
+#                 return None
+#             if dt.tzinfo is not None:
+#                 return dt.astimezone(ist_tz).replace(tzinfo=None, microsecond=0)
+#             return dt.replace(microsecond=0)
+
+
+#         def normalize_tool_id(tool_id):
+#             """e000... / invalid RFID ko UI/history me valid tool nahi maanenge."""
+#             if tool_id in [None, '', 'NULL', 'UNKNOWN', 'N/A', 'No data', 'Failed']:
+#                 return None
+#             clean = str(tool_id).strip().lower()[:24]
+#             if len(clean) != 24:
+#                 return None
+#             if any(ch not in '0123456789abcdef' for ch in clean):
+#                 return None
+#             if clean.startswith('e000'):
+#                 return None
+#             if not clean.startswith('e2'):
+#                 return None
+#             return clean
+
+#         def parse_valid_shut_height(value):
+#             """0.01 / 1.01 / 0 / Failed / No data ko valid shut height nahi maanenge."""
+#             if value in [None, '', '0', '0.0', '0.00', 0, 0.0, 'No data', 'Failed', 'None']:
+#                 return None
+#             try:
+#                 num = float(value)
+#             except Exception:
+#                 return None
+#             if num <= 10.0:
+#                 return None
+#             return num
+
+#         def is_failed_shut_height_reading(value):
+#             """Current reading 0.01 / 1.01 / Failed ho to UI me Failed show karna hai."""
+#             if value in ['Failed', 'failed', 'FAILED']:
+#                 return True
+#             if value in [None, '', '0', '0.0', '0.00', 0, 0.0, 'No data', 'None', 'N/A']:
+#                 return False
+#             try:
+#                 num = float(value)
+#             except Exception:
+#                 return False
+#             return 0 < num <= 10.0
+
+#         # =====================================================================
+#         # 🚀 STEP 1: BULK DB QUERIES
+#         # =====================================================================
+#         current_shift = PLANT2_EXACT_REQUIREMENT_STATE.get_shift_from_time(now_ist)
+#         current_hour = now_ist.replace(minute=0, second=0, microsecond=0)
+#         previous_hour_start = current_hour - timedelta(hours=1)
+#         shift_start = PLANT2_EXACT_REQUIREMENT_STATE.get_shift_start_datetime(now_ist)
+
+#         bulk_last_hour = {}
+#         bulk_cumulative = {}
+
+#         # New ideal summary dictionaries from live_data.ideal_time_segments_reason
+#         bulk_ideal_today = {}
+#         bulk_ideal_shift = {}
+#         bulk_ideal_hour = {}
+
+#         # Latest valid tool/shut height from DB for UI fallback.
+#         # This prevents card showing 0.00 when current MQTT sent 1.01/0/cache-miss.
+#         bulk_latest_tool = {}
+#         bulk_latest_shut_height = {}
+
+#         today_start = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+
+#         # ✅ DB timestamp columns WITHOUT time zone hain, so all query boundaries must be naive IST.
+#         now_naive = to_ist_naive(now_ist)
+#         today_start_naive = to_ist_naive(today_start)
+#         shift_start_naive = to_ist_naive(shift_start)
+#         current_hour_naive = to_ist_naive(current_hour)
+#         previous_hour_start_naive = to_ist_naive(previous_hour_start)
+
+#         try:
+#             with connection.cursor() as cursor:
+#                 # 🌟 FIX APPLIED HERE: Use MAX(cumulative) - MIN(cumulative) for accurate last hour count
+#                 cursor.execute(
+#                     """
+#                     SELECT machine_no, COALESCE((MAX(cumulative_count) - MIN(cumulative_count)), 0) 
+#                     FROM Plant2_data 
+#                     WHERE timestamp >= %s AND timestamp < %s
+#                     GROUP BY machine_no
+#                 """,
+#                     [previous_hour_start_naive, current_hour_naive],
+#                 )
+#                 for row in cursor.fetchall():
+#                     bulk_last_hour[str(row[0]).strip()] = int(row[1])
+
+#                 cursor.execute(
+#                     """
+#                     SELECT p1.machine_no, p1.cumulative_count
+#                     FROM Plant2_data p1
+#                     INNER JOIN (
+#                         SELECT machine_no, MAX(timestamp) as max_ts
+#                         FROM Plant2_data
+#                         WHERE shift = %s AND timestamp >= %s
+#                         GROUP BY machine_no
+#                     ) p2 ON p1.machine_no = p2.machine_no AND p1.timestamp = p2.max_ts
+#                 """,
+#                     [current_shift, shift_start_naive],
+#                 )
+#                 for row in cursor.fetchall():
+#                     bulk_cumulative[str(row[0]).strip()] = int(row[1])
+
+#                 # ==========================================================
+#                 # ✅ NEW IDEAL SUMMARY QUERY
+#                 # Table: live_data.ideal_time_segments_reason
+#                 # ideal_time is stored in seconds.
+#                 # Backend code must split rows on hour-change, so hour summary
+#                 # remains accurate without extra hour_bucket column.
+#                 # ==========================================================
+
+#                 # Today summary
+#                 cursor.execute(
+#                     """
+#                     SELECT
+#                         TRIM(machine_no::text) AS machine_key,
+#                         COALESCE(SUM(CASE WHEN UPPER(TRIM(ideal_mode)) = 'ONLINE' THEN COALESCE(ideal_time, 0) ELSE 0 END), 0) AS online_seconds,
+#                         COALESCE(SUM(CASE WHEN UPPER(TRIM(ideal_mode)) = 'OFFLINE' THEN COALESCE(ideal_time, 0) ELSE 0 END), 0) AS offline_seconds
+#                     FROM live_data.ideal_time_segments_reason
+#                     WHERE TRIM(plant_location) = %s
+#                       AND ideal_start_at >= %s
+#                       AND ideal_start_at < %s
+#                     GROUP BY TRIM(machine_no::text)
+#                     """,
+#                     ["Plant 2", today_start_naive, now_naive],
+#                 )
+#                 for row in cursor.fetchall():
+#                     add_ideal_row(bulk_ideal_today, row[0], row[1], row[2])
+
+#                 # Current shift summary - FE card ab isi shift value ko show karega.
+#                 cursor.execute(
+#                     """
+#                     SELECT
+#                         TRIM(machine_no::text) AS machine_key,
+#                         COALESCE(SUM(CASE WHEN UPPER(TRIM(ideal_mode)) = 'ONLINE' THEN COALESCE(ideal_time, 0) ELSE 0 END), 0) AS online_seconds,
+#                         COALESCE(SUM(CASE WHEN UPPER(TRIM(ideal_mode)) = 'OFFLINE' THEN COALESCE(ideal_time, 0) ELSE 0 END), 0) AS offline_seconds
+#                     FROM live_data.ideal_time_segments_reason
+#                     WHERE TRIM(plant_location) = %s
+#                       AND TRIM(shift) = %s
+#                       AND ideal_start_at >= %s
+#                       AND ideal_start_at < %s
+#                     GROUP BY TRIM(machine_no::text)
+#                     """,
+#                     ["Plant 2", current_shift, shift_start_naive, now_naive],
+#                 )
+#                 for row in cursor.fetchall():
+#                     add_ideal_row(bulk_ideal_shift, row[0], row[1], row[2])
+
+#                 # Current hour summary
+#                 cursor.execute(
+#                     """
+#                     SELECT
+#                         TRIM(machine_no::text) AS machine_key,
+#                         COALESCE(SUM(CASE WHEN UPPER(TRIM(ideal_mode)) = 'ONLINE' THEN COALESCE(ideal_time, 0) ELSE 0 END), 0) AS online_seconds,
+#                         COALESCE(SUM(CASE WHEN UPPER(TRIM(ideal_mode)) = 'OFFLINE' THEN COALESCE(ideal_time, 0) ELSE 0 END), 0) AS offline_seconds
+#                     FROM live_data.ideal_time_segments_reason
+#                     WHERE TRIM(plant_location) = %s
+#                       AND ideal_start_at >= %s
+#                       AND ideal_start_at < %s
+#                     GROUP BY TRIM(machine_no::text)
+#                     """,
+#                     ["Plant 2", current_hour_naive, now_naive],
+#                 )
+#                 for row in cursor.fetchall():
+#                     add_ideal_row(bulk_ideal_hour, row[0], row[1], row[2])
+
+#                 # Latest valid tool id in current shift. Ignore e000... fake RFID.
+#                 cursor.execute(
+#                     """
+#                     SELECT DISTINCT ON (TRIM(machine_no::text))
+#                         TRIM(machine_no::text) AS machine_key,
+#                         LOWER(LEFT(TRIM(tool_id::text), 24)) AS clean_tool_id
+#                     FROM live_data.plant2_data
+#                     WHERE timestamp >= %s
+#                       AND timestamp < %s
+#                       AND tool_id IS NOT NULL
+#                       AND LOWER(LEFT(TRIM(tool_id::text), 24)) ~ '^e2[0-9a-f]{22}$'
+#                       AND LOWER(LEFT(TRIM(tool_id::text), 24)) NOT LIKE 'e000%%'
+#                     ORDER BY TRIM(machine_no::text), timestamp DESC
+#                     """,
+#                     [shift_start_naive, now_naive],
+#                 )
+#                 for row in cursor.fetchall():
+#                     bulk_latest_tool[str(row[0]).strip()] = row[1]
+
+#                 # Latest valid shut height in current shift. Ignore 0/1.01/cache-miss.
+#                 cursor.execute(
+#                     """
+#                     WITH valid_height AS (
+#                         SELECT
+#                             TRIM(machine_no::text) AS machine_key,
+#                             timestamp,
+#                             CASE
+#                                 WHEN TRIM(shut_height::text) ~ '^[0-9]+(\.[0-9]+)?$'
+#                                 THEN TRIM(shut_height::text)::numeric
+#                                 ELSE NULL
+#                             END AS height_value
+#                         FROM live_data.plant2_data
+#                         WHERE timestamp >= %s
+#                           AND timestamp < %s
+#                     )
+#                     SELECT DISTINCT ON (machine_key)
+#                         machine_key,
+#                         height_value
+#                     FROM valid_height
+#                     WHERE height_value > 10
+#                     ORDER BY machine_key, timestamp DESC
+#                     """,
+#                     [shift_start_naive, now_naive],
+#                 )
+#                 for row in cursor.fetchall():
+#                     bulk_latest_shut_height[str(row[0]).strip()] = float(row[1])
+
+#                 print(
+#                     f"✅ IDEAL API SUMMARY | Shift={current_shift} | "
+#                     f"TodayRows={len(bulk_ideal_today)} | ShiftRows={len(bulk_ideal_shift)} | HourRows={len(bulk_ideal_hour)} | "
+#                     f"ToolRows={len(bulk_latest_tool)} | HeightRows={len(bulk_latest_shut_height)}"
+#                 )
+#         except Exception as e:
+#             print(f"❌ Bulk Data Query Error: {e}")
+
+#         # =====================================================================
+#         # 🚀 STEP 2: LOOP THROUGH MACHINES
+#         # =====================================================================
+#         collected_tools = set()
+#         intermediate_machine_data = []
+
+#         for machine_no in all_mapped_machines:
+#             machine_data = None
+#             for m in live_machines:
+#                 if m["machine_no"] == machine_no and m.get("plant") == 2:
+#                     machine_data = m
+#                     break
+
+#             try:
+#                 idle_status = (
+#                     PLANT2_EXACT_REQUIREMENT_STATE.idle_tracker.get_idle_status(
+#                         machine_no, now_ist
+#                     )
+#                 )
+#                 status_info = PLANT2_EXACT_REQUIREMENT_STATE.get_machine_status(
+#                     machine_no
+#                 )
+
+#                 m_str = str(machine_no)
+#                 db_last_hour = bulk_last_hour.get(m_str, 0)
+#                 db_cumulative = bulk_cumulative.get(m_str, 0)
+#                 db_ideal_today = bulk_ideal_today.get(m_str, empty_ideal_summary())
+#                 db_ideal_shift = bulk_ideal_shift.get(m_str, empty_ideal_summary())
+#                 db_ideal_hour = bulk_ideal_hour.get(m_str, empty_ideal_summary())
+
+#                 is_on = status_info["machine_on"]
+#                 is_producing = status_info["is_producing"]
+
+#                 # Live ideal values are added to DB completed values for FE display.
+#                 # DB insert still happens only when segment closes, not every second.
+#                 live_ideal_mode = None
+#                 live_ideal_seconds = 0
+#                 live_ideal_hour_seconds = 0
+
+#                 # 🌟 FIX 1: OFFLINE TIME TRACKING (Uses both JSON + COUNT to know when machine died)
+#                 last_signal_time = None
+#                 if (
+#                     machine_no in PLANT2_EXACT_REQUIREMENT_STATE.last_count_time
+#                     and machine_no in PLANT2_EXACT_REQUIREMENT_STATE.machine_json_status
+#                 ):
+#                     last_signal_time = max(
+#                         PLANT2_EXACT_REQUIREMENT_STATE.last_count_time[machine_no],
+#                         PLANT2_EXACT_REQUIREMENT_STATE.machine_json_status[machine_no][
+#                             "last_json_time"
+#                         ],
+#                     )
+#                 elif machine_no in PLANT2_EXACT_REQUIREMENT_STATE.last_count_time:
+#                     last_signal_time = PLANT2_EXACT_REQUIREMENT_STATE.last_count_time[
+#                         machine_no
+#                     ]
+#                 elif machine_no in PLANT2_EXACT_REQUIREMENT_STATE.machine_json_status:
+#                     last_signal_time = (
+#                         PLANT2_EXACT_REQUIREMENT_STATE.machine_json_status[machine_no][
+#                             "last_json_time"
+#                         ]
+#                     )
+
+#                 # Ignore yesterday's signal
+#                 if last_signal_time and last_signal_time < shift_start:
+#                     last_signal_time = None
+
+#                 offline_since_str = None
+#                 offline_duration_minutes = None
+#                 offline_since_obj = None
+
+#                 if not is_on:  # Completely offline
+#                     if last_signal_time:
+#                         offline_since_obj = last_signal_time
+#                     else:
+#                         offline_since_obj = shift_start
+
+#                     offline_since_str = offline_since_obj.strftime("%H:%M:%S")
+#                     offline_duration_minutes = int(
+#                         (now_ist - offline_since_obj).total_seconds() / 60
+#                     )
+#                     live_ideal_mode = "OFFLINE"
+#                     live_ideal_seconds = max(0, int((now_ist - offline_since_obj).total_seconds()))
+#                     live_ideal_hour_seconds = max(
+#                         0,
+#                         int((now_ist - max(offline_since_obj, current_hour)).total_seconds()),
+#                     )
+
+#                 on_since_str = None
+#                 first_count_str = None
+#                 time_to_first_count = None
+
+#                 if (
+#                     is_on
+#                     and machine_no in PLANT2_EXACT_REQUIREMENT_STATE.machine_on_since
+#                 ):
+#                     on_since = PLANT2_EXACT_REQUIREMENT_STATE.machine_on_since[
+#                         machine_no
+#                     ]
+#                     if on_since >= shift_start:
+#                         on_since_str = on_since.strftime("%H:%M:%S")
+#                         if (
+#                             machine_no
+#                             in PLANT2_EXACT_REQUIREMENT_STATE.first_count_time
+#                         ):
+#                             first_count = (
+#                                 PLANT2_EXACT_REQUIREMENT_STATE.first_count_time[
+#                                     machine_no
+#                                 ]
+#                             )
+#                             if first_count >= shift_start:
+#                                 first_count_str = first_count.strftime("%H:%M:%S")
+#                                 delay = (first_count - on_since).total_seconds()
+#                                 time_to_first_count = int(delay / 60)
+
+#                 # 🌟 FIX 2: IMPROVED SHUT HEIGHT + TOOL FETCHING 🌟
+#                 # UI requirement:
+#                 # Current MQTT/cache miss me 0.01 / 1.01 / Failed aaye to card me "Failed" show hoga.
+#                 # Valid height aaye to wahi show hoga. No-data me 0.00 nahi dikhayenge.
+#                 segment_info = PLANT2_EXACT_REQUIREMENT_STATE.machine_segments.get(
+#                     machine_no, {}
+#                 )
+#                 segment_shut_height = segment_info.get("shut_height")
+#                 status_shut_height = status_info.get("shut_height")
+
+#                 if is_failed_shut_height_reading(status_shut_height):
+#                     final_shut_height = "Failed"
+#                 else:
+#                     final_shut_height = (
+#                         parse_valid_shut_height(status_shut_height)
+#                         or parse_valid_shut_height(segment_shut_height)
+#                         or bulk_latest_shut_height.get(m_str)
+#                         or "No data"
+#                     )
+
+#                 safe_current_tool_id = (
+#                     normalize_tool_id(status_info.get("tool_id"))
+#                     or normalize_tool_id(segment_info.get("tool_id"))
+#                     or bulk_latest_tool.get(m_str)
+#                     or "N/A"
+#                 )
+
+#                 # ONLINE ideal live calculation:
+#                 # Machine ON hai, production/count nahi aa raha, aur idle tracker says idle.
+#                 if is_on and (not is_producing) and idle_status.get("is_idle"):
+#                     live_ideal_mode = "ONLINE"
+#                     online_start_obj = PLANT2_EXACT_REQUIREMENT_STATE.last_count_time.get(machine_no)
+#                     if not online_start_obj or online_start_obj < shift_start:
+#                         online_start_obj = PLANT2_EXACT_REQUIREMENT_STATE.machine_on_since.get(machine_no, shift_start)
+#                     live_ideal_seconds = max(0, int((now_ist - online_start_obj).total_seconds()))
+#                     live_ideal_hour_seconds = max(
+#                         0,
+#                         int((now_ist - max(online_start_obj, current_hour)).total_seconds()),
+#                     )
+
+#                 # Completed DB values + current live running ideal for FE summary
+#                 online_ideal_today_seconds = db_ideal_today["ONLINE"] + (live_ideal_seconds if live_ideal_mode == "ONLINE" else 0)
+#                 offline_ideal_today_seconds = db_ideal_today["OFFLINE"] + (live_ideal_seconds if live_ideal_mode == "OFFLINE" else 0)
+#                 total_ideal_today_seconds = online_ideal_today_seconds + offline_ideal_today_seconds
+
+#                 online_ideal_shift_seconds = db_ideal_shift["ONLINE"] + (live_ideal_seconds if live_ideal_mode == "ONLINE" else 0)
+#                 offline_ideal_shift_seconds = db_ideal_shift["OFFLINE"] + (live_ideal_seconds if live_ideal_mode == "OFFLINE" else 0)
+#                 total_ideal_shift_seconds = online_ideal_shift_seconds + offline_ideal_shift_seconds
+
+#                 online_ideal_hour_seconds = db_ideal_hour["ONLINE"] + (live_ideal_hour_seconds if live_ideal_mode == "ONLINE" else 0)
+#                 offline_ideal_hour_seconds = db_ideal_hour["OFFLINE"] + (live_ideal_hour_seconds if live_ideal_mode == "OFFLINE" else 0)
+#                 total_ideal_hour_seconds = online_ideal_hour_seconds + offline_ideal_hour_seconds
+
+#                 exact_data = {
+#                     "machine_no": machine_no,
+#                     "current_hour_count": PLANT2_EXACT_REQUIREMENT_STATE.current_hour_counts.get(
+#                         machine_no, 0
+#                     ),
+#                     "last_hour_count": db_last_hour,
+#                     "cumulative_count": db_cumulative,
+#                     # Old keys kept for existing FE compatibility.
+#                     # Now these come from new ideal table + current live ideal.
+#                     "idle_time": total_ideal_hour_seconds,
+#                     "total_shift_idle_time": total_ideal_shift_seconds,
+
+#                     # New ideal summary fields for FE. All values are seconds.
+#                     "live_ideal_mode": live_ideal_mode,
+#                     "live_ideal_time": live_ideal_seconds,
+#                     "live_ideal_display": seconds_to_display(live_ideal_seconds),
+
+#                     "online_ideal_this_hour": online_ideal_hour_seconds,
+#                     "offline_ideal_this_hour": offline_ideal_hour_seconds,
+#                     "total_ideal_this_hour": total_ideal_hour_seconds,
+#                     "online_ideal_this_hour_display": seconds_to_display(online_ideal_hour_seconds),
+#                     "offline_ideal_this_hour_display": seconds_to_display(offline_ideal_hour_seconds),
+#                     "total_ideal_this_hour_display": seconds_to_display(total_ideal_hour_seconds),
+
+#                     "online_ideal_shift": online_ideal_shift_seconds,
+#                     "offline_ideal_shift": offline_ideal_shift_seconds,
+#                     "total_ideal_shift": total_ideal_shift_seconds,
+#                     "online_ideal_shift_display": seconds_to_display(online_ideal_shift_seconds),
+#                     "offline_ideal_shift_display": seconds_to_display(offline_ideal_shift_seconds),
+#                     "total_ideal_shift_display": seconds_to_display(total_ideal_shift_seconds),
+
+#                     "online_ideal_today": online_ideal_today_seconds,
+#                     "offline_ideal_today": offline_ideal_today_seconds,
+#                     "total_ideal_today": total_ideal_today_seconds,
+#                     "online_ideal_today_display": seconds_to_display(online_ideal_today_seconds),
+#                     "offline_ideal_today_display": seconds_to_display(offline_ideal_today_seconds),
+#                     "total_ideal_today_display": seconds_to_display(total_ideal_today_seconds),
+#                     "shift": current_shift,
+#                     "machine_on": is_on,
+#                     "is_producing": is_producing,
+#                     "has_count_data": status_info["has_count_data"],
+#                     "has_json_data": status_info["has_json_data"],
+#                     "count_seconds_ago": status_info["count_seconds_ago"],
+#                     "json_seconds_ago": status_info["json_seconds_ago"],
+#                     "current_tool_id": safe_current_tool_id,
+#                     "tool_id": safe_current_tool_id,
+#                     # ✅ ULTIMATE FIX: Key ka naam 'shut_height' hona chahiye (Pehle 'current_shut_height' tha)
+#                     "shut_height": final_shut_height,
+#                     "data_source": status_info["data_source"],
+#                     "on_since": on_since_str,
+#                     "first_count_at": first_count_str,
+#                     "time_to_first_count": time_to_first_count,
+#                     "offline_since": offline_since_str,
+#                     "offline_duration_minutes": offline_duration_minutes,
+#                 }
+
+#                 tool_id = exact_data.get("current_tool_id", "N/A")
+
+#                 m_data = machine_data or {
+#                     "plant": 2,
+#                     "machine_no": machine_no,
+#                     "tool_id": safe_current_tool_id if safe_current_tool_id != "N/A" else f"PLANT2_M{machine_no:02d}",
+#                     "count": 0,
+#                     "shut_height": final_shut_height,
+#                     "last_seen": "JSON only" if is_on else "Not active",
+#                     "status": "OFFLINE" if not is_on else idle_status["status"],
+#                     "current_hour_count": 0,
+#                     "last_hour_count": 0,
+#                     "cumulative_count": 0,
+#                     "shift": exact_data.get("shift", "A"),
+#                     "idle_time": total_ideal_hour_seconds,
+#                 }
+
+#                 m_data.update(exact_data)
+
+#                 problem_detected = is_on and not is_producing and idle_status["is_idle"]
+#                 m_data["problem_detected"] = problem_detected
+#                 if problem_detected:
+#                     problem_machines.append(machine_no)
+
+#                 # 🌟 MASTER FIX 3: IDLE TIMER FIX 🌟
+#                 last_count_obj = PLANT2_EXACT_REQUIREMENT_STATE.last_count_time.get(
+#                     machine_no
+#                 )
+#                 if last_count_obj and last_count_obj >= shift_start:
+#                     m_data["last_activity"] = last_count_obj.strftime("%H:%M:%S")
+#                 else:
+#                     m_data["last_activity"] = "Never"
+
+#                 m_data.update(
+#                     {
+#                         "live_idle_time": idle_status["live_idle_time"],
+#                         "accumulated_idle_time": idle_status["accumulated_idle_time"],
+#                         "hourly_idle_total": idle_status["hourly_idle_total"],
+#                         "idle_time": total_ideal_hour_seconds,
+#                         "is_idle": idle_status["is_idle"],
+#                         "idle_type": idle_status["idle_type"],
+#                     }
+#                 )
+
+#                 tool_id_for_bulk = normalize_tool_id(m_data.get("tool_id", ""))
+#                 if tool_id_for_bulk:
+#                     collected_tools.add(tool_id_for_bulk[:24])
+
+#                 intermediate_machine_data.append(
+#                     {
+#                         "has_data": True,
+#                         "data": m_data,
+#                         "machine_no": machine_no,
+#                         "idle_status": idle_status,
+#                     }
+#                 )
+
+#             except Exception as e:
+#                 print(f"⚠️ M{machine_no} error: {e}")
+#                 intermediate_machine_data.append(
+#                     {
+#                         "has_data": False,
+#                         "data": None,
+#                         "machine_no": machine_no,
+#                         "idle_status": None,
+#                     }
+#                 )
+
+#         # =====================================================================
+#         # 🚀 STEP 3: TID MAP TOOL FETCH
+#         # =====================================================================
+#         # Requirement:
+#         # - EPC/tool_id ke basis par public.tid_map se full info fetch karni hai.
+#         # - Customer, Model, Part Name, Part Number, Tool Name sab API me bhejna hai.
+#         # - Agar master me info nahi mile, UI ko N/A milega; count/Redis/WebSocket untouched.
+#         bulk_tool_info = {}
+#         if collected_tools:
+#             for tid in collected_tools:
+#                 try:
+#                     info = get_tool_info_from_tid_map(tid)
+#                     if info:
+#                         clean_epc = str(info.get("epc") or tid).strip().lower()[:24]
+#                         bulk_tool_info[tid] = info
+#                         bulk_tool_info[clean_epc] = info
+#                     else:
+#                         bulk_tool_info[tid] = {}
+#                 except Exception as e:
+#                     print(f"❌ TID map fetch error for {tid}: {e}")
+#                     bulk_tool_info[tid] = {}
+
+#         # =====================================================================
+#         # 🚀 STEP 4: FINAL ASSEMBLY
+#         # =====================================================================
+#         for item in intermediate_machine_data:
+#             machine_no = item["machine_no"]
+#             if item["has_data"]:
+#                 machine_data = item["data"]
+#                 tool_id = machine_data.get("tool_id", "")
+#                 clean_tool_id = tool_id[:24] if tool_id else ""
+#                 tool_info = bulk_tool_info.get(clean_tool_id, {})
+
+#                 # ✅ TID MAP DATA added with both old FE keys and new plain keys.
+#                 # Old keys: tool_customer/tool_model/tool_part_name/tool_part_number
+#                 # New keys: customer/model_name/part_name/part_number/tool_name/epc
+#                 customer_val = get_safe_tid_value(tool_info, "customer")
+#                 model_val = get_safe_tid_value(tool_info, "model_name")
+#                 part_name_val = get_safe_tid_value(tool_info, "part_name")
+#                 part_number_val = get_safe_tid_value(tool_info, "part_number")
+#                 tool_name_val = get_safe_tid_value(tool_info, "tool_name")
+#                 epc_val = get_safe_tid_value(tool_info, "epc", clean_tool_id or "N/A")
+
+#                 machine_data.update(
+#                     {
+#                         "machine_group": get_machine_group(machine_no),
+
+#                         # Existing FE compatibility
+#                         "tool_customer": customer_val,
+#                         "tool_model": model_val,
+#                         "tool_part_name": part_name_val,
+#                         "tool_name": tool_name_val,
+#                         "tool_part_number": part_number_val,
+#                         "tool_tpm": int(tool_info.get("tpm", 0) or 0) if tool_info else 0,
+#                         "tool_epc": epc_val,
+
+#                         # New clean API keys
+#                         "customer": customer_val,
+#                         "customer_name": customer_val,
+#                         "model": model_val,
+#                         "model_name": model_val,
+#                         "part_name": part_name_val,
+#                         "part_number": part_number_val,
+#                         "epc": epc_val,
+#                         "plant": 2,
+#                     }
+#                 )
+#                 enhanced_machines.append(machine_data)
+
+#         enhanced_machines.sort(key=lambda x: x["machine_no"])
+
+#         on_machines = [m for m in enhanced_machines if m.get("machine_on")]
+#         producing_machines = [m for m in enhanced_machines if m.get("is_producing")]
+
+#         groups_summary = {}
+#         for group in ["J1", "J2", "J3", "J4", "J5", "J6", "J7", "J8", "J9"]:
+#             group_machines = [
+#                 m for m in enhanced_machines if m.get("machine_group") == group
+#             ]
+#             if group_machines:
+#                 groups_summary[group] = {
+#                     "total": len(group_machines),
+#                     "on": len([m for m in group_machines if m.get("machine_on")]),
+#                     "producing": len(
+#                         [m for m in group_machines if m.get("is_producing")]
+#                     ),
+#                     "problems": len(
+#                         [m for m in group_machines if m.get("problem_detected")]
+#                     ),
+#                 }
+
+#         response = Response(
+#             {
+#                 "success": True,
+#                 "total_machines": len(enhanced_machines),
+#                 "on_count": len(on_machines),
+#                 "producing_count": len(producing_machines),
+#                 "problem_count": len(problem_machines),
+#                 "problem_machines": problem_machines,
+#                 "groups_summary": groups_summary,
+#                 "machines": enhanced_machines,
+#                 "plant": 2,
+#             }
+#         )
+#         response["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
+#         return response
+
+#     except Exception as e:
+#         import traceback
+
+#         traceback.print_exc()
+#         return Response(
+#             {"success": False, "error": str(e), "machines": [], "plant": 2}, status=500
+#         )
+ 
+# @never_cache
+# @api_view(["GET"])
+# def get_machine_history(request):
+#     """
+#     Plant 2 Machine History - FAST SHIFT WISE STORY API
+
+#     Goal:
+#     - 1 API call me shift-wise machine story ready.
+#     - Hour-wise production count from live_data.plant2_data.
+#     - ONLINE/OFFLINE ideal segments with reason from live_data.ideal_time_segments_reason.
+#     - ON/OFF/TOOL_CHANGE/SHUT_HEIGHT_CHANGE from Machine_Event_Logs.
+#     - Lunch break shown as 12:15 PM to 12:45 PM.
+#     - Shift end shown at scheduled shift end (Shift A = 08:00 PM).
+#     - Old Plant2_hourly_idle table is NOT used for ideal history.
+
+#     Query params:
+#         plant_no=2
+#         machine_no=7
+#         date=2026-07-14
+#         shift=A        optional, default A. Supports A / B / ALL.
+#     """
+#     try:
+#         from django.db import connection
+#         import pytz
+#         from datetime import datetime, timedelta, time
+
+#         plant_no = int(request.GET.get("plant_no", 2))
+#         machine_no = str(request.GET.get("machine_no", "")).strip()
+#         date_str = request.GET.get("date", "").strip()
+#         shift_param = str(request.GET.get("shift", "A")).strip().upper()
+
+#         ist_tz = pytz.timezone("Asia/Kolkata")
+#         now_ist = datetime.now(ist_tz)
+
+#         if not date_str:
+#             date_str = now_ist.strftime("%Y-%m-%d")
+
+#         if not machine_no:
+#             return Response(
+#                 {"success": False, "error": "machine_no is required"},
+#                 status=400,
+#             )
+
+#         target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+
+#         def localize_ist(dt):
+#             if dt.tzinfo is None:
+#                 return ist_tz.localize(dt)
+#             return dt.astimezone(ist_tz)
+
+#         def to_naive_str(dt):
+#             dt = localize_ist(dt)
+#             return dt.replace(tzinfo=None, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+
+#         def seconds_to_display(total_seconds):
+#             total_seconds = int(total_seconds or 0)
+#             if total_seconds < 0:
+#                 total_seconds = 0
+#             hours = total_seconds // 3600
+#             minutes = (total_seconds % 3600) // 60
+#             seconds = total_seconds % 60
+#             if hours > 0:
+#                 return f"{hours} hr {minutes} min {seconds} sec"
+#             if minutes > 0:
+#                 return f"{minutes} min {seconds} sec"
+#             return f"{seconds} sec"
+
+#         def title_time(dt):
+#             return localize_ist(dt).strftime("%I:%M %p")
+
+#         def system_time(dt):
+#             return localize_ist(dt).strftime("%Y-%m-%d %H:%M:%S")
+
+#         def json_ts(dt):
+#             return localize_ist(dt).isoformat()
+
+
+#         def normalize_tool_id(tool_id):
+#             if tool_id in [None, '', 'NULL', 'UNKNOWN', 'N/A', 'No data', 'Failed']:
+#                 return None
+#             clean = str(tool_id).strip().lower()[:24]
+#             if len(clean) != 24:
+#                 return None
+#             if any(ch not in '0123456789abcdef' for ch in clean):
+#                 return None
+#             if clean.startswith('e000'):
+#                 return None
+#             if not clean.startswith('e2'):
+#                 return None
+#             return clean
+
+#         def parse_valid_shut_height(value):
+#             if value in [None, '', '0', '0.0', '0.00', 0, 0.0, 'No data', 'Failed', 'None']:
+#                 return None
+#             try:
+#                 num = float(value)
+#             except Exception:
+#                 return None
+#             if num <= 10.0:
+#                 return None
+#             return num
+
+#         def is_failed_shut_height_reading(value):
+#             if value in ['Failed', 'failed', 'FAILED']:
+#                 return True
+#             if value in [None, '', '0', '0.0', '0.00', 0, 0.0, 'No data', 'None', 'N/A']:
+#                 return False
+#             try:
+#                 num = float(value)
+#             except Exception:
+#                 return False
+#             return 0 < num <= 10.0
+
+#         def extract_tool_id_from_text(text):
+#             """Event details text se pehla valid e2... EPC nikalo."""
+#             try:
+#                 import re
+#                 matches = re.findall(r'e2[0-9a-fA-F]{22}', str(text or ''))
+#                 for match in matches:
+#                     clean = normalize_tool_id(match)
+#                     if clean:
+#                         return clean
+#             except Exception:
+#                 pass
+#             return None
+
+#         def get_shift_window(date_obj, shift_name):
+#             """
+#             Same Plant 2 live logic ke saath shift window.
+#             A = 08:30 to 20:00
+#             B = 20:30 to next day 08:30
+#             ALL = full production day 08:30 to next day 08:30
+#             """
+#             shift_name = (shift_name or "A").upper()
+#             if shift_name == "B":
+#                 start = ist_tz.localize(datetime.combine(date_obj, time(20, 30, 0)))
+#                 end = ist_tz.localize(datetime.combine(date_obj + timedelta(days=1), time(8, 30, 0)))
+#                 return start, end, "B"
+#             if shift_name == "ALL":
+#                 start = ist_tz.localize(datetime.combine(date_obj, time(8, 30, 0)))
+#                 end = ist_tz.localize(datetime.combine(date_obj + timedelta(days=1), time(8, 30, 0)))
+#                 return start, end, "ALL"
+#             start = ist_tz.localize(datetime.combine(date_obj, time(8, 30, 0)))
+#             end = ist_tz.localize(datetime.combine(date_obj, time(20, 0, 0)))
+#             return start, end, "A"
+
+#         shift_start, shift_end, selected_shift = get_shift_window(target_date, shift_param)
+
+#         # Current day me future part avoid karo. Old dates me full shift dikhega.
+#         effective_end = shift_end
+#         if shift_start.date() <= now_ist.date() <= shift_end.date():
+#             effective_end = min(shift_end, now_ist)
+
+#         start_str_naive = to_naive_str(shift_start)
+#         end_str_naive = to_naive_str(effective_end)
+#         start_str_tz = localize_ist(shift_start).strftime("%Y-%m-%d %H:%M:%S+05:30")
+#         end_str_tz = localize_ist(effective_end).strftime("%Y-%m-%d %H:%M:%S+05:30")
+
+#         # ------------------------------------------------------------------
+#         # Hour buckets: 08:30-09:00, 09:00-10:00, ...
+#         # ------------------------------------------------------------------
+#         hour_buckets = []
+#         cursor_time = shift_start
+#         while cursor_time < effective_end:
+#             if cursor_time.minute != 0 or cursor_time.second != 0:
+#                 next_time = cursor_time.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+#             else:
+#                 next_time = cursor_time + timedelta(hours=1)
+#             if next_time > shift_end:
+#                 next_time = shift_end
+#             bucket_end = min(next_time, effective_end)
+#             hour_buckets.append(
+#                 {
+#                     "bucket_key": to_naive_str(cursor_time),
+#                     "start": cursor_time,
+#                     "end": bucket_end,
+#                     "scheduled_end": next_time,
+#                     "count": 0,
+#                     "latest_cumulative": 0,
+#                     "online_ideal_seconds": 0,
+#                     "offline_ideal_seconds": 0,
+#                     "total_ideal_seconds": 0,
+#                     "ideal_segments": [],
+#                     "machine_events": [],
+#                     "on_off_events": [],
+#                     "tool_changes": [],
+#                     "shut_height_changes": [],
+#                 }
+#             )
+#             cursor_time = next_time
+
+#         bucket_by_key = {b["bucket_key"]: b for b in hour_buckets}
+
+#         def find_bucket_for_time(dt):
+#             dt = localize_ist(dt)
+#             for bucket in hour_buckets:
+#                 if bucket["start"] <= dt < bucket["scheduled_end"]:
+#                     return bucket
+#             # Exact end time ko last bucket me daal do.
+#             if hour_buckets and dt == hour_buckets[-1]["scheduled_end"]:
+#                 return hour_buckets[-1]
+#             return None
+
+#         def add_timeline_event(events, dt, event_type, title, details, shift="", extra=None):
+#             dt = localize_ist(dt)
+#             payload = {
+#                 "timestamp": dt.timestamp(),
+#                 "time": dt.strftime("%I:%M %p"),
+#                 "time_str": dt.strftime("%I:%M %p"),
+#                 "system_time": dt.strftime("%Y-%m-%d %H:%M:%S"),
+#                 "type": event_type,
+#                 "title": title,
+#                 "details": details or "",
+#                 "shift": shift or ("A" if selected_shift == "ALL" else selected_shift),
+#             }
+#             if extra:
+#                 payload.update(extra)
+#             events.append(payload)
+#             return payload
+
+#         events = []
+#         machine_meta = {
+#             "customer": "N/A",
+#             "customer_name": "N/A",
+#             "model": "N/A",
+#             "model_name": "N/A",
+#             "part_name": "N/A",
+#             "part_number": "N/A",
+#             "tool_name": "N/A",
+#             "tool_id": "N/A",
+#             "epc": "N/A",
+#             "shut_height": "N/A",
+#         }
+
+#         # Shift synthetic events
+#         if shift_start <= now_ist or target_date < now_ist.date():
+#             add_timeline_event(
+#                 events,
+#                 shift_start,
+#                 "SHIFT_START",
+#                 f"Shift {selected_shift} Started" if selected_shift != "ALL" else "Production Day Started",
+#                 f"History window started at {shift_start.strftime('%I:%M %p')}.",
+#                 selected_shift,
+#             )
+
+#         # Lunch only Shift A / ALL window me
+#         lunch_start = ist_tz.localize(datetime.combine(target_date, time(12, 15, 0)))
+#         lunch_end = ist_tz.localize(datetime.combine(target_date, time(12, 45, 0)))
+#         if shift_start <= lunch_start < effective_end:
+#             add_timeline_event(
+#                 events,
+#                 lunch_start,
+#                 "LUNCH_START",
+#                 "Lunch Break Started",
+#                 "Scheduled lunch break started at 12:15 PM.",
+#                 "A",
+#             )
+#         if shift_start <= lunch_end < effective_end:
+#             add_timeline_event(
+#                 events,
+#                 lunch_end,
+#                 "LUNCH_END",
+#                 "Lunch Break Ended",
+#                 "Scheduled lunch break ended at 12:45 PM.",
+#                 "A",
+#             )
+
+#         # Shift end event
+#         # Shift A end should show at 08:00 PM when the shift is completed.
+#         if selected_shift == "A" and shift_end <= effective_end:
+#             add_timeline_event(
+#                 events,
+#                 shift_end,
+#                 "SHIFT_END",
+#                 "Shift A Ended",
+#                 "Shift A ended at 08:00 PM.",
+#                 "A",
+#             )
+#         elif selected_shift == "B" and shift_end <= effective_end:
+#             add_timeline_event(
+#                 events,
+#                 shift_end,
+#                 "SHIFT_END",
+#                 "Shift B Ended",
+#                 "Shift B ended at 08:30 AM.",
+#                 "B",
+#             )
+#         elif selected_shift == "ALL":
+#             shift_a_end_for_all = ist_tz.localize(datetime.combine(target_date, time(20, 0, 0)))
+#             if shift_start <= shift_a_end_for_all <= effective_end:
+#                 add_timeline_event(
+#                     events,
+#                     shift_a_end_for_all,
+#                     "SHIFT_END",
+#                     "Shift A Ended",
+#                     "Shift A ended at 08:00 PM.",
+#                     "A",
+#                 )
+
+#         count_summary = {
+#             "total_count": 0,
+#             "first_count_time": None,
+#             "last_count_time": None,
+#             "latest_cumulative": 0,
+#         }
+#         shift_ideal_summary = {
+#             "online_ideal_seconds": 0,
+#             "offline_ideal_seconds": 0,
+#             "total_ideal_seconds": 0,
+#             "online_ideal_display": "0 sec",
+#             "offline_ideal_display": "0 sec",
+#             "total_ideal_display": "0 sec",
+#         }
+
+#         with connection.cursor() as cursor:
+#             # --------------------------------------------------------------
+#             # 1) Latest tool meta in selected window
+#             # --------------------------------------------------------------
+#             cursor.execute(
+#                 """
+#                 SELECT LOWER(LEFT(TRIM(tool_id::text), 24)) AS clean_tool_id
+#                 FROM live_data.plant2_data
+#                 WHERE machine_no = %s
+#                   AND timestamp >= %s::timestamp WITHOUT TIME ZONE
+#                   AND timestamp <  %s::timestamp WITHOUT TIME ZONE
+#                   AND tool_id IS NOT NULL
+#                   AND LOWER(LEFT(TRIM(tool_id::text), 24)) ~ '^e2[0-9a-f]{22}$'
+#                   AND LOWER(LEFT(TRIM(tool_id::text), 24)) NOT LIKE 'e000%%'
+#                 ORDER BY timestamp DESC
+#                 LIMIT 1
+#                 """,
+#                 [machine_no, start_str_naive, end_str_naive],
+#             )
+#             tool_res = cursor.fetchone()
+#             if tool_res and tool_res[0]:
+#                 tool_id = normalize_tool_id(tool_res[0])
+#                 if tool_id:
+#                     tid_info = get_tool_info_from_tid_map(tool_id)
+#                     machine_meta.update({
+#                         "tool_id": tool_id,
+#                         "epc": get_safe_tid_value(tid_info, "epc", tool_id),
+#                         "customer": get_safe_tid_value(tid_info, "customer"),
+#                         "customer_name": get_safe_tid_value(tid_info, "customer"),
+#                         "model": get_safe_tid_value(tid_info, "model_name"),
+#                         "model_name": get_safe_tid_value(tid_info, "model_name"),
+#                         "part_name": get_safe_tid_value(tid_info, "part_name"),
+#                         "part_number": get_safe_tid_value(tid_info, "part_number"),
+#                         "tool_name": get_safe_tid_value(tid_info, "tool_name"),
+#                     })
+
+#             # Latest shut height for history header:
+#             # Agar latest reading 0.01 / 1.01 / Failed hai to header me Failed show hoga.
+#             # Agar latest valid hai to valid height show hoga.
+#             cursor.execute(
+#                 """
+#                 SELECT shut_height
+#                 FROM live_data.plant2_data
+#                 WHERE machine_no = %s
+#                   AND timestamp >= %s::timestamp WITHOUT TIME ZONE
+#                   AND timestamp <  %s::timestamp WITHOUT TIME ZONE
+#                 ORDER BY timestamp DESC
+#                 LIMIT 1
+#                 """,
+#                 [machine_no, start_str_naive, end_str_naive],
+#             )
+#             latest_raw_height_res = cursor.fetchone()
+#             latest_raw_height = latest_raw_height_res[0] if latest_raw_height_res else None
+
+#             if is_failed_shut_height_reading(latest_raw_height):
+#                 machine_meta["shut_height"] = "Failed"
+#             else:
+#                 cursor.execute(
+#                     """
+#                     WITH valid_height AS (
+#                         SELECT
+#                             timestamp,
+#                             CASE
+#                                 WHEN TRIM(shut_height::text) ~ '^[0-9]+(\.[0-9]+)?$'
+#                                 THEN TRIM(shut_height::text)::numeric
+#                                 ELSE NULL
+#                             END AS height_value
+#                         FROM live_data.plant2_data
+#                         WHERE machine_no = %s
+#                           AND timestamp >= %s::timestamp WITHOUT TIME ZONE
+#                           AND timestamp <  %s::timestamp WITHOUT TIME ZONE
+#                     )
+#                     SELECT height_value
+#                     FROM valid_height
+#                     WHERE height_value > 10
+#                     ORDER BY timestamp DESC
+#                     LIMIT 1
+#                     """,
+#                     [machine_no, start_str_naive, end_str_naive],
+#                 )
+#                 height_res = cursor.fetchone()
+#                 if height_res and height_res[0] is not None:
+#                     machine_meta["shut_height"] = f"{float(height_res[0]):.2f}"
+
+#             # --------------------------------------------------------------
+#             # 2) Hour-wise production count in ONE grouped query
+#             # First bucket starts at 08:30/20:30, not date_trunc hour.
+#             # --------------------------------------------------------------
+#             first_bucket_end = hour_buckets[0]["scheduled_end"] if hour_buckets else effective_end
+#             first_bucket_start_str = to_naive_str(shift_start)
+#             first_bucket_end_str = to_naive_str(first_bucket_end)
+
+#             cursor.execute(
+#                 """
+#                 SELECT
+#                     CASE
+#                         WHEN timestamp >= %s::timestamp WITHOUT TIME ZONE
+#                          AND timestamp <  %s::timestamp WITHOUT TIME ZONE
+#                         THEN %s::timestamp WITHOUT TIME ZONE
+#                         ELSE date_trunc('hour', timestamp)
+#                     END AS bucket_start,
+#                     COALESCE(SUM(count), 0) AS total_count,
+#                     COALESCE(MAX(cumulative_count), 0) AS latest_cumulative,
+#                     MIN(timestamp) AS first_count_time,
+#                     MAX(timestamp) AS last_count_time
+#                 FROM live_data.plant2_data
+#                 WHERE machine_no = %s
+#                   AND timestamp >= %s::timestamp WITHOUT TIME ZONE
+#                   AND timestamp <  %s::timestamp WITHOUT TIME ZONE
+#                 GROUP BY bucket_start
+#                 ORDER BY bucket_start ASC
+#                 """,
+#                 [
+#                     first_bucket_start_str,
+#                     first_bucket_end_str,
+#                     first_bucket_start_str,
+#                     machine_no,
+#                     start_str_naive,
+#                     end_str_naive,
+#                 ],
+#             )
+#             for bucket_start, total_count, latest_cumulative, first_count_time, last_count_time in cursor.fetchall():
+#                 bucket_key = bucket_start.strftime("%Y-%m-%d %H:%M:%S")
+#                 bucket = bucket_by_key.get(bucket_key)
+#                 if bucket:
+#                     bucket["count"] = int(total_count or 0)
+#                     bucket["latest_cumulative"] = int(latest_cumulative or 0)
+#                     count_summary["total_count"] += int(total_count or 0)
+#                     count_summary["latest_cumulative"] = max(
+#                         count_summary["latest_cumulative"], int(latest_cumulative or 0)
+#                     )
+#                     if first_count_time and (not count_summary["first_count_time"] or first_count_time < count_summary["first_count_time"]):
+#                         count_summary["first_count_time"] = first_count_time
+#                     if last_count_time and (not count_summary["last_count_time"] or last_count_time > count_summary["last_count_time"]):
+#                         count_summary["last_count_time"] = last_count_time
+
+#             # --------------------------------------------------------------
+#             # 3) Machine events: ON/OFF/TOOL_CHANGE/SHUT_HEIGHT_CHANGE
+#             # --------------------------------------------------------------
+#             cursor.execute(
+#                 """
+#                 SELECT event_type, timestamp, shift, details
+#                 FROM live_data."Machine_Event_Logs"
+#                 WHERE plant_no = %s
+#                   AND machine_no = %s
+#                   AND timestamp >= %s::timestamp WITH TIME ZONE
+#                   AND timestamp <  %s::timestamp WITH TIME ZONE
+#                 ORDER BY timestamp ASC
+#                 """,
+#                 [plant_no, machine_no, start_str_tz, end_str_tz],
+#             )
+#             machine_event_rows = cursor.fetchall()
+
+#             event_titles = {
+#                 "ON": "Machine Powered ON",
+#                 "OFF": "Machine Offline",
+#                 "SHUT_HEIGHT_CHANGE": "Shut Height Adjusted",
+#                 "TOOL_CHANGE": "Tool ID Changed",
+#             }
+#             for event_type, ts_obj, shift_val, details in machine_event_rows:
+#                 # Old bad rows cleanup at API level: fake e000... tool change ko history me show nahi karenge.
+#                 details_text_raw = str(details or "")
+#                 if event_type == "TOOL_CHANGE" and "e000" in details_text_raw.lower():
+#                     continue
+#                 if event_type == "SHUT_HEIGHT_CHANGE" and ("1.01" in details_text_raw or "1.0" in details_text_raw):
+#                     continue
+
+#                 ts_obj = localize_ist(ts_obj)
+#                 title = event_titles.get(event_type, str(event_type).replace("_", " ").title())
+#                 event_tool_id = extract_tool_id_from_text(details_text_raw)
+#                 event_tool_info = get_tool_info_from_tid_map(event_tool_id) if event_tool_id else {}
+#                 event_extra = {}
+#                 if event_tool_id:
+#                     event_extra = {
+#                         "tool_id": event_tool_id,
+#                         "epc": get_safe_tid_value(event_tool_info, "epc", event_tool_id),
+#                         "customer": get_safe_tid_value(event_tool_info, "customer"),
+#                         "customer_name": get_safe_tid_value(event_tool_info, "customer"),
+#                         "model": get_safe_tid_value(event_tool_info, "model_name"),
+#                         "model_name": get_safe_tid_value(event_tool_info, "model_name"),
+#                         "part_name": get_safe_tid_value(event_tool_info, "part_name"),
+#                         "part_number": get_safe_tid_value(event_tool_info, "part_number"),
+#                         "tool_name": get_safe_tid_value(event_tool_info, "tool_name"),
+#                     }
+
+#                 event_payload = add_timeline_event(
+#                     events,
+#                     ts_obj,
+#                     event_type,
+#                     title,
+#                     details,
+#                     shift_val,
+#                     extra=event_extra if event_extra else None,
+#                 )
+#                 bucket = find_bucket_for_time(ts_obj)
+#                 if bucket:
+#                     bucket_event = {
+#                         "type": event_type,
+#                         "title": title,
+#                         "time": ts_obj.strftime("%I:%M:%S %p"),
+#                         "system_time": system_time(ts_obj),
+#                         "details": details or "",
+#                         **event_extra,
+#                     }
+#                     bucket["machine_events"].append(bucket_event)
+#                     if event_type in ["ON", "OFF"]:
+#                         bucket["on_off_events"].append(bucket_event)
+#                     elif event_type == "TOOL_CHANGE":
+#                         bucket["tool_changes"].append(bucket_event)
+#                     elif event_type == "SHUT_HEIGHT_CHANGE":
+#                         bucket["shut_height_changes"].append(bucket_event)
+
+#             # --------------------------------------------------------------
+#             # 4) Ideal segments from correct table, old Plant2_hourly_idle not used.
+#             # Filter ideal_time >= 180 so old 11 sec / 28 sec rows do not pollute history.
+#             # --------------------------------------------------------------
+#             # ✅ FIX: overlap query order must be END first, START second
+#             # SQL: ideal_start_at < window_end AND ideal_end_at > window_start
+#             # Pehle ulta params ja rahe the, isliye ideal_rows empty aa rahe the.
+#             ideal_params = ["Plant 2", int(machine_no), end_str_naive, start_str_naive]
+#             shift_filter_sql = ""
+#             if selected_shift in ["A", "B"]:
+#                 shift_filter_sql = " AND shift = %s"
+#                 ideal_params.append(selected_shift)
+
+#             cursor.execute(
+#                 f"""
+#                 SELECT
+#                     id,
+#                     ideal_mode,
+#                     ideal_start_at,
+#                     ideal_end_at,
+#                     ideal_time,
+#                     closed_by,
+#                     reason,
+#                     specific_reason,
+#                     remark,
+#                     shift
+#                 FROM live_data.ideal_time_segments_reason
+#                 WHERE plant_location = %s
+#                   AND machine_no = %s
+#                   AND ideal_start_at <  %s::timestamp WITHOUT TIME ZONE
+#                   AND ideal_end_at   >  %s::timestamp WITHOUT TIME ZONE
+#                   AND ideal_time >= 180
+#                   {shift_filter_sql}
+#                 ORDER BY ideal_start_at ASC
+#                 """,
+#                 ideal_params,
+#             )
+#             ideal_rows = cursor.fetchall()
+
+#             for row in ideal_rows:
+#                 (
+#                     ideal_id,
+#                     ideal_mode,
+#                     ideal_start_at,
+#                     ideal_end_at,
+#                     ideal_time,
+#                     closed_by,
+#                     reason,
+#                     specific_reason,
+#                     remark,
+#                     shift_val,
+#                 ) = row
+
+#                 ideal_start_at = localize_ist(ideal_start_at)
+#                 ideal_end_at = localize_ist(ideal_end_at)
+#                 ideal_mode = str(ideal_mode or "").upper()
+#                 ideal_time = int(ideal_time or 0)
+
+#                 segment_payload = {
+#                     "id": ideal_id,
+#                     "mode": ideal_mode,
+#                     "start_time": ideal_start_at.strftime("%I:%M:%S %p"),
+#                     "end_time": ideal_end_at.strftime("%I:%M:%S %p"),
+#                     "start_system_time": system_time(ideal_start_at),
+#                     "end_system_time": system_time(ideal_end_at),
+#                     "duration_seconds": ideal_time,
+#                     "duration_display": seconds_to_display(ideal_time),
+#                     "closed_by": closed_by,
+#                     "reason": reason or "Uncategorized",
+#                     "specific_reason": specific_reason or "Reason Not Provided",
+#                     "remark": remark or "",
+#                     "shift": shift_val,
+#                 }
+
+#                 # Timeline event for exact ideal segment
+#                 title = "Online Ideal" if ideal_mode == "ONLINE" else "Offline Ideal"
+#                 details = (
+#                     f"{title}: {segment_payload['duration_display']} "
+#                     f"({segment_payload['start_time']} - {segment_payload['end_time']}). "
+#                     f"Reason: {segment_payload['reason']} / {segment_payload['specific_reason']}"
+#                 )
+#                 add_timeline_event(
+#                     events,
+#                     ideal_start_at,
+#                     f"IDEAL_{ideal_mode}",
+#                     title,
+#                     details,
+#                     shift_val,
+#                     extra={"ideal_segment": segment_payload},
+#                 )
+
+#                 # Attach ideal segment to overlapping buckets and calculate clipped duration per bucket.
+#                 for bucket in hour_buckets:
+#                     overlap_start = max(ideal_start_at, bucket["start"])
+#                     overlap_end = min(ideal_end_at, bucket["scheduled_end"], effective_end)
+#                     if overlap_end <= overlap_start:
+#                         continue
+#                     overlap_seconds = int((overlap_end - overlap_start).total_seconds())
+#                     if overlap_seconds <= 0:
+#                         continue
+
+#                     bucket_segment = dict(segment_payload)
+#                     bucket_segment["bucket_overlap_seconds"] = overlap_seconds
+#                     bucket_segment["bucket_overlap_display"] = seconds_to_display(overlap_seconds)
+#                     bucket["ideal_segments"].append(bucket_segment)
+
+#                     if ideal_mode == "ONLINE":
+#                         bucket["online_ideal_seconds"] += overlap_seconds
+#                         shift_ideal_summary["online_ideal_seconds"] += overlap_seconds
+#                     elif ideal_mode == "OFFLINE":
+#                         bucket["offline_ideal_seconds"] += overlap_seconds
+#                         shift_ideal_summary["offline_ideal_seconds"] += overlap_seconds
+
+#         # ------------------------------------------------------------------
+#         # Build hourly summary events after count/ideal/events attached
+#         # ------------------------------------------------------------------
+#         hourly_summary = []
+#         for bucket in hour_buckets:
+#             bucket["total_ideal_seconds"] = int(bucket["online_ideal_seconds"] + bucket["offline_ideal_seconds"])
+#             bucket["online_ideal_display"] = seconds_to_display(bucket["online_ideal_seconds"])
+#             bucket["offline_ideal_display"] = seconds_to_display(bucket["offline_ideal_seconds"])
+#             bucket["total_ideal_display"] = seconds_to_display(bucket["total_ideal_seconds"])
+#             bucket["tool_change_count"] = len(bucket["tool_changes"])
+#             bucket["shut_height_change_count"] = len(bucket["shut_height_changes"])
+#             bucket["on_off_event_count"] = len(bucket["on_off_events"])
+
+#             summary_details = f"Production: {bucket['count']} pieces."
+#             if bucket["online_ideal_seconds"] > 0:
+#                 summary_details += f" | Online ideal: {bucket['online_ideal_display']}."
+#             if bucket["offline_ideal_seconds"] > 0:
+#                 summary_details += f" | Offline ideal: {bucket['offline_ideal_display']}."
+#             if bucket["shut_height_change_count"] > 0:
+#                 summary_details += f" | Shut height changed {bucket['shut_height_change_count']} time(s)."
+#             if bucket["tool_change_count"] > 0:
+#                 summary_details += f" | Tool changed {bucket['tool_change_count']} time(s)."
+
+#             hour_payload = {
+#                 "bucket_start": system_time(bucket["start"]),
+#                 "bucket_end": system_time(bucket["scheduled_end"]),
+#                 "bucket_start_display": title_time(bucket["start"]),
+#                 "bucket_end_display": title_time(bucket["scheduled_end"]),
+#                 "count": int(bucket["count"]),
+#                 "latest_cumulative": int(bucket["latest_cumulative"]),
+#                 "online_ideal_seconds": int(bucket["online_ideal_seconds"]),
+#                 "offline_ideal_seconds": int(bucket["offline_ideal_seconds"]),
+#                 "total_ideal_seconds": int(bucket["total_ideal_seconds"]),
+#                 "online_ideal_display": bucket["online_ideal_display"],
+#                 "offline_ideal_display": bucket["offline_ideal_display"],
+#                 "total_ideal_display": bucket["total_ideal_display"],
+#                 "ideal_segments": bucket["ideal_segments"],
+#                 "machine_events": bucket["machine_events"],
+#                 "on_off_events": bucket["on_off_events"],
+#                 "tool_changes": bucket["tool_changes"],
+#                 "shut_height_changes": bucket["shut_height_changes"],
+#                 "tool_change_count": bucket["tool_change_count"],
+#                 "shut_height_change_count": bucket["shut_height_change_count"],
+#                 "on_off_event_count": bucket["on_off_event_count"],
+#                 "details": summary_details,
+#             }
+#             hourly_summary.append(hour_payload)
+
+#             add_timeline_event(
+#                 events,
+#                 bucket["scheduled_end"] - timedelta(seconds=1),
+#                 "HOUR_SUMMARY",
+#                 f"Hourly Summary ({title_time(bucket['start'])} - {title_time(bucket['scheduled_end'])})",
+#                 summary_details,
+#                 selected_shift,
+#                 extra=hour_payload,
+#             )
+
+#         shift_ideal_summary["total_ideal_seconds"] = int(
+#             shift_ideal_summary["online_ideal_seconds"] + shift_ideal_summary["offline_ideal_seconds"]
+#         )
+#         shift_ideal_summary["online_ideal_display"] = seconds_to_display(shift_ideal_summary["online_ideal_seconds"])
+#         shift_ideal_summary["offline_ideal_display"] = seconds_to_display(shift_ideal_summary["offline_ideal_seconds"])
+#         shift_ideal_summary["total_ideal_display"] = seconds_to_display(shift_ideal_summary["total_ideal_seconds"])
+
+#         if count_summary["first_count_time"]:
+#             count_summary["first_count_time"] = system_time(count_summary["first_count_time"])
+#         if count_summary["last_count_time"]:
+#             count_summary["last_count_time"] = system_time(count_summary["last_count_time"])
+
+#         events.sort(key=lambda x: x["timestamp"])
+
+#         response_data = {
+#             "success": True,
+#             "plant_no": plant_no,
+#             "machine_no": machine_no,
+#             "date": date_str,
+#             "shift": selected_shift,
+#             "shift_start": system_time(shift_start),
+#             "shift_end": system_time(shift_end),
+#             "effective_end": system_time(effective_end),
+#             "machine_meta": machine_meta,
+#             "schedule": {
+#                 "lunch_start": "12:15 PM",
+#                 "lunch_end": "12:45 PM",
+#                 "shift_a_start": "08:30 AM",
+#                 "shift_a_end": "08:00 PM",
+#             },
+#             "summary": {
+#                 "production": count_summary,
+#                 "ideal": shift_ideal_summary,
+#                 "total_hours": len(hourly_summary),
+#                 "total_events": len(events),
+#             },
+#             "hourly_summary": hourly_summary,
+#             # Existing frontend compatibility: timeline still available as events.
+#             "events": events,
+#             "total_events": len(events),
+#         }
+
+#         response = Response(response_data)
+#         response["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
+#         return response
+
+#     except Exception as e:
+#         import traceback
+#         traceback.print_exc()
+#         return Response({"success": False, "error": str(e), "events": [], "hourly_summary": []}, status=500)
+
 
 
 @never_cache
@@ -2214,7 +4280,7 @@ def get_operators_by_plant(request):
     except Exception as e:
         print(f"❌ Error fetching operators: {e}")
         return Response({"success": False, "error": str(e)}, status=500)
-
+    
 
 @api_view(["POST"])
 def add_operator(request):
@@ -2222,45 +4288,34 @@ def add_operator(request):
     try:
         name = request.data.get("name")
         plant = request.data.get("plant", "plant_2")
+        emp_code = request.data.get("employee_code", "") # 👇 Naya data aayega
 
         if not name or not name.strip():
-            return Response(
-                {"success": False, "message": "Operator name is required"}, status=400
-            )
+            return Response({"success": False, "message": "Operator name is required"}, status=400)
 
         if plant not in ["plant_1", "plant_2"]:
-            return Response(
-                {"success": False, "message": "Invalid plant. Use plant_1 or plant_2"},
-                status=400,
-            )
+            return Response({"success": False, "message": "Invalid plant."}, status=400)
 
-        # Check if operator already exists
-        existing = Operator.objects.filter(
-            name__iexact=name.strip(), plant=plant
-        ).first()
-
+        existing = Operator.objects.filter(name__iexact=name.strip(), plant=plant).first()
         if existing:
-            return Response(
-                {"success": False, "message": f"{name} already exists in {plant}"},
-                status=400,
-            )
+            return Response({"success": False, "message": f"{name} already exists"}, status=400)
 
-        # Create new operator
-        operator = Operator.objects.create(name=name.strip(), plant=plant)
-
-        print(f"✅ New operator added: {operator.name} to {plant}")
-
-        return Response(
-            {
-                "success": True,
-                "message": f"{name} added successfully to {plant}",
-                "operator": {
-                    "id": operator.id,
-                    "name": operator.name,
-                    "plant": operator.plant,
-                },
-            }
+        # 👇 Employee code save kar rahe hain
+        operator = Operator.objects.create(
+            name=name.strip(), 
+            plant=plant,
+            employee_code=emp_code
         )
+
+        return Response({
+            "success": True,
+            "message": f"{name} added successfully",
+            "operator": {
+                "id": operator.id,
+                "name": operator.name,
+                "plant": operator.plant
+            },
+        })
 
     except Exception as e:
         print(f"❌ Error adding operator: {e}")
@@ -2298,7 +4353,11 @@ def get_machines_by_plant(request):
     except Exception as e:
         print(f"❌ Error fetching machines: {e}")
         return Response({"success": False, "error": str(e)}, status=500)
-
+    
+from rest_framework.response import Response
+from rest_framework.decorators import api_view
+from django.utils import timezone
+from .models import Operator, OperatorAssignment # Ensure ye models imported hain
 
 @api_view(["POST"])
 def save_operator_assignment(request):
@@ -2308,123 +4367,298 @@ def save_operator_assignment(request):
         operator_name = request.data.get("operator_name")
         machine_no = request.data.get("machine_no")
         shift = request.data.get("shift")
+        assigned_by = request.data.get("assigned_by", "Admin")
+        
+        # Frontend se override ka order
+        override = request.data.get("override", False) 
 
-        # Validation
         if not all([plant, operator_name, machine_no, shift]):
-            return Response(
-                {
-                    "success": False,
-                    "message": "All fields are required: plant, operator_name, machine_no, shift",
-                },
-                status=400,
-            )
+            return Response({"success": False, "message": "All fields are required"}, status=400)
 
-        if plant not in ["plant_1", "plant_2"]:
-            return Response({"success": False, "message": "Invalid plant"}, status=400)
+        # 1. Operator ID nikalo
+        if operator_name == "No Operator Available":
+            operator_id = 0
+        else:
+            operator = Operator.objects.filter(name=operator_name, plant=plant, is_active=True).first()
+            if not operator:
+                return Response({"success": False, "message": "Operator not found"}, status=404)
+            operator_id = operator.id
 
-        if shift not in ["A", "B"]:
-            return Response(
-                {"success": False, "message": "Invalid shift. Use A or B"}, status=400
-            )
-
-        # Check for duplicate assignment
-        today = timezone.now().date()
-        existing = OperatorAssignment.objects.filter(
-            plant=plant, machine_no=str(machine_no), shift=shift, start_time__date=today
+        # 2. Check karo kya Machine pehle se busy hai?
+        existing_machine = OperatorAssignment.objects.filter(
+            plant=plant, machine_no=str(machine_no), is_current=True
         ).first()
 
-        if existing:
-            return Response(
-                {
-                    "success": False,
-                    "message": f"Machine {machine_no} already assigned to {existing.operator_name} for Shift {shift} today",
-                },
-                status=400,
-            )
+        # 3. Check karo kya Operator kisi aur machine par busy hai?
+        existing_operator = OperatorAssignment.objects.filter(
+            plant=plant, operator_id=operator_id, is_current=True
+        ).first()
 
-        # Create assignment
+        # Agar Override FALSE hai aur koi ek bhi busy hai, toh error do
+        if not override:
+            if existing_machine:
+                return Response({"success": False, "message": f"Machine {machine_no} is busy"}, status=400)
+            if existing_operator and operator_id != 0:
+                return Response({"success": False, "message": f"{operator_name} is busy on Machine {existing_operator.machine_no}"}, status=400)
+
+        # 🔥 SMART LOGIC: Agar Override TRUE hai, toh dono ko purani duty se free karo!
+        if override:
+            # A. Agar machine par pehle se koi (Abhishek) tha, usko hatao
+            if existing_machine:
+                existing_machine.status = "Transferred"
+                existing_machine.end_time = timezone.now()
+                existing_machine.is_current = False
+                existing_machine.save()
+            
+            # B. Agar naya operator (Bablu) pehle kisi aur machine par tha, uski wo duty khatam karo
+            if existing_operator and operator_id != 0:
+                existing_operator.status = "Transferred"
+                existing_operator.end_time = timezone.now()
+                existing_operator.is_current = False
+                existing_operator.save()
+
+        # 4. Naya Assignment Banao (Bablu -> Machine 2)
         assignment = OperatorAssignment.objects.create(
             plant=plant,
+            operator_id=operator_id,
             operator_name=operator_name,
             machine_no=str(machine_no),
             shift=shift,
+            start_time=timezone.now(),
+            status="Assigned",
+            reason="Operator Reallocated" if override else "Initial Assignment",
+            remarks="",
+            assigned_by=assigned_by,
+            is_current=True,
         )
 
-        # Convert to IST for display
-        local_time = timezone.localtime(assignment.start_time)
-
-        print(f"✅ Assignment: {operator_name} → M{machine_no} ({shift}) in {plant}")
-
-        return Response(
-            {
-                "success": True,
-                "message": f"{operator_name} assigned to Machine {machine_no}",
-                "assignment": {
-                    "id": assignment.id,
-                    "plant": assignment.plant,
-                    "operator_name": assignment.operator_name,
-                    "machine_no": assignment.machine_no,
-                    "shift": assignment.shift,
-                    "start_time": local_time.strftime("%Y-%m-%d %I:%M:%S %p IST"),
-                },
-            }
-        )
+        return Response({
+            "success": True,
+            "message": f"{operator_name} assigned successfully",
+            "assignment": {"id": assignment.id}
+        })
 
     except Exception as e:
         print(f"❌ Error saving assignment: {e}")
-        import traceback
-
-        traceback.print_exc()
         return Response({"success": False, "error": str(e)}, status=500)
-
-
+        
 @api_view(["GET"])
 def get_operator_assignments(request):
-    """Get operator assignments with filtering"""
+    """Current machine assignments"""
+
     try:
         plant = request.GET.get("plant")
-        operator_name = request.GET.get("operator_name")
-        shift = request.GET.get("shift")
-        limit = int(request.GET.get("limit", 50))
 
-        # Build query
-        queryset = OperatorAssignment.objects.all()
+        queryset = OperatorAssignment.objects.filter(is_current=True)
 
         if plant:
             queryset = queryset.filter(plant=plant)
 
-        if operator_name:
-            queryset = queryset.filter(operator_name__icontains=operator_name)
+        queryset = queryset.order_by("machine_no")
 
-        if shift:
-            queryset = queryset.filter(shift=shift)
-
-        # Get results
-        assignments = queryset.order_by("-created_at")[:limit]
-
-        # Format data
         data = []
-        for a in assignments:
-            local_start = timezone.localtime(a.start_time)
+
+        for a in queryset:
 
             data.append(
                 {
                     "id": a.id,
                     "plant": a.plant,
-                    "operator_name": a.operator_name,
                     "machine_no": a.machine_no,
+                    "operator_name": a.operator_name,
                     "shift": a.shift,
-                    "start_time": local_start.strftime("%Y-%m-%d %I:%M:%S %p"),
-                    "date": local_start.strftime("%Y-%m-%d"),
+                    "status": a.status,
+                    "start_time": timezone.localtime(a.start_time).strftime("%Y-%m-%d %I:%M %p"),
                 }
             )
 
-        return Response({"success": True, "assignments": data, "count": len(data)})
+        return Response(
+            {
+                "success": True,
+                "assignments": data,
+            }
+        )
 
     except Exception as e:
-        print(f"❌ Error fetching assignments: {e}")
-        return Response({"success": False, "error": str(e)}, status=500)
+        return Response(
+            {
+                "success": False,
+                "error": str(e),
+            },
+            status=500,
+        )
 
+@api_view(["POST"])
+def transfer_operator(request):
+    """Transfer operator from one machine to another"""
+
+    try:
+        operator_name = request.data.get("operator_name")
+        plant = request.data.get("plant")
+        from_machine = str(request.data.get("from_machine"))
+        to_machine = str(request.data.get("to_machine"))
+        shift = request.data.get("shift")
+        reason = request.data.get("reason", "")
+        remarks = request.data.get("remarks", "")
+        assigned_by = request.data.get("assigned_by", "Admin")
+
+        if not all([operator_name, plant, from_machine, to_machine, shift]):
+            return Response(
+                {
+                    "success": False,
+                    "message": "All required fields are missing",
+                },
+                status=400,
+            )
+
+        # Check current assignment
+        current = OperatorAssignment.objects.filter(
+            plant=plant,
+            machine_no=from_machine,
+            operator_name=operator_name,
+            is_current=True,
+        ).first()
+
+        if not current:
+            return Response(
+                {
+                    "success": False,
+                    "message": "Current assignment not found",
+                },
+                status=404,
+            )
+
+        # Check destination machine
+        machine_busy = OperatorAssignment.objects.filter(
+            plant=plant,
+            machine_no=to_machine,
+            is_current=True,
+        ).first()
+
+        if machine_busy:
+            return Response(
+                {
+                    "success": False,
+                    "message": f"Machine {to_machine} already assigned to {machine_busy.operator_name}",
+                },
+                status=400,
+            )
+
+        # Close old assignment
+        current.status = "Transferred"
+        current.end_time = timezone.now()
+        current.reason = reason
+        current.remarks = remarks
+        current.assigned_by = assigned_by
+        current.is_current = False
+        current.save()
+
+        # Create new assignment
+        new_assignment = OperatorAssignment.objects.create(
+            plant=plant,
+            machine_no=to_machine,
+            operator_name=operator_name,
+            operator_id=current.operator_id,
+            shift=shift,
+            start_time=timezone.now(),
+            status="Assigned",
+            reason=reason,
+            remarks=remarks,
+            assigned_by=assigned_by,
+            is_current=True,
+        )
+
+        return Response(
+            {
+                "success": True,
+                "message": f"{operator_name} transferred successfully",
+                "assignment": {
+                    "id": new_assignment.id,
+                    "machine_no": new_assignment.machine_no,
+                    "operator_name": new_assignment.operator_name,
+                    "status": new_assignment.status,
+                },
+            }
+        )
+
+    except Exception as e:
+        print(e)
+        return Response(
+            {
+                "success": False,
+                "error": str(e),
+            },
+            status=500,
+        )
+        
+from django.utils import timezone
+from django.db.models import Q
+from datetime import datetime
+
+@api_view(["GET"])
+def get_assignment_history(request):
+    """Complete operator transfer history with Duration Calculation"""
+    try:
+        plant = request.GET.get("plant")
+        date_filter = request.GET.get("date") # Format: YYYY-MM-DD
+
+        query = OperatorAssignment.objects.all()
+
+        if plant:
+            query = query.filter(plant=plant)
+
+        if date_filter:
+            # 🔥 FIX: Jo assignment is date ko START hui ya is date ko END hui, dono dikhegi
+            query = query.filter(
+                Q(start_time__date=date_filter) | Q(end_time__date=date_filter)
+            )
+
+        history = query.order_by("-start_time")
+
+        data = []
+        for h in history:
+            # Time ko India timezone (IST) mein convert kar rahe hain
+            start_local = timezone.localtime(h.start_time) if h.start_time else None
+            end_local = timezone.localtime(h.end_time) if h.end_time else None
+            
+            # 🔥 NAYA: Kitne ghante kaam kiya (Working Hours Calculation)
+            working_hours = "0h 0m"
+            if start_local:
+                # Agar operator abhi bhi kaam kar raha hai, toh current time se minus karenge
+                end_calc = end_local if end_local else timezone.localtime(timezone.now())
+                diff = end_calc - start_local
+                total_seconds = int(diff.total_seconds())
+                hours = total_seconds // 3600
+                minutes = (total_seconds % 3600) // 60
+                working_hours = f"{hours}h {minutes}m"
+
+            data.append({
+                "id": h.id,
+                "plant": h.plant,
+                "operator_name": h.operator_name,
+                "machine_no": h.machine_no,
+                "shift": h.shift,
+                "status": h.status,
+                "reason": h.reason,
+                "remarks": h.remarks,
+                "assigned_by": h.assigned_by,
+                "start_time": start_local.strftime("%Y-%m-%d %I:%M %p") if start_local else None,
+                "end_time": end_local.strftime("%Y-%m-%d %I:%M %p") if end_local else None,
+                "duration": working_hours,  # Bhejo UI ko ki kitni der kaam kiya
+                "is_current": h.is_current,
+            })
+
+        return Response({
+            "success": True,
+            "history": data,
+        })
+
+    except Exception as e:
+        print(f"❌ History Error: {e}")
+        return Response({
+            "success": False,
+            "error": str(e),
+        }, status=500)
 
 @api_view(["GET"])
 def plant2_hourly_idle(request):
@@ -2569,19 +4803,34 @@ def plant2_hourly_idle_summary(request):
         return Response({"success": False, "error": str(e), "data": []}, status=500)
 
 
+# class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
+#     def validate(self, attrs):
+#         # Pehle default validation run karo (ID/Password check)
+#         data = super().validate(attrs)
+
+#         # Ab check karo ki user kisi group mein hai ya nahi
+#         if self.user.groups.exists():
+#             data["role"] = self.user.groups.first().name
+#         else:
+#             data["role"] = "Default_User"
+
+#         data["username"] = self.user.username
+#         return data
+
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     def validate(self, attrs):
-        # Pehle default validation run karo (ID/Password check)
         data = super().validate(attrs)
 
-        # Ab check karo ki user kisi group mein hai ya nahi
-        if self.user.groups.exists():
-            data["role"] = self.user.groups.first().name
-        else:
-            data["role"] = "Default_User"
+        groups = list(
+            self.user.groups.values_list("name", flat=True)
+        )
 
+        data["role"] = groups[0] if groups else "Default_User"
+        data["groups"] = groups
         data["username"] = self.user.username
-        return data
+        data["is_superuser"] = self.user.is_superuser
+
+        return data    
 
 
 class CustomLoginView(TokenObtainPairView):
@@ -3730,4 +5979,3 @@ def get_department_stats(request):
     return Response(response_data)
 
 
-# by aman pal

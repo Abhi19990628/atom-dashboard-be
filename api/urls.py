@@ -47,12 +47,16 @@ urlpatterns = [
     path('dashboard-tables/', views.get_assignment_idle_data, name='get_assignment_idle_data'),
     
     # ✅ NEW OPERATOR ASSIGNMENT APIs
-    path('operators/', views.get_operators_by_plant, name='get_operators'),
+    path('operators/', views.get_operators_by_plant, name='get_operators'),  
     path('operators/add/', views.add_operator, name='add_operator'),
     path('machines/list/', views.get_machines_by_plant, name='get_machines'),
-    path('assignment/save/', views.save_operator_assignment, name='save+_operator_assignment'),
+
+    path('assignment/save/', views.save_operator_assignment, name='save_operator_assignment'),
+    path('assignment/transfer/', views.transfer_operator, name='transfer_operator'),
+    path('assignment/history/', views.get_assignment_history, name='assignment_history'),
     path('assignments/list/', views.get_operator_assignments, name='get_operator_assignments'),
-    
+    path('assignments/history/', views.get_assignment_history, name='get_assignment_history'),
+
     # Old Assignment APIs (Keep existing)
     path('assignments/', views.create_assignment, name='create_assignment'),
     path('machines/<str:machine_no>/auto-fill/', views.get_auto_fill_data, name='get_auto_fill_data'),
@@ -77,7 +81,9 @@ urlpatterns = [
     path('plant2-raw/', views.plant2_raw, name='plant2_raw'),
     path('plant2-live/', views.plant2_live, name='plant2_live'),
     path('plant1-live/', views.plant1_live, name='plant1_live'),
-    path('machine-history/', get_machine_history, name='machine_history'),
+    # History APIs
+    path('plant1-machine-history/', views.get_plant1_machine_history, name='plant1_machine_history'),
+    path('machine-history/', views.get_machine_history, name='machine_history'),
     
 
     path('department-stats/', get_department_stats, name='department_stats'),
