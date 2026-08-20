@@ -4,7 +4,7 @@ from django.db import transaction
 from django.db import connection
 from .models import MachineHistoryCard, OperatorAssignment, IdleReport
 from datetime import datetime, timedelta
-from apps.mqtt.mqtt_client import PLANT1_TOPICS, PLANT2_TOPICS
+# from apps.mqtt.mqtt_client import PLANT1_TOPICS, PLANT2_TOPICS
 from django.views.decorators.cache import cache_control, never_cache
 from apps.machines.machine_map import COUNT52_GROUP
 from apps.machines.machine_state import MACHINE_STATE
@@ -2569,19 +2569,34 @@ def plant2_hourly_idle_summary(request):
         return Response({"success": False, "error": str(e), "data": []}, status=500)
 
 
+# class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
+#     def validate(self, attrs):
+#         # Pehle default validation run karo (ID/Password check)
+#         data = super().validate(attrs)
+
+#         # Ab check karo ki user kisi group mein hai ya nahi
+#         if self.user.groups.exists():
+#             data["role"] = self.user.groups.first().name
+#         else:
+#             data["role"] = "Default_User"
+
+#         data["username"] = self.user.username
+#         return data
+    
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     def validate(self, attrs):
-        # Pehle default validation run karo (ID/Password check)
         data = super().validate(attrs)
 
-        # Ab check karo ki user kisi group mein hai ya nahi
-        if self.user.groups.exists():
-            data["role"] = self.user.groups.first().name
-        else:
-            data["role"] = "Default_User"
+        groups = list(
+            self.user.groups.values_list("name", flat=True)
+        )
 
+        data["role"] = groups[0] if groups else "Default_User"
+        data["groups"] = groups
         data["username"] = self.user.username
-        return data
+        data["is_superuser"] = self.user.is_superuser
+
+        return data    
 
 
 class CustomLoginView(TokenObtainPairView):
