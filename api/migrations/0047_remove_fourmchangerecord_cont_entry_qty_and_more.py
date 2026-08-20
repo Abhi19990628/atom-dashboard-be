@@ -38,3 +38,4 @@ class Migration(migrations.Migration):
             table='user_department_profiles',
         ),
     ]
+                              

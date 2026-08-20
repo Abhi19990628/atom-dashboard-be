@@ -1,3 +1,5 @@
+# # testing new changes from abhsihek 
+
 """
 Django settings for operator_app project.
 """
@@ -32,6 +34,8 @@ ALLOWED_HOSTS = os.getenv(
 
 # Application definition
 INSTALLED_APPS = [
+    'daphne',  # 🔥 WEBSOCKETS KE LIYE NAYA CODE: Isko hamesha sabse upar rakhna hai
+    'channels',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -44,7 +48,6 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt',  # 🔥 NAYA CODE: JWT App add kiya hai
     'api',
     'django_extensions',
-      
 ]
 
 MIDDLEWARE = [
@@ -129,6 +132,17 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'operator_app.wsgi.application'
 
+# ==============================================================================
+# 🔥 WEBSOCKETS KE LIYE NAYA CODE: ASGI aur Redis setup
+# ==============================================================================
+ASGI_APPLICATION = 'operator_app.asgi.application'
+
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels.layers.InMemoryChannelLayer"
+    }
+}
+
 # Database (external Postgres)
 # 🔥 Yahan se .35 IP fallback hata diya hai! Ab naye developer ko localhost milega.
 DATABASES = {
@@ -143,7 +157,20 @@ DATABASES = {
         'OPTIONS': {
             'options': '-c search_path=production,quality,machine_maintenance,tool_maintenance,live_data,master_data,public -c default_transaction_isolation=serializable -c timezone=Asia/Kolkata'
         },
-        }, 
+    },
+    
+    'sqlserver_db': {
+        'ENGINE': 'mssql',
+        'NAME': os.getenv('SQL_DB_NAME'),
+        'USER': os.getenv('SQL_DB_USER'),
+        'PASSWORD': os.getenv('SQL_DB_PASSWORD'),
+        'HOST': os.getenv('SQL_DB_HOST'),
+        'PORT': '', 
+        'OPTIONS': {
+            'driver': 'ODBC Driver 17 for SQL Server',
+            'extra_params': 'TrustServerCertificate=yes;',  # Kyunki SSMS me 'Trust Server Certificate' checked hai
+        },
+    } 
     
 }
 
@@ -178,7 +205,4 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # HTTPS par chalane ke liye terminal command:
 # py manage.py runsslserver 192.168.0.34:8000
 
-
-
-
-# testing new changes from abhsihek 
+# testing new changes from abhsihek

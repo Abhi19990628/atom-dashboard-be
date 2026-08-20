@@ -12,37 +12,110 @@ class Operator(models.Model):
         ('plant_2', 'Plant 2'),
     ]
     name = models.CharField(max_length=100)
+    # 👇 Naya field add kiya
+    employee_code = models.CharField(max_length=50, null=True, blank=True) 
     plant = models.CharField(max_length=20, choices=PLANT_CHOICES)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     
     class Meta:
-        managed = False  
+        managed = True  # ⚠️ DHYAN DEIN: Aapko DB mein manually column add karna padega
         db_table = 'operators'
         ordering = ['name']
         unique_together = ['name', 'plant']
     
     def __str__(self):
         return f"{self.name} - {self.plant}"
+    
+  
+
+from django.db import models
+from django.utils import timezone
 
 class OperatorAssignment(models.Model):
-    SHIFT_CHOICES = [('A', 'Shift A'), ('B', 'Shift B')]
-    PLANT_CHOICES = [('plant_1', 'Plant 1'), ('plant_2', 'Plant 2')]
-    
+    SHIFT_CHOICES = [
+        ('A', 'Shift A'),
+        ('B', 'Shift B'),
+    ]
+
+    PLANT_CHOICES = [
+        ('plant_1', 'Plant 1'),
+        ('plant_2', 'Plant 2'),
+    ]
+
+    STATUS_CHOICES = [
+        ('Assigned', 'Assigned'),
+        ('Transferred', 'Transferred'),
+        ('Completed', 'Completed'),
+        ('Removed', 'Removed'),
+    ]
+
     id = models.AutoField(primary_key=True)
-    plant = models.CharField(max_length=20, choices=PLANT_CHOICES, default='plant_2')
-    machine_no = models.CharField(max_length=10)
-    operator_name = models.CharField(max_length=100)
-    shift = models.CharField(max_length=1, choices=SHIFT_CHOICES)
-    start_time = models.DateTimeField(default=timezone.now) 
-    created_at = models.DateTimeField(default=timezone.now)
-    
+
+    plant = models.CharField(
+        max_length=20,
+        choices=PLANT_CHOICES,
+        default='plant_2'
+    )
+
+    machine_no = models.CharField(max_length=20)
+
+    operator_id = models.BigIntegerField(
+        null=True,
+        blank=True
+    )
+
+    operator_name = models.CharField(
+        max_length=100
+    )
+
+    shift = models.CharField(
+        max_length=1,
+        choices=SHIFT_CHOICES
+    )
+
+    start_time = models.DateTimeField(
+        default=timezone.now
+    )
+
+    end_time = models.DateTimeField(
+        null=True,
+        blank=True
+    )
+
+
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default='Assigned'
+    )
+
+    reason = models.TextField(
+        null=True,
+        blank=True
+    )
+
+    remarks = models.TextField(
+        null=True,
+        blank=True
+    )
+
+    assigned_by = models.CharField(
+        max_length=100,
+        null=True,
+        blank=True
+    )
+
+    is_current = models.BooleanField(
+        default=True
+    )
+
     class Meta:
-        managed = False  
-        db_table = 'operator_assignments'
+        managed = True
+        db_table = "operator_assignments"
 
     def __str__(self):
-        return f"{self.plant}: {self.operator_name} -> Machine {self.machine_no}"
+        return f"{self.operator_name} -> Machine {self.machine_no}"
 
 class IdleReport(models.Model):
     IDLE_REASON_CHOICES = [
@@ -2091,3 +2164,93 @@ class FourMInformationSheet(models.Model):
 
         return f"{self.machine_no} - {self.operator_name} ({self.date_filled})"
     
+
+class IdealTimeSegmentReason(models.Model):
+    IDEAL_MODE_CHOICES = [
+        ("ONLINE", "Online Ideal"),      # Machine ON hai but count nahi aa raha
+        ("OFFLINE", "Offline Ideal"),    # Machine OFF hai
+    ]
+
+    CLOSED_BY_CHOICES = [
+        ("COUNT_RESUME", "Count Resume"),
+        ("MACHINE_ON", "Machine On"),
+        ("MACHINE_OFF", "Machine Off"),
+        ("HOUR_CHANGE", "Hour Change"),
+        ("SHIFT_END", "Shift End"),
+    ]
+
+    plant_location = models.CharField(max_length=50, db_index=True)  # Plant 1 / Plant 2
+
+    machine_no = models.IntegerField(db_index=True)
+
+    ideal_mode = models.CharField(
+        max_length=20,
+        choices=IDEAL_MODE_CHOICES,
+        db_index=True
+    )
+
+    ideal_start_at = models.DateTimeField(db_index=True)
+    ideal_end_at = models.DateTimeField(db_index=True)
+
+    # Exact duration seconds me save hoga
+    # FE me 11 min 12 sec / 2 hour 11 min format me dikhayenge
+    ideal_time = models.PositiveIntegerField(default=0)
+
+    closed_by = models.CharField(
+        max_length=30,
+        choices=CLOSED_BY_CHOICES,
+        blank=True,
+        null=True
+    )
+
+    reason = models.CharField(
+        max_length=100,
+        default="Uncategorized",
+        blank=True,
+        null=True
+    )
+
+    specific_reason = models.CharField(
+        max_length=255,
+        default="Reason Not Provided",
+        blank=True,
+        null=True
+    )
+
+    remark = models.TextField(blank=True, null=True)
+
+    shift = models.CharField(max_length=20, db_index=True)
+
+    class Meta:
+        db_table = '"live_data"."ideal_time_segments_reason"'
+        ordering = ["-ideal_start_at"]
+
+        indexes = [
+            models.Index(fields=["plant_location", "machine_no", "shift"]),
+            models.Index(fields=["plant_location", "ideal_mode"]),
+            models.Index(fields=["ideal_start_at", "ideal_end_at"]),
+        ]
+
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(ideal_end_at__gt=models.F("ideal_start_at")),
+                name="ideal_end_after_start"
+            ),
+            models.UniqueConstraint(
+                fields=[
+                    "plant_location",
+                    "machine_no",
+                    "ideal_mode",
+                    "ideal_start_at",
+                    "ideal_end_at",
+                ],
+                name="unique_ideal_time_segment"
+            ),
+        ]
+
+    @property
+    def ideal_minutes(self):
+        return round(self.ideal_time / 60, 2)
+
+    def __str__(self):
+        return f"{self.plant_location}-M{self.machine_no} {self.ideal_mode} {self.ideal_minutes} min"
