@@ -759,7 +759,9 @@ class UserDepartmentProfileSerializer(serializers.ModelSerializer):
     username = serializers.CharField(source="user.username", read_only=True)
     email = serializers.EmailField(source="user.email", read_only=True)
     role = serializers.SerializerMethodField()
-    profile_image = serializers.ImageField(required=False, allow_null=True)
+    fullName = serializers.CharField(source="full_name", read_only=True)
+    profileImage = serializers.ImageField(source="profile_image", read_only=True)
+    # profile_image = serializers.ImageField(required=False, allow_null=True)
     class Meta:
         model = UserProfile
         fields = [
