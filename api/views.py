@@ -1,9 +1,16 @@
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from django.db import transaction
+from django.utils import timezone
 from django.db import connection
-from .models import MachineHistoryCard, OperatorAssignment, IdleReport
+from .models import (
+    MachineHistoryCard,
+    OperatorAssignment,
+    IdleReport,
+    IdealTimeSegmentReason,
+)
 from datetime import datetime, timedelta
+
 # from apps.mqtt.mqtt_client import PLANT1_TOPICS, PLANT2_TOPICS
 from django.views.decorators.cache import cache_control, never_cache
 from apps.machines.machine_map import COUNT52_GROUP
@@ -17,7 +24,8 @@ from rest_framework.views import APIView
 from rest_framework import status
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
-
+from channels.layers import get_channel_layer
+from asgiref.sync import async_to_sync
 import pytz
 import traceback
 from django.shortcuts import get_object_or_404
@@ -293,6 +301,695 @@ def create_idle_report(request):
         return Response({"success": False, "message": f"Error: {str(e)}"}, status=400)
 
 
+@never_cache
+@api_view(["GET"])
+def get_pending_ideal_reports(request):
+    """
+    Common pending Ideal Report API for Plant 1 + Plant 2.
+
+    Handles:
+    - separate Ideal events independently
+    - same-machine multiple events
+    - HOUR_CHANGE pieces as one logical Ideal event
+    """
+
+    try:
+        ist = pytz.timezone("Asia/Kolkata")
+
+        def db_ist_iso(dt):
+            if not dt:
+                return None
+
+            naive_dt = dt.replace(tzinfo=None)
+            return ist.localize(naive_dt).isoformat()
+
+        # --------------------------------------------------
+        # 1. Plant validation
+        # --------------------------------------------------
+
+        plant = str(request.GET.get("plant", "")).strip().lower()
+
+        plant_map = {
+            "1": "Plant 1",
+            "plant1": "Plant 1",
+            "plant_1": "Plant 1",
+            "plant 1": "Plant 1",
+            "2": "Plant 2",
+            "plant2": "Plant 2",
+            "plant_2": "Plant 2",
+            "plant 2": "Plant 2",
+        }
+
+        plant_location = plant_map.get(plant)
+
+        if not plant_location:
+            return Response(
+                {
+                    "success": False,
+                    "message": ("Valid plant is required. " "Use plant=1 or plant=2."),
+                },
+                status=400,
+            )
+
+        # --------------------------------------------------
+        # 2. Base DB query
+        # --------------------------------------------------
+
+        machine_no = request.GET.get("machine_no")
+
+        pending_events = IdealTimeSegmentReason.objects.filter(
+            plant_location=plant_location,
+            report_status="PENDING",
+            ideal_time__gte=180,
+        )
+
+        if machine_no:
+            try:
+                machine_no = int(machine_no)
+
+            except (TypeError, ValueError):
+                return Response(
+                    {
+                        "success": False,
+                        "message": "machine_no must be a valid number.",
+                    },
+                    status=400,
+                )
+
+            pending_events = pending_events.filter(machine_no=machine_no)
+
+        pending_events = list(
+            pending_events.only(
+                "id",
+                "plant_location",
+                "machine_no",
+                "ideal_mode",
+                "ideal_start_at",
+                "ideal_end_at",
+                "ideal_time",
+                "closed_by",
+                "reason",
+                "specific_reason",
+                "remark",
+                "shift",
+                "report_status",
+            ).order_by(
+                "machine_no",
+                "ideal_mode",
+                "ideal_start_at",
+                "id",
+            )
+        )
+
+        # --------------------------------------------------
+        # 3. Build logical Ideal events
+        #
+        # Example:
+        #
+        # 13:33 -> 14:00 HOUR_CHANGE
+        # 14:00 -> 14:09 COUNT_RESUME
+        #
+        # becomes ONE report/event.
+        # --------------------------------------------------
+
+        grouped_events = []
+        current_group = None
+
+        def finish_group(group):
+            if not group:
+                return
+
+            # HOUR_CHANGE means the physical Ideal event
+            # is still continuing.
+            #
+            # Do NOT show it to user until we get the
+            # real closing piece.
+            if group["closed_by"] == "HOUR_CHANGE":
+                return
+
+            grouped_events.append(group)
+
+        for event in pending_events:
+
+            if current_group is None:
+                current_group = {
+                    "event_id": event.id,
+                    # All physical DB rows belonging
+                    # to this one logical Ideal event.
+                    "segment_ids": [event.id],
+                    "plant_location": event.plant_location,
+                    "machine_no": event.machine_no,
+                    "ideal_mode": event.ideal_mode,
+                    "ideal_start_at": event.ideal_start_at,
+                    "ideal_end_at": event.ideal_end_at,
+                    "duration_seconds": event.ideal_time,
+                    "closed_by": event.closed_by,
+                    "reason": event.reason,
+                    "specific_reason": event.specific_reason,
+                    "remark": event.remark or "",
+                    "shift": event.shift,
+                    "report_status": event.report_status,
+                }
+
+                continue
+
+            # --------------------------------------------------
+            # SAME physical Ideal incident?
+            #
+            # Previous segment must:
+            # - belong to same machine
+            # - same plant
+            # - same ONLINE/OFFLINE mode
+            # - end exactly where next starts
+            # - have been split only because hour changed
+            # --------------------------------------------------
+
+            can_merge = (
+                current_group["plant_location"] == event.plant_location
+                and current_group["machine_no"] == event.machine_no
+                and current_group["ideal_mode"] == event.ideal_mode
+                and current_group["ideal_end_at"] == event.ideal_start_at
+                and current_group["closed_by"] == "HOUR_CHANGE"
+            )
+
+            if can_merge:
+
+                current_group["segment_ids"].append(event.id)
+
+                current_group["ideal_end_at"] = event.ideal_end_at
+
+                current_group["duration_seconds"] += event.ideal_time
+
+                # Last segment tells us how actual
+                # Ideal incident finally ended.
+                current_group["closed_by"] = event.closed_by
+
+                current_group["reason"] = event.reason
+
+                current_group["specific_reason"] = event.specific_reason
+
+                current_group["remark"] = event.remark or ""
+
+            else:
+
+                finish_group(current_group)
+
+                current_group = {
+                    "event_id": event.id,
+                    "segment_ids": [event.id],
+                    "plant_location": event.plant_location,
+                    "machine_no": event.machine_no,
+                    "ideal_mode": event.ideal_mode,
+                    "ideal_start_at": event.ideal_start_at,
+                    "ideal_end_at": event.ideal_end_at,
+                    "duration_seconds": event.ideal_time,
+                    "closed_by": event.closed_by,
+                    "reason": event.reason,
+                    "specific_reason": event.specific_reason,
+                    "remark": event.remark or "",
+                    "shift": event.shift,
+                    "report_status": event.report_status,
+                }
+
+        finish_group(current_group)
+
+        # --------------------------------------------------
+        # 4. API response
+        # --------------------------------------------------
+
+        reports = []
+
+        for event in grouped_events:
+
+            reports.append(
+                {
+                    # Canonical logical event ID
+                    "event_id": event["event_id"],
+                    # Important for debugging/testing
+                    "segment_ids": event["segment_ids"],
+                    "segment_count": len(event["segment_ids"]),
+                    "plant_location": (event["plant_location"]),
+                    "machine_no": event["machine_no"],
+                    "ideal_mode": event["ideal_mode"],
+                    "ideal_start_at": db_ist_iso(event["ideal_start_at"]),
+                    "ideal_end_at": db_ist_iso(event["ideal_end_at"]),
+                    "duration_seconds": (event["duration_seconds"]),
+                    "duration_minutes": round(
+                        event["duration_seconds"] / 60,
+                        2,
+                    ),
+                    "closed_by": event["closed_by"],
+                    "reason": event["reason"],
+                    "specific_reason": (event["specific_reason"]),
+                    "remark": event["remark"],
+                    "shift": event["shift"],
+                    "report_status": (event["report_status"]),
+                }
+            )
+
+        return Response(
+            {
+                "success": True,
+                "plant": plant_location,
+                "count": len(reports),
+                "pending_reports": reports,
+            },
+            status=200,
+        )
+
+    except Exception as e:
+
+        print(f"❌ Pending Ideal Reports API Error: {e}")
+
+        traceback.print_exc()
+
+        return Response(
+            {
+                "success": False,
+                "message": str(e),
+            },
+            status=500,
+        )
+
+
+@api_view(["POST"])
+def submit_ideal_report(request, event_id):
+    """
+    Submit one logical Ideal event.
+
+    Handles:
+    - Plant 1 + Plant 2
+    - duplicate protection
+    - concurrent submissions
+    - HOUR_CHANGE split segments
+    - one IdleReport per logical Ideal event
+    """
+
+    try:
+        data = request.data
+
+        plant_no = str(data.get("plant_no", "")).strip()
+        machine_no = str(data.get("machine_no", "")).strip()
+        operator_name = str(data.get("operator_name", "")).strip()
+        tool_name = str(data.get("tool_name", "")).strip()
+        reason = str(data.get("reason", "")).strip()
+
+        # ==================================================
+        # 1. Validate incoming form
+        # ==================================================
+
+        if not operator_name:
+            return Response(
+                {
+                    "success": False,
+                    "message": "operator_name is required.",
+                },
+                status=400,
+            )
+
+        if not tool_name:
+            return Response(
+                {
+                    "success": False,
+                    "message": "tool_name is required.",
+                },
+                status=400,
+            )
+
+        valid_reasons = {choice[0] for choice in IdleReport.IDLE_REASON_CHOICES}
+
+        if reason not in valid_reasons:
+            return Response(
+                {
+                    "success": False,
+                    "message": "Invalid idle reason.",
+                },
+                status=400,
+            )
+
+        # ==================================================
+        # 2. Find requested segment first
+        # ==================================================
+
+        try:
+            seed_event = IdealTimeSegmentReason.objects.get(pk=event_id)
+
+        except IdealTimeSegmentReason.DoesNotExist:
+            return Response(
+                {
+                    "success": False,
+                    "message": f"Ideal event {event_id} not found.",
+                },
+                status=404,
+            )
+
+        # ==================================================
+        # 3. Find FIRST segment of same logical event
+        #
+        # Example:
+        #
+        # 1048: 13:33 -> 14:00 HOUR_CHANGE
+        # 1099: 14:00 -> 14:09 COUNT_RESUME
+        #
+        # If API receives 1099 directly,
+        # we still resolve it back to 1048.
+        # ==================================================
+
+        first_segment = seed_event
+
+        while True:
+
+            previous_segment = (
+                IdealTimeSegmentReason.objects.filter(
+                    plant_location=first_segment.plant_location,
+                    machine_no=first_segment.machine_no,
+                    ideal_mode=first_segment.ideal_mode,
+                    ideal_end_at=first_segment.ideal_start_at,
+                    closed_by="HOUR_CHANGE",
+                )
+                .exclude(pk=first_segment.pk)
+                .order_by(
+                    "-ideal_start_at",
+                    "-id",
+                )
+                .first()
+            )
+
+            if not previous_segment:
+                break
+
+            first_segment = previous_segment
+
+        # ==================================================
+        # 4. Build entire logical event forward
+        # ==================================================
+
+        logical_segments = [first_segment]
+
+        current_segment = first_segment
+
+        while current_segment.closed_by == "HOUR_CHANGE":
+
+            next_segment = (
+                IdealTimeSegmentReason.objects.filter(
+                    plant_location=current_segment.plant_location,
+                    machine_no=current_segment.machine_no,
+                    ideal_mode=current_segment.ideal_mode,
+                    ideal_start_at=current_segment.ideal_end_at,
+                )
+                .exclude(pk=current_segment.pk)
+                .order_by(
+                    "ideal_start_at",
+                    "id",
+                )
+                .first()
+            )
+
+            if not next_segment:
+                break
+
+            logical_segments.append(next_segment)
+
+            current_segment = next_segment
+
+        segment_ids = [segment.id for segment in logical_segments]
+
+        canonical_event_id = logical_segments[0].id
+
+        # ==================================================
+        # 5. If last row is HOUR_CHANGE,
+        # event is still not finally closed.
+        # ==================================================
+
+        last_segment = logical_segments[-1]
+
+        if last_segment.closed_by == "HOUR_CHANGE":
+            return Response(
+                {
+                    "success": False,
+                    "message": (
+                        "This Ideal event is still continuing "
+                        "and cannot be submitted yet."
+                    ),
+                    "event_id": canonical_event_id,
+                    "segment_ids": segment_ids,
+                },
+                status=409,
+            )
+
+        # ==================================================
+        # 6. ATOMIC TRANSACTION + deterministic row locking
+        # ==================================================
+
+        with transaction.atomic():
+
+            # Lock every physical segment belonging to
+            # this logical event.
+            #
+            # order_by("id") gives consistent lock order
+            # and reduces deadlock risk.
+            locked_segments = list(
+                IdealTimeSegmentReason.objects.select_for_update()
+                .filter(id__in=segment_ids)
+                .order_by("id")
+            )
+
+            if len(locked_segments) != len(segment_ids):
+                return Response(
+                    {
+                        "success": False,
+                        "message": (
+                            "One or more Ideal event segments " "could not be found."
+                        ),
+                    },
+                    status=409,
+                )
+
+            # ==============================================
+            # 7. Protect LEGACY
+            # ==============================================
+
+            if any(segment.report_status == "LEGACY" for segment in locked_segments):
+                return Response(
+                    {
+                        "success": False,
+                        "message": ("Legacy Ideal event cannot be submitted."),
+                        "event_id": canonical_event_id,
+                    },
+                    status=400,
+                )
+
+            # ==============================================
+            # 8. Duplicate/concurrent protection
+            # ==============================================
+
+            already_submitted = next(
+                (
+                    segment
+                    for segment in locked_segments
+                    if segment.report_status == "SUBMITTED"
+                ),
+                None,
+            )
+
+            if already_submitted:
+
+                return Response(
+                    {
+                        "success": False,
+                        "message": ("This Ideal report has already " "been submitted."),
+                        "event_id": canonical_event_id,
+                        "segment_ids": segment_ids,
+                        "report_status": "SUBMITTED",
+                        "submitted_by": (already_submitted.submitted_by),
+                        "submitted_at": (
+                            already_submitted.submitted_at.isoformat()
+                            if already_submitted.submitted_at
+                            else None
+                        ),
+                    },
+                    status=409,
+                )
+
+            # ==============================================
+            # 9. Plant validation
+            # ==============================================
+
+            canonical_segment = logical_segments[0]
+
+            expected_plant_no = (
+                "1" if canonical_segment.plant_location == "Plant 1" else "2"
+            )
+
+            normalized_plant_no = (
+                plant_no.lower().replace("plant", "").replace("_", "").replace(" ", "")
+            )
+
+            if normalized_plant_no not in ("1", "2"):
+                return Response(
+                    {
+                        "success": False,
+                        "message": "Valid plant_no is required.",
+                    },
+                    status=400,
+                )
+
+            if normalized_plant_no != expected_plant_no:
+                return Response(
+                    {
+                        "success": False,
+                        "message": (
+                            f"Event {canonical_event_id} belongs "
+                            f"to {canonical_segment.plant_location}."
+                        ),
+                    },
+                    status=400,
+                )
+
+            # ==============================================
+            # 10. Machine validation
+            # ==============================================
+
+            if machine_no != str(canonical_segment.machine_no):
+                return Response(
+                    {
+                        "success": False,
+                        "message": (
+                            f"Event {canonical_event_id} belongs "
+                            f"to Machine "
+                            f"{canonical_segment.machine_no}."
+                        ),
+                    },
+                    status=400,
+                )
+
+            # ==============================================
+            # 11. Create ONE IdleReport only
+            # ==============================================
+
+            idle_report = IdleReport.objects.create(
+                plant=f"plant_{expected_plant_no}",
+                machine_no=str(canonical_segment.machine_no),
+                operator_name=operator_name,
+                tool_id=tool_name,
+                reason=reason,
+            )
+
+            # ==============================================
+            # 12. Submitted by
+            # ==============================================
+
+            if (
+                hasattr(request, "user")
+                and request.user
+                and request.user.is_authenticated
+            ):
+                submitted_by = request.user.username
+
+            else:
+                submitted_by = operator_name
+
+            submitted_at = timezone.now()
+
+            # ==============================================
+            # 13. Mark ALL segments submitted together
+            # ==============================================
+
+            updated_count = IdealTimeSegmentReason.objects.filter(
+                id__in=segment_ids,
+                report_status="PENDING",
+            ).update(
+                reason=reason,
+                report_status="SUBMITTED",
+                submitted_by=submitted_by,
+                submitted_at=submitted_at,
+            )
+
+            # Extra safety
+            if updated_count != len(segment_ids):
+                raise RuntimeError("Not all Ideal event segments " "were updated.")
+
+        # ==================================================
+        # 14. Success
+        # ==================================================
+        
+                # ==================================================
+        # 14. Notify all open browsers AFTER DB COMMIT
+        # ==================================================
+
+        try:
+            channel_layer = get_channel_layer()
+
+            if channel_layer:
+
+                if expected_plant_no == "1":
+                    group_name = "plant1_live_updates"
+                else:
+                    group_name = "plant2_live_updates"
+
+                async_to_sync(
+                    channel_layer.group_send
+                )(
+                    group_name,
+                    {
+                        "type": "send_machine_update",
+                        "message": {
+                            "event_type": "ideal_report_updated",
+                            "event_id": canonical_event_id,
+                            "segment_ids": segment_ids,
+                            "machine_no": canonical_segment.machine_no,
+                            "plant": canonical_segment.plant_location,
+                            "report_status": "SUBMITTED",
+                        },
+                    },
+                )
+
+                print(
+                    f"📡 IDEAL REPORT WS SENT | "
+                    f"{canonical_segment.plant_location} | "
+                    f"M{canonical_segment.machine_no} | "
+                    f"Event {canonical_event_id}"
+                )
+
+        except Exception as ws_err:
+            # Report is already safely committed in DB.
+            # WebSocket failure must NOT undo successful submission.
+            print(
+                f"⚠️ Ideal Report WebSocket Error: {ws_err}"
+            )
+        
+        return Response(
+            {
+                "success": True,
+                "message": ("Ideal report submitted successfully."),
+                "event_id": canonical_event_id,
+                "segment_ids": segment_ids,
+                "segment_count": len(segment_ids),
+                "report_id": idle_report.id,
+                "plant": (canonical_segment.plant_location),
+                "machine_no": (canonical_segment.machine_no),
+                "report_status": "SUBMITTED",
+                "submitted_by": submitted_by,
+                "submitted_at": (submitted_at.isoformat()),
+            },
+            status=200,
+        )
+
+    except Exception as e:
+
+        print(f"❌ Ideal Report Submit Error: {e}")
+
+        traceback.print_exc()
+
+        return Response(
+            {
+                "success": False,
+                "message": str(e),
+            },
+            status=500,
+        )
+
+
 @api_view(["GET"])
 def get_assignment_idle_data(request):
     """Get both assignment and idle report data for dashboard display"""
@@ -471,6 +1168,7 @@ def plant2_raw(request):
             {"success": False, "error": str(e), "total_messages": 0, "raw_messages": []}
         )
 
+
 # ==============================================================
 # PLANT 1 + PLANT 2 API UPDATE ONLY
 # Paste this block in api/views.py and replace old:
@@ -480,7 +1178,7 @@ def plant2_raw(request):
 #   - get_plant1_machine_history
 #   - get_machine_history
 # Nothing here changes MQTT / Redis / DB insert logic.
-# ============================================================== 
+# ==============================================================
 
 from django.views.decorators.cache import never_cache
 from rest_framework.decorators import api_view
@@ -524,15 +1222,13 @@ def get_tool_info_from_tid_map(tool_id):
 
     try:
         with connection.cursor() as cursor:
-            cursor.execute(
-                """
+            cursor.execute("""
                 SELECT column_name
                 FROM information_schema.columns
                 WHERE table_schema = 'public'
                   AND table_name = 'tid_map'
                 ORDER BY ordinal_position
-                """
-            )
+                """)
             columns = [row[0] for row in cursor.fetchall()]
             if not columns:
                 print("❌ public.tid_map table not found")
@@ -540,14 +1236,16 @@ def get_tool_info_from_tid_map(tool_id):
 
             epc_column = next((col for col in columns if col.upper() == "EPC"), None)
             if not epc_column:
-                print(f"❌ EPC column not found in public.tid_map. Available columns: {columns}")
+                print(
+                    f"❌ EPC column not found in public.tid_map. Available columns: {columns}"
+                )
                 return {}
 
             placeholders = ",".join(["%s"] * len(candidates))
             query = (
-                f'SELECT * FROM public.tid_map '
+                f"SELECT * FROM public.tid_map "
                 f'WHERE LOWER(TRIM("{epc_column}"::text)) IN ({placeholders}) '
-                f'LIMIT 1'
+                f"LIMIT 1"
             )
             cursor.execute(query, candidates)
             result = cursor.fetchone()
@@ -627,7 +1325,19 @@ def _normalize_tool_id(tool_id):
 
 
 def _parse_valid_shut_height(value):
-    if value in [None, "", "0", "0.0", "0.00", 0, 0.0, "No data", "Failed", "None", "N/A"]:
+    if value in [
+        None,
+        "",
+        "0",
+        "0.0",
+        "0.00",
+        0,
+        0.0,
+        "No data",
+        "Failed",
+        "None",
+        "N/A",
+    ]:
         return None
     try:
         num = float(value)
@@ -653,6 +1363,7 @@ def _is_failed_shut_height_reading(value):
 def _extract_tool_id_from_text(text):
     try:
         import re
+
         matches = re.findall(r"e2[0-9a-fA-F]{22}", str(text or ""))
         for match in matches:
             clean = _normalize_tool_id(match)
@@ -739,7 +1450,16 @@ def _get_current_hour_count_from_db(data_table, machine_no, start_naive, end_nai
         return 0
 
 
-def _plant_live_common(request, plant_no, plant_location, data_table, state_obj, topic_mapping, get_machine_group_func, group_names):
+def _plant_live_common(
+    request,
+    plant_no,
+    plant_location,
+    data_table,
+    state_obj,
+    topic_mapping,
+    get_machine_group_func,
+    group_names,
+):
     try:
         from apps.machines.machine_state import MACHINE_STATE
         import pytz
@@ -753,7 +1473,9 @@ def _plant_live_common(request, plant_no, plant_location, data_table, state_obj,
             all_mapped_machines.update(machines)
         all_mapped_machines = sorted(all_mapped_machines)
 
-        live_machines = MACHINE_STATE.summarize(plant_filter=plant_no, stale_after_seconds=300)
+        live_machines = MACHINE_STATE.summarize(
+            plant_filter=plant_no, stale_after_seconds=300
+        )
         live_by_machine = {
             int(m.get("machine_no")): dict(m)
             for m in live_machines
@@ -833,7 +1555,9 @@ def _plant_live_common(request, plant_no, plant_location, data_table, state_obj,
                     [current_shift, shift_start_naive, now_naive],
                 )
                 for machine_key, cumulative_count in cursor.fetchall():
-                    bulk_cumulative[str(machine_key).strip()] = int(cumulative_count or 0)
+                    bulk_cumulative[str(machine_key).strip()] = int(
+                        cumulative_count or 0
+                    )
 
                 # Ideal summaries: today, current shift, current hour.
                 for target, start_bound, end_bound, with_shift in [
@@ -910,7 +1634,9 @@ def _plant_live_common(request, plant_no, plant_location, data_table, state_obj,
                     [shift_start_naive, now_naive],
                 )
                 for machine_key, height_value in cursor.fetchall():
-                    bulk_latest_shut_height[str(machine_key).strip()] = float(height_value)
+                    bulk_latest_shut_height[str(machine_key).strip()] = float(
+                        height_value
+                    )
 
         except Exception as e:
             print(f"❌ Plant {plant_no} live bulk query error: {e}")
@@ -922,7 +1648,9 @@ def _plant_live_common(request, plant_no, plant_location, data_table, state_obj,
             m_str = str(machine_no)
             machine_data = live_by_machine.get(machine_no)
             try:
-                idle_status = state_obj.idle_tracker.get_idle_status(machine_no, now_ist)
+                idle_status = state_obj.idle_tracker.get_idle_status(
+                    machine_no, now_ist
+                )
                 status_info = state_obj.get_machine_status(machine_no)
 
                 is_on = bool(status_info.get("machine_on"))
@@ -939,8 +1667,14 @@ def _plant_live_common(request, plant_no, plant_location, data_table, state_obj,
                 last_signal_time = None
                 last_count_time_map = getattr(state_obj, "last_count_time", {})
                 machine_json_status = getattr(state_obj, "machine_json_status", {})
-                if machine_no in last_count_time_map and machine_no in machine_json_status:
-                    last_signal_time = max(last_count_time_map[machine_no], machine_json_status[machine_no]["last_json_time"])
+                if (
+                    machine_no in last_count_time_map
+                    and machine_no in machine_json_status
+                ):
+                    last_signal_time = max(
+                        last_count_time_map[machine_no],
+                        machine_json_status[machine_no]["last_json_time"],
+                    )
                 elif machine_no in last_count_time_map:
                     last_signal_time = last_count_time_map[machine_no]
                 elif machine_no in machine_json_status:
@@ -955,10 +1689,21 @@ def _plant_live_common(request, plant_no, plant_location, data_table, state_obj,
                 if not is_on:
                     offline_since_obj = last_signal_time or shift_start
                     offline_since_str = offline_since_obj.strftime("%H:%M:%S")
-                    offline_duration_minutes = int(max(0, (now_ist - offline_since_obj).total_seconds()) / 60)
+                    offline_duration_minutes = int(
+                        max(0, (now_ist - offline_since_obj).total_seconds()) / 60
+                    )
                     live_ideal_mode = "OFFLINE"
-                    live_ideal_seconds = max(0, int((now_ist - offline_since_obj).total_seconds()))
-                    live_ideal_hour_seconds = max(0, int((now_ist - max(offline_since_obj, current_hour)).total_seconds()))
+                    live_ideal_seconds = max(
+                        0, int((now_ist - offline_since_obj).total_seconds())
+                    )
+                    live_ideal_hour_seconds = max(
+                        0,
+                        int(
+                            (
+                                now_ist - max(offline_since_obj, current_hour)
+                            ).total_seconds()
+                        ),
+                    )
 
                 on_since_str = None
                 first_count_str = None
@@ -970,13 +1715,24 @@ def _plant_live_common(request, plant_no, plant_location, data_table, state_obj,
                     on_since = machine_on_since[machine_no]
                     if on_since >= shift_start:
                         on_since_str = on_since.strftime("%H:%M:%S")
-                        if machine_no in first_count_time and first_count_time[machine_no] >= shift_start:
+                        if (
+                            machine_no in first_count_time
+                            and first_count_time[machine_no] >= shift_start
+                        ):
                             first_count = first_count_time[machine_no]
                             first_count_str = first_count.strftime("%H:%M:%S")
-                            time_to_first_count = int((first_count - on_since).total_seconds() / 60)
+                            time_to_first_count = int(
+                                (first_count - on_since).total_seconds() / 60
+                            )
 
-                segment_info = getattr(state_obj, "machine_segments", {}).get(machine_no, {})
-                segment_shut_height = segment_info.get("shut_height") if isinstance(segment_info, dict) else None
+                segment_info = getattr(state_obj, "machine_segments", {}).get(
+                    machine_no, {}
+                )
+                segment_shut_height = (
+                    segment_info.get("shut_height")
+                    if isinstance(segment_info, dict)
+                    else None
+                )
                 status_shut_height = status_info.get("shut_height")
 
                 if _is_failed_shut_height_reading(status_shut_height):
@@ -991,7 +1747,11 @@ def _plant_live_common(request, plant_no, plant_location, data_table, state_obj,
 
                 safe_current_tool_id = (
                     _normalize_tool_id(status_info.get("tool_id"))
-                    or _normalize_tool_id(segment_info.get("tool_id") if isinstance(segment_info, dict) else None)
+                    or _normalize_tool_id(
+                        segment_info.get("tool_id")
+                        if isinstance(segment_info, dict)
+                        else None
+                    )
                     or bulk_latest_tool.get(m_str)
                     or "N/A"
                 )
@@ -1001,15 +1761,46 @@ def _plant_live_common(request, plant_no, plant_location, data_table, state_obj,
                     online_start_obj = last_count_time_map.get(machine_no)
                     if not online_start_obj or online_start_obj < shift_start:
                         online_start_obj = machine_on_since.get(machine_no, shift_start)
-                    live_ideal_seconds = max(0, int((now_ist - online_start_obj).total_seconds()))
-                    live_ideal_hour_seconds = max(0, int((now_ist - max(online_start_obj, current_hour)).total_seconds()))
+                    live_ideal_seconds = max(
+                        0, int((now_ist - online_start_obj).total_seconds())
+                    )
+                    live_ideal_hour_seconds = max(
+                        0,
+                        int(
+                            (
+                                now_ist - max(online_start_obj, current_hour)
+                            ).total_seconds()
+                        ),
+                    )
 
-                online_ideal_today_seconds = db_ideal_today["ONLINE"] + (live_ideal_seconds if live_ideal_mode == "ONLINE" else 0)
-                offline_ideal_today_seconds = db_ideal_today["OFFLINE"] + (live_ideal_seconds if live_ideal_mode == "OFFLINE" else 0)
-                online_ideal_shift_seconds = db_ideal_shift["ONLINE"] + (live_ideal_seconds if live_ideal_mode == "ONLINE" else 0)
-                offline_ideal_shift_seconds = db_ideal_shift["OFFLINE"] + (live_ideal_seconds if live_ideal_mode == "OFFLINE" else 0)
-                online_ideal_hour_seconds = db_ideal_hour["ONLINE"] + (live_ideal_hour_seconds if live_ideal_mode == "ONLINE" else 0)
-                offline_ideal_hour_seconds = db_ideal_hour["OFFLINE"] + (live_ideal_hour_seconds if live_ideal_mode == "OFFLINE" else 0)
+                online_ideal_today_seconds = db_ideal_today["ONLINE"] + (
+                    live_ideal_seconds if live_ideal_mode == "ONLINE" else 0
+                )
+                offline_ideal_today_seconds = db_ideal_today["OFFLINE"] + (
+                    live_ideal_seconds if live_ideal_mode == "OFFLINE" else 0
+                )
+                online_ideal_shift_seconds = db_ideal_shift["ONLINE"] + (
+                    live_ideal_seconds if live_ideal_mode == "ONLINE" else 0
+                )
+                offline_ideal_shift_seconds = db_ideal_shift["OFFLINE"] + (
+                    live_ideal_seconds if live_ideal_mode == "OFFLINE" else 0
+                )
+                online_ideal_hour_seconds = db_ideal_hour["ONLINE"] + (
+                    live_ideal_hour_seconds if live_ideal_mode == "ONLINE" else 0
+                )
+                offline_ideal_hour_seconds = db_ideal_hour["OFFLINE"] + (
+                    live_ideal_hour_seconds if live_ideal_mode == "OFFLINE" else 0
+                )
+                
+                pending_reason = getattr(
+                    state_obj,
+                    "pending_reasons",
+                    {}
+                ).get(machine_no)
+                
+                has_pending_reason = bool(
+                    pending_reason
+                )
 
                 exact_data = {
                     "machine_no": machine_no,
@@ -1017,31 +1808,55 @@ def _plant_live_common(request, plant_no, plant_location, data_table, state_obj,
                     "last_hour_count": bulk_last_hour.get(m_str, 0),
                     "cumulative_count": bulk_cumulative.get(m_str, 0),
                     "idle_time": online_ideal_hour_seconds + offline_ideal_hour_seconds,
-                    "total_shift_idle_time": online_ideal_shift_seconds + offline_ideal_shift_seconds,
+                    "total_shift_idle_time": online_ideal_shift_seconds
+                    + offline_ideal_shift_seconds,
                     "live_ideal_mode": live_ideal_mode,
                     "live_ideal_time": live_ideal_seconds,
                     "live_ideal_display": _seconds_to_display(live_ideal_seconds),
                     "online_ideal_this_hour": online_ideal_hour_seconds,
                     "offline_ideal_this_hour": offline_ideal_hour_seconds,
-                    "total_ideal_this_hour": online_ideal_hour_seconds + offline_ideal_hour_seconds,
-                    "online_ideal_this_hour_display": _seconds_to_display(online_ideal_hour_seconds),
-                    "offline_ideal_this_hour_display": _seconds_to_display(offline_ideal_hour_seconds),
-                    "total_ideal_this_hour_display": _seconds_to_display(online_ideal_hour_seconds + offline_ideal_hour_seconds),
+                    "total_ideal_this_hour": online_ideal_hour_seconds
+                    + offline_ideal_hour_seconds,
+                    "online_ideal_this_hour_display": _seconds_to_display(
+                        online_ideal_hour_seconds
+                    ),
+                    "offline_ideal_this_hour_display": _seconds_to_display(
+                        offline_ideal_hour_seconds
+                    ),
+                    "total_ideal_this_hour_display": _seconds_to_display(
+                        online_ideal_hour_seconds + offline_ideal_hour_seconds
+                    ),
                     "online_ideal_shift": online_ideal_shift_seconds,
                     "offline_ideal_shift": offline_ideal_shift_seconds,
-                    "total_ideal_shift": online_ideal_shift_seconds + offline_ideal_shift_seconds,
-                    "online_ideal_shift_display": _seconds_to_display(online_ideal_shift_seconds),
-                    "offline_ideal_shift_display": _seconds_to_display(offline_ideal_shift_seconds),
-                    "total_ideal_shift_display": _seconds_to_display(online_ideal_shift_seconds + offline_ideal_shift_seconds),
+                    "total_ideal_shift": online_ideal_shift_seconds
+                    + offline_ideal_shift_seconds,
+                    "online_ideal_shift_display": _seconds_to_display(
+                        online_ideal_shift_seconds
+                    ),
+                    "offline_ideal_shift_display": _seconds_to_display(
+                        offline_ideal_shift_seconds
+                    ),
+                    "total_ideal_shift_display": _seconds_to_display(
+                        online_ideal_shift_seconds + offline_ideal_shift_seconds
+                    ),
                     "online_ideal_today": online_ideal_today_seconds,
                     "offline_ideal_today": offline_ideal_today_seconds,
-                    "total_ideal_today": online_ideal_today_seconds + offline_ideal_today_seconds,
-                    "online_ideal_today_display": _seconds_to_display(online_ideal_today_seconds),
-                    "offline_ideal_today_display": _seconds_to_display(offline_ideal_today_seconds),
-                    "total_ideal_today_display": _seconds_to_display(online_ideal_today_seconds + offline_ideal_today_seconds),
+                    "total_ideal_today": online_ideal_today_seconds
+                    + offline_ideal_today_seconds,
+                    "online_ideal_today_display": _seconds_to_display(
+                        online_ideal_today_seconds
+                    ),
+                    "offline_ideal_today_display": _seconds_to_display(
+                        offline_ideal_today_seconds
+                    ),
+                    "total_ideal_today_display": _seconds_to_display(
+                        online_ideal_today_seconds + offline_ideal_today_seconds
+                    ),
                     "shift": current_shift,
                     "machine_on": is_on,
                     "is_producing": is_producing,
+                    "has_pending_reason":
+                        has_pending_reason,
                     "has_count_data": status_info.get("has_count_data", False),
                     "has_json_data": status_info.get("has_json_data", False),
                     "count_seconds_ago": status_info.get("count_seconds_ago"),
@@ -1056,13 +1871,22 @@ def _plant_live_common(request, plant_no, plant_location, data_table, state_obj,
                     "time_to_first_count": time_to_first_count,
                     "offline_since": offline_since_str,
                     "offline_duration_minutes": offline_duration_minutes,
-                    "last_activity": last_count_time_map[machine_no].strftime("%H:%M:%S") if machine_no in last_count_time_map and last_count_time_map[machine_no] >= shift_start else "Never",
+                    "last_activity": (
+                        last_count_time_map[machine_no].strftime("%H:%M:%S")
+                        if machine_no in last_count_time_map
+                        and last_count_time_map[machine_no] >= shift_start
+                        else "Never"
+                    ),
                     "live_idle_time": idle_status.get("live_idle_time", "0m"),
-                    "accumulated_idle_time": idle_status.get("accumulated_idle_time", "0m"),
+                    "accumulated_idle_time": idle_status.get(
+                        "accumulated_idle_time", "0m"
+                    ),
                     "hourly_idle_total": idle_status.get("hourly_idle_total", 0),
                     "is_idle": idle_status.get("is_idle", False),
                     "idle_type": idle_status.get("idle_type"),
-                    "status": "OFFLINE" if not is_on else idle_status.get("status", "ONLINE"),
+                    "status": (
+                        "OFFLINE" if not is_on else idle_status.get("status", "ONLINE")
+                    ),
                     "machine_group": get_machine_group_func(machine_no),
                     "plant": plant_no,
                 }
@@ -1070,7 +1894,11 @@ def _plant_live_common(request, plant_no, plant_location, data_table, state_obj,
                 m_data = machine_data or {
                     "plant": plant_no,
                     "machine_no": machine_no,
-                    "tool_id": safe_current_tool_id if safe_current_tool_id != "N/A" else f"PLANT{plant_no}_M{machine_no:02d}",
+                    "tool_id": (
+                        safe_current_tool_id
+                        if safe_current_tool_id != "N/A"
+                        else f"PLANT{plant_no}_M{machine_no:02d}"
+                    ),
                     "count": 0,
                     "shut_height": final_shut_height,
                     "last_seen": "JSON only" if is_on else "Not active",
@@ -1082,7 +1910,9 @@ def _plant_live_common(request, plant_no, plant_location, data_table, state_obj,
                 m_data["current_tool_id"] = safe_current_tool_id
                 m_data["machine_group"] = get_machine_group_func(machine_no)
 
-                problem_detected = is_on and (not is_producing) and idle_status.get("is_idle")
+                problem_detected = (
+                    is_on and (not is_producing) and idle_status.get("is_idle")
+                )
                 m_data["problem_detected"] = problem_detected
                 if problem_detected:
                     problem_machines.append(machine_no)
@@ -1090,31 +1920,33 @@ def _plant_live_common(request, plant_no, plant_location, data_table, state_obj,
                 enhanced_machines.append(m_data)
             except Exception as e:
                 print(f"⚠️ Plant {plant_no} M{machine_no} live API error: {e}")
-                enhanced_machines.append({
-                    "plant": plant_no,
-                    "machine_no": machine_no,
-                    "tool_id": f"PLANT{plant_no}_M{machine_no:02d}",
-                    "current_tool_id": "N/A",
-                    "count": 0,
-                    "shut_height": "No data",
-                    "current_hour_count": 0,
-                    "last_hour_count": 0,
-                    "cumulative_count": 0,
-                    "shift": current_shift,
-                    "machine_group": get_machine_group_func(machine_no),
-                    "machine_on": False,
-                    "is_producing": False,
-                    "problem_detected": False,
-                    "status": "OFFLINE",
-                    "idle_time": 0,
-                    "total_shift_idle_time": 0,
-                    "tool_customer": "N/A",
-                    "tool_model": "N/A",
-                    "tool_part_name": "N/A",
-                    "tool_part_number": "N/A",
-                    "tool_name": "N/A",
-                    "tool_epc": "N/A",
-                })
+                enhanced_machines.append(
+                    {
+                        "plant": plant_no,
+                        "machine_no": machine_no,
+                        "tool_id": f"PLANT{plant_no}_M{machine_no:02d}",
+                        "current_tool_id": "N/A",
+                        "count": 0,
+                        "shut_height": "No data",
+                        "current_hour_count": 0,
+                        "last_hour_count": 0,
+                        "cumulative_count": 0,
+                        "shift": current_shift,
+                        "machine_group": get_machine_group_func(machine_no),
+                        "machine_on": False,
+                        "is_producing": False,
+                        "problem_detected": False,
+                        "status": "OFFLINE",
+                        "idle_time": 0,
+                        "total_shift_idle_time": 0,
+                        "tool_customer": "N/A",
+                        "tool_model": "N/A",
+                        "tool_part_name": "N/A",
+                        "tool_part_number": "N/A",
+                        "tool_name": "N/A",
+                        "tool_epc": "N/A",
+                    }
+                )
 
         enhanced_machines.sort(key=lambda x: int(x.get("machine_no", 0)))
         on_machines = [m for m in enhanced_machines if m.get("machine_on")]
@@ -1122,40 +1954,57 @@ def _plant_live_common(request, plant_no, plant_location, data_table, state_obj,
 
         groups_summary = {}
         for group in group_names:
-            group_machines = [m for m in enhanced_machines if m.get("machine_group") == group]
+            group_machines = [
+                m for m in enhanced_machines if m.get("machine_group") == group
+            ]
             if group_machines:
                 groups_summary[group] = {
                     "total": len(group_machines),
                     "on": len([m for m in group_machines if m.get("machine_on")]),
-                    "producing": len([m for m in group_machines if m.get("is_producing")]),
-                    "problems": len([m for m in group_machines if m.get("problem_detected")]),
+                    "producing": len(
+                        [m for m in group_machines if m.get("is_producing")]
+                    ),
+                    "problems": len(
+                        [m for m in group_machines if m.get("problem_detected")]
+                    ),
                 }
 
-        response = Response({
-            "success": True,
-            "total_machines": len(enhanced_machines),
-            "on_count": len(on_machines),
-            "producing_count": len(producing_machines),
-            "problem_count": len(problem_machines),
-            "problem_machines": problem_machines,
-            "groups_summary": groups_summary,
-            "machines": enhanced_machines,
-            "plant": plant_no,
-        })
+        response = Response(
+            {
+                "success": True,
+                "total_machines": len(enhanced_machines),
+                "on_count": len(on_machines),
+                "producing_count": len(producing_machines),
+                "problem_count": len(problem_machines),
+                "problem_machines": problem_machines,
+                "groups_summary": groups_summary,
+                "machines": enhanced_machines,
+                "plant": plant_no,
+            }
+        )
         response["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
         response["Pragma"] = "no-cache"
         response["Expires"] = "0"
         return response
     except Exception as e:
         import traceback
+
         traceback.print_exc()
-        return Response({"success": False, "error": str(e), "machines": [], "plant": plant_no}, status=500)
+        return Response(
+            {"success": False, "error": str(e), "machines": [], "plant": plant_no},
+            status=500,
+        )
 
 
 @never_cache
 @api_view(["GET"])
 def plant1_live(request):
-    from apps.mqtt.simple_plant1 import PLANT1_EXACT_REQUIREMENT_STATE, TOPIC_MACHINE_MAPPING, get_machine_group
+    from apps.mqtt.simple_plant1 import (
+        PLANT1_EXACT_REQUIREMENT_STATE,
+        TOPIC_MACHINE_MAPPING,
+        get_machine_group,
+    )
+
     return _plant_live_common(
         request=request,
         plant_no=1,
@@ -1164,14 +2013,31 @@ def plant1_live(request):
         state_obj=PLANT1_EXACT_REQUIREMENT_STATE,
         topic_mapping=TOPIC_MACHINE_MAPPING,
         get_machine_group_func=get_machine_group,
-        group_names=["JJ5", "JJ6", "JJ7", "JJ8", "JJ9", "JJ10", "JJ11", "JJ12", "JJ13", "JJ14", "JJ15"],
+        group_names=[
+            "JJ5",
+            "JJ6",
+            "JJ7",
+            "JJ8",
+            "JJ9",
+            "JJ10",
+            "JJ11",
+            "JJ12",
+            "JJ13",
+            "JJ14",
+            "JJ15",
+        ],
     )
 
 
 @never_cache
 @api_view(["GET"])
 def plant2_live(request):
-    from apps.mqtt.simple_plant2 import PLANT2_EXACT_REQUIREMENT_STATE, TOPIC_MACHINE_MAPPING, get_machine_group
+    from apps.mqtt.simple_plant2 import (
+        PLANT2_EXACT_REQUIREMENT_STATE,
+        TOPIC_MACHINE_MAPPING,
+        get_machine_group,
+    )
+
     return _plant_live_common(
         request=request,
         plant_no=2,
@@ -1184,7 +2050,9 @@ def plant2_live(request):
     )
 
 
-def _plant_history_common(request, plant_no, plant_location, data_table, lunch_start_tuple, lunch_end_tuple):
+def _plant_history_common(
+    request, plant_no, plant_location, data_table, lunch_start_tuple, lunch_end_tuple
+):
     try:
         import pytz
         from datetime import datetime, timedelta, time
@@ -1203,7 +2071,9 @@ def _plant_history_common(request, plant_no, plant_location, data_table, lunch_s
         if not date_str:
             date_str = now_ist.strftime("%Y-%m-%d")
         if not machine_no:
-            return Response({"success": False, "error": "machine_no is required"}, status=400)
+            return Response(
+                {"success": False, "error": "machine_no is required"}, status=400
+            )
 
         target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
 
@@ -1213,7 +2083,11 @@ def _plant_history_common(request, plant_no, plant_location, data_table, lunch_s
             return dt.astimezone(ist_tz)
 
         def to_naive_str(dt):
-            return localize_ist(dt).replace(tzinfo=None, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+            return (
+                localize_ist(dt)
+                .replace(tzinfo=None, microsecond=0)
+                .strftime("%Y-%m-%d %H:%M:%S")
+            )
 
         def title_time(dt):
             return localize_ist(dt).strftime("%I:%M %p")
@@ -1226,17 +2100,23 @@ def _plant_history_common(request, plant_no, plant_location, data_table, lunch_s
             shift_name = (shift_name or "A").upper()
             if shift_name == "B":
                 start = ist_tz.localize(datetime.combine(date_obj, time(20, 0, 0)))
-                end = ist_tz.localize(datetime.combine(date_obj + timedelta(days=1), time(8, 30, 0)))
+                end = ist_tz.localize(
+                    datetime.combine(date_obj + timedelta(days=1), time(8, 30, 0))
+                )
                 return start, end, "B"
             if shift_name == "ALL":
                 start = ist_tz.localize(datetime.combine(date_obj, time(8, 30, 0)))
-                end = ist_tz.localize(datetime.combine(date_obj + timedelta(days=1), time(8, 30, 0)))
+                end = ist_tz.localize(
+                    datetime.combine(date_obj + timedelta(days=1), time(8, 30, 0))
+                )
                 return start, end, "ALL"
             start = ist_tz.localize(datetime.combine(date_obj, time(8, 30, 0)))
             end = ist_tz.localize(datetime.combine(date_obj, time(20, 0, 0)))
             return start, end, "A"
 
-        shift_start, shift_end, selected_shift = get_shift_window(target_date, shift_param)
+        shift_start, shift_end, selected_shift = get_shift_window(
+            target_date, shift_param
+        )
         effective_end = shift_end
         if shift_start <= now_ist <= shift_end:
             effective_end = min(shift_end, now_ist)
@@ -1250,28 +2130,32 @@ def _plant_history_common(request, plant_no, plant_location, data_table, lunch_s
         cursor_time = shift_start
         while cursor_time < effective_end:
             if cursor_time.minute != 0 or cursor_time.second != 0:
-                next_time = cursor_time.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+                next_time = cursor_time.replace(
+                    minute=0, second=0, microsecond=0
+                ) + timedelta(hours=1)
             else:
                 next_time = cursor_time + timedelta(hours=1)
             if next_time > shift_end:
                 next_time = shift_end
             bucket_end = min(next_time, effective_end)
-            hour_buckets.append({
-                "bucket_key": to_naive_str(cursor_time),
-                "start": cursor_time,
-                "end": bucket_end,
-                "scheduled_end": next_time,
-                "count": 0,
-                "latest_cumulative": 0,
-                "online_ideal_seconds": 0,
-                "offline_ideal_seconds": 0,
-                "total_ideal_seconds": 0,
-                "ideal_segments": [],
-                "machine_events": [],
-                "on_off_events": [],
-                "tool_changes": [],
-                "shut_height_changes": [],
-            })
+            hour_buckets.append(
+                {
+                    "bucket_key": to_naive_str(cursor_time),
+                    "start": cursor_time,
+                    "end": bucket_end,
+                    "scheduled_end": next_time,
+                    "count": 0,
+                    "latest_cumulative": 0,
+                    "online_ideal_seconds": 0,
+                    "offline_ideal_seconds": 0,
+                    "total_ideal_seconds": 0,
+                    "ideal_segments": [],
+                    "machine_events": [],
+                    "on_off_events": [],
+                    "tool_changes": [],
+                    "shut_height_changes": [],
+                }
+            )
             cursor_time = next_time
 
         bucket_by_key = {b["bucket_key"]: b for b in hour_buckets}
@@ -1285,7 +2169,9 @@ def _plant_history_common(request, plant_no, plant_location, data_table, lunch_s
                 return hour_buckets[-1]
             return None
 
-        def add_timeline_event(events, dt, event_type, title, details, shift="", extra=None):
+        def add_timeline_event(
+            events, dt, event_type, title, details, shift="", extra=None
+        ):
             dt = localize_ist(dt)
             payload = {
                 "timestamp": dt.timestamp(),
@@ -1321,26 +2207,73 @@ def _plant_history_common(request, plant_no, plant_location, data_table, lunch_s
                 events,
                 shift_start,
                 "SHIFT_START",
-                f"Shift {selected_shift} Started" if selected_shift != "ALL" else "Production Day Started",
+                (
+                    f"Shift {selected_shift} Started"
+                    if selected_shift != "ALL"
+                    else "Production Day Started"
+                ),
                 f"History window started at {shift_start.strftime('%I:%M %p')}.",
                 selected_shift,
             )
 
-        lunch_start = ist_tz.localize(datetime.combine(target_date, time(lunch_start_tuple[0], lunch_start_tuple[1], 0)))
-        lunch_end = ist_tz.localize(datetime.combine(target_date, time(lunch_end_tuple[0], lunch_end_tuple[1], 0)))
+        lunch_start = ist_tz.localize(
+            datetime.combine(
+                target_date, time(lunch_start_tuple[0], lunch_start_tuple[1], 0)
+            )
+        )
+        lunch_end = ist_tz.localize(
+            datetime.combine(
+                target_date, time(lunch_end_tuple[0], lunch_end_tuple[1], 0)
+            )
+        )
         if shift_start <= lunch_start < effective_end:
-            add_timeline_event(events, lunch_start, "LUNCH_START", "Lunch Break Started", f"Scheduled lunch break started at {lunch_start.strftime('%I:%M %p')}.", "A")
+            add_timeline_event(
+                events,
+                lunch_start,
+                "LUNCH_START",
+                "Lunch Break Started",
+                f"Scheduled lunch break started at {lunch_start.strftime('%I:%M %p')}.",
+                "A",
+            )
         if shift_start <= lunch_end < effective_end:
-            add_timeline_event(events, lunch_end, "LUNCH_END", "Lunch Break Ended", f"Scheduled lunch break ended at {lunch_end.strftime('%I:%M %p')}.", "A")
+            add_timeline_event(
+                events,
+                lunch_end,
+                "LUNCH_END",
+                "Lunch Break Ended",
+                f"Scheduled lunch break ended at {lunch_end.strftime('%I:%M %p')}.",
+                "A",
+            )
 
         if selected_shift == "A" and shift_end <= effective_end:
-            add_timeline_event(events, shift_end, "SHIFT_END", "Shift A Ended", "Shift A ended at 08:00 PM.", "A")
+            add_timeline_event(
+                events,
+                shift_end,
+                "SHIFT_END",
+                "Shift A Ended",
+                "Shift A ended at 08:00 PM.",
+                "A",
+            )
         elif selected_shift == "B" and shift_end <= effective_end:
-            add_timeline_event(events, shift_end, "SHIFT_END", "Shift B Ended", "Shift B ended at 08:30 AM.", "B")
+            add_timeline_event(
+                events,
+                shift_end,
+                "SHIFT_END",
+                "Shift B Ended",
+                "Shift B ended at 08:30 AM.",
+                "B",
+            )
         elif selected_shift == "ALL":
             shift_a_end = ist_tz.localize(datetime.combine(target_date, time(20, 0, 0)))
             if shift_start <= shift_a_end <= effective_end:
-                add_timeline_event(events, shift_a_end, "SHIFT_END", "Shift A Ended", "Shift A ended at 08:00 PM.", "A")
+                add_timeline_event(
+                    events,
+                    shift_a_end,
+                    "SHIFT_END",
+                    "Shift A Ended",
+                    "Shift A ended at 08:00 PM.",
+                    "A",
+                )
 
         count_summary = {
             "total_count": 0,
@@ -1395,7 +2328,9 @@ def _plant_history_common(request, plant_no, plant_location, data_table, lunch_s
                 [machine_no, start_str_naive, end_str_naive],
             )
             latest_raw_height_res = cursor.fetchone()
-            latest_raw_height = latest_raw_height_res[0] if latest_raw_height_res else None
+            latest_raw_height = (
+                latest_raw_height_res[0] if latest_raw_height_res else None
+            )
             if _is_failed_shut_height_reading(latest_raw_height):
                 machine_meta["shut_height"] = "Failed"
             else:
@@ -1427,7 +2362,9 @@ def _plant_history_common(request, plant_no, plant_location, data_table, lunch_s
                     machine_meta["shut_height"] = f"{float(height_res[0]):.2f}"
 
             # 2) Hour-wise production count.
-            first_bucket_end = hour_buckets[0]["scheduled_end"] if hour_buckets else effective_end
+            first_bucket_end = (
+                hour_buckets[0]["scheduled_end"] if hour_buckets else effective_end
+            )
             first_bucket_start_str = to_naive_str(shift_start)
             first_bucket_end_str = to_naive_str(first_bucket_end)
 
@@ -1451,19 +2388,40 @@ def _plant_history_common(request, plant_no, plant_location, data_table, lunch_s
                 GROUP BY bucket_start
                 ORDER BY bucket_start ASC
                 """,
-                [first_bucket_start_str, first_bucket_end_str, first_bucket_start_str, machine_no, start_str_naive, end_str_naive],
+                [
+                    first_bucket_start_str,
+                    first_bucket_end_str,
+                    first_bucket_start_str,
+                    machine_no,
+                    start_str_naive,
+                    end_str_naive,
+                ],
             )
-            for bucket_start, total_count, latest_cumulative, first_count_time, last_count_time in cursor.fetchall():
+            for (
+                bucket_start,
+                total_count,
+                latest_cumulative,
+                first_count_time,
+                last_count_time,
+            ) in cursor.fetchall():
                 bucket_key = bucket_start.strftime("%Y-%m-%d %H:%M:%S")
                 bucket = bucket_by_key.get(bucket_key)
                 if bucket:
                     bucket["count"] = int(total_count or 0)
                     bucket["latest_cumulative"] = int(latest_cumulative or 0)
                     count_summary["total_count"] += int(total_count or 0)
-                    count_summary["latest_cumulative"] = max(count_summary["latest_cumulative"], int(latest_cumulative or 0))
-                    if first_count_time and (not count_summary["first_count_time"] or first_count_time < count_summary["first_count_time"]):
+                    count_summary["latest_cumulative"] = max(
+                        count_summary["latest_cumulative"], int(latest_cumulative or 0)
+                    )
+                    if first_count_time and (
+                        not count_summary["first_count_time"]
+                        or first_count_time < count_summary["first_count_time"]
+                    ):
                         count_summary["first_count_time"] = first_count_time
-                    if last_count_time and (not count_summary["last_count_time"] or last_count_time > count_summary["last_count_time"]):
+                    if last_count_time and (
+                        not count_summary["last_count_time"]
+                        or last_count_time > count_summary["last_count_time"]
+                    ):
                         count_summary["last_count_time"] = last_count_time
 
             # 3) Machine events.
@@ -1490,13 +2448,25 @@ def _plant_history_common(request, plant_no, plant_location, data_table, lunch_s
                 details_text_raw = str(details or "")
                 if event_type == "TOOL_CHANGE" and "e000" in details_text_raw.lower():
                     continue
-                if event_type == "SHUT_HEIGHT_CHANGE" and ("1.01" in details_text_raw or "0.01" in details_text_raw):
+                if event_type == "SHUT_HEIGHT_CHANGE" and (
+                    "1.01" in details_text_raw or "0.01" in details_text_raw
+                ):
                     continue
                 ts_obj = localize_ist(ts_obj)
-                title = event_titles.get(event_type, str(event_type).replace("_", " ").title())
+                title = event_titles.get(
+                    event_type, str(event_type).replace("_", " ").title()
+                )
                 event_tool_id = _extract_tool_id_from_text(details_text_raw)
                 event_extra = _tid_payload(event_tool_id) if event_tool_id else {}
-                event_payload = add_timeline_event(events, ts_obj, event_type, title, details, shift_val, extra=event_extra if event_extra else None)
+                event_payload = add_timeline_event(
+                    events,
+                    ts_obj,
+                    event_type,
+                    title,
+                    details,
+                    shift_val,
+                    extra=event_extra if event_extra else None,
+                )
                 bucket = find_bucket_for_time(ts_obj)
                 if bucket:
                     bucket_event = {
@@ -1516,7 +2486,12 @@ def _plant_history_common(request, plant_no, plant_location, data_table, lunch_s
                         bucket["shut_height_changes"].append(bucket_event)
 
             # 4) Ideal segments.
-            ideal_params = [plant_location, int(machine_no), end_str_naive, start_str_naive]
+            ideal_params = [
+                plant_location,
+                int(machine_no),
+                end_str_naive,
+                start_str_naive,
+            ]
             shift_filter_sql = ""
             if selected_shift in ["A", "B"]:
                 shift_filter_sql = " AND shift = %s"
@@ -1548,7 +2523,18 @@ def _plant_history_common(request, plant_no, plant_location, data_table, lunch_s
             )
             ideal_rows = cursor.fetchall()
             for row in ideal_rows:
-                ideal_id, ideal_mode, ideal_start_at, ideal_end_at, ideal_time, closed_by, reason, specific_reason, remark, shift_val = row
+                (
+                    ideal_id,
+                    ideal_mode,
+                    ideal_start_at,
+                    ideal_end_at,
+                    ideal_time,
+                    closed_by,
+                    reason,
+                    specific_reason,
+                    remark,
+                    shift_val,
+                ) = row
                 ideal_start_at = localize_ist(ideal_start_at)
                 ideal_end_at = localize_ist(ideal_end_at)
                 ideal_mode = str(ideal_mode or "").upper()
@@ -1570,11 +2556,21 @@ def _plant_history_common(request, plant_no, plant_location, data_table, lunch_s
                 }
                 title = "Online Ideal" if ideal_mode == "ONLINE" else "Offline Ideal"
                 details = f"{title}: {segment_payload['duration_display']} ({segment_payload['start_time']} - {segment_payload['end_time']}). Reason: {segment_payload['reason']} / {segment_payload['specific_reason']}"
-                add_timeline_event(events, ideal_start_at, f"IDEAL_{ideal_mode}", title, details, shift_val, extra={"ideal_segment": segment_payload})
+                add_timeline_event(
+                    events,
+                    ideal_start_at,
+                    f"IDEAL_{ideal_mode}",
+                    title,
+                    details,
+                    shift_val,
+                    extra={"ideal_segment": segment_payload},
+                )
 
                 for bucket in hour_buckets:
                     overlap_start = max(ideal_start_at, bucket["start"])
-                    overlap_end = min(ideal_end_at, bucket["scheduled_end"], effective_end)
+                    overlap_end = min(
+                        ideal_end_at, bucket["scheduled_end"], effective_end
+                    )
                     if overlap_end <= overlap_start:
                         continue
                     overlap_seconds = int((overlap_end - overlap_start).total_seconds())
@@ -1582,7 +2578,9 @@ def _plant_history_common(request, plant_no, plant_location, data_table, lunch_s
                         continue
                     bucket_segment = dict(segment_payload)
                     bucket_segment["bucket_overlap_seconds"] = overlap_seconds
-                    bucket_segment["bucket_overlap_display"] = _seconds_to_display(overlap_seconds)
+                    bucket_segment["bucket_overlap_display"] = _seconds_to_display(
+                        overlap_seconds
+                    )
                     bucket["ideal_segments"].append(bucket_segment)
                     if ideal_mode == "ONLINE":
                         bucket["online_ideal_seconds"] += overlap_seconds
@@ -1593,10 +2591,18 @@ def _plant_history_common(request, plant_no, plant_location, data_table, lunch_s
 
         hourly_summary = []
         for bucket in hour_buckets:
-            bucket["total_ideal_seconds"] = int(bucket["online_ideal_seconds"] + bucket["offline_ideal_seconds"])
-            bucket["online_ideal_display"] = _seconds_to_display(bucket["online_ideal_seconds"])
-            bucket["offline_ideal_display"] = _seconds_to_display(bucket["offline_ideal_seconds"])
-            bucket["total_ideal_display"] = _seconds_to_display(bucket["total_ideal_seconds"])
+            bucket["total_ideal_seconds"] = int(
+                bucket["online_ideal_seconds"] + bucket["offline_ideal_seconds"]
+            )
+            bucket["online_ideal_display"] = _seconds_to_display(
+                bucket["online_ideal_seconds"]
+            )
+            bucket["offline_ideal_display"] = _seconds_to_display(
+                bucket["offline_ideal_seconds"]
+            )
+            bucket["total_ideal_display"] = _seconds_to_display(
+                bucket["total_ideal_seconds"]
+            )
             bucket["tool_change_count"] = len(bucket["tool_changes"])
             bucket["shut_height_change_count"] = len(bucket["shut_height_changes"])
             bucket["on_off_event_count"] = len(bucket["on_off_events"])
@@ -1605,11 +2611,15 @@ def _plant_history_common(request, plant_no, plant_location, data_table, lunch_s
             if bucket["online_ideal_seconds"] > 0:
                 summary_details += f" | Online ideal: {bucket['online_ideal_display']}."
             if bucket["offline_ideal_seconds"] > 0:
-                summary_details += f" | Offline ideal: {bucket['offline_ideal_display']}."
+                summary_details += (
+                    f" | Offline ideal: {bucket['offline_ideal_display']}."
+                )
             if bucket["shut_height_change_count"] > 0:
                 summary_details += f" | Shut height changed {bucket['shut_height_change_count']} time(s)."
             if bucket["tool_change_count"] > 0:
-                summary_details += f" | Tool changed {bucket['tool_change_count']} time(s)."
+                summary_details += (
+                    f" | Tool changed {bucket['tool_change_count']} time(s)."
+                )
 
             hour_payload = {
                 "bucket_start": system_time(bucket["start"]),
@@ -1645,15 +2655,28 @@ def _plant_history_common(request, plant_no, plant_location, data_table, lunch_s
                 extra=hour_payload,
             )
 
-        shift_ideal_summary["total_ideal_seconds"] = int(shift_ideal_summary["online_ideal_seconds"] + shift_ideal_summary["offline_ideal_seconds"])
-        shift_ideal_summary["online_ideal_display"] = _seconds_to_display(shift_ideal_summary["online_ideal_seconds"])
-        shift_ideal_summary["offline_ideal_display"] = _seconds_to_display(shift_ideal_summary["offline_ideal_seconds"])
-        shift_ideal_summary["total_ideal_display"] = _seconds_to_display(shift_ideal_summary["total_ideal_seconds"])
+        shift_ideal_summary["total_ideal_seconds"] = int(
+            shift_ideal_summary["online_ideal_seconds"]
+            + shift_ideal_summary["offline_ideal_seconds"]
+        )
+        shift_ideal_summary["online_ideal_display"] = _seconds_to_display(
+            shift_ideal_summary["online_ideal_seconds"]
+        )
+        shift_ideal_summary["offline_ideal_display"] = _seconds_to_display(
+            shift_ideal_summary["offline_ideal_seconds"]
+        )
+        shift_ideal_summary["total_ideal_display"] = _seconds_to_display(
+            shift_ideal_summary["total_ideal_seconds"]
+        )
 
         if count_summary["first_count_time"]:
-            count_summary["first_count_time"] = system_time(count_summary["first_count_time"])
+            count_summary["first_count_time"] = system_time(
+                count_summary["first_count_time"]
+            )
         if count_summary["last_count_time"]:
-            count_summary["last_count_time"] = system_time(count_summary["last_count_time"])
+            count_summary["last_count_time"] = system_time(
+                count_summary["last_count_time"]
+            )
 
         events.sort(key=lambda x: x["timestamp"])
 
@@ -1692,8 +2715,12 @@ def _plant_history_common(request, plant_no, plant_location, data_table, lunch_s
         return response
     except Exception as e:
         import traceback
+
         traceback.print_exc()
-        return Response({"success": False, "error": str(e), "events": [], "hourly_summary": []}, status=500)
+        return Response(
+            {"success": False, "error": str(e), "events": [], "hourly_summary": []},
+            status=500,
+        )
 
 
 @never_cache
@@ -1720,6 +2747,7 @@ def get_machine_history(request):
         lunch_start_tuple=(12, 15),
         lunch_end_tuple=(12, 45),
     )
+
 
 # from .models import Operator
 # from django.utils import timezone
@@ -1959,13 +2987,10 @@ def get_machine_history(request):
 #         )
 
 
-
-
-
 # # ==============================================================
 # # ✅ TID MAP HELPER - EPC / TOOL ID se full tool-part info
 # # Put this helper in api/views.py above plant2_live and get_machine_history
-# # ============================================================== 
+# # ==============================================================
 # def get_tool_info_from_tid_map(tool_id):
 #     from django.db import connection
 #     """Query public.tid_map table and return full tool/part info.
@@ -2223,8 +3248,8 @@ def get_machine_history(request):
 #                 # 🌟 FIX APPLIED HERE: Use MAX(cumulative) - MIN(cumulative) for accurate last hour count
 #                 cursor.execute(
 #                     """
-#                     SELECT machine_no, COALESCE((MAX(cumulative_count) - MIN(cumulative_count)), 0) 
-#                     FROM Plant2_data 
+#                     SELECT machine_no, COALESCE((MAX(cumulative_count) - MIN(cumulative_count)), 0)
+#                     FROM Plant2_data
 #                     WHERE timestamp >= %s AND timestamp < %s
 #                     GROUP BY machine_no
 #                 """,
@@ -2772,7 +3797,7 @@ def get_machine_history(request):
 #         return Response(
 #             {"success": False, "error": str(e), "machines": [], "plant": 2}, status=500
 #         )
- 
+
 # @never_cache
 # @api_view(["GET"])
 # def get_machine_history(request):
@@ -3520,7 +4545,6 @@ def get_machine_history(request):
 #         import traceback
 #         traceback.print_exc()
 #         return Response({"success": False, "error": str(e), "events": [], "hourly_summary": []}, status=500)
-
 
 
 @never_cache
@@ -4280,7 +5304,7 @@ def get_operators_by_plant(request):
     except Exception as e:
         print(f"❌ Error fetching operators: {e}")
         return Response({"success": False, "error": str(e)}, status=500)
-    
+
 
 @api_view(["POST"])
 def add_operator(request):
@@ -4288,34 +5312,40 @@ def add_operator(request):
     try:
         name = request.data.get("name")
         plant = request.data.get("plant", "plant_2")
-        emp_code = request.data.get("employee_code", "") # 👇 Naya data aayega
+        emp_code = request.data.get("employee_code", "")  # 👇 Naya data aayega
 
         if not name or not name.strip():
-            return Response({"success": False, "message": "Operator name is required"}, status=400)
+            return Response(
+                {"success": False, "message": "Operator name is required"}, status=400
+            )
 
         if plant not in ["plant_1", "plant_2"]:
             return Response({"success": False, "message": "Invalid plant."}, status=400)
 
-        existing = Operator.objects.filter(name__iexact=name.strip(), plant=plant).first()
+        existing = Operator.objects.filter(
+            name__iexact=name.strip(), plant=plant
+        ).first()
         if existing:
-            return Response({"success": False, "message": f"{name} already exists"}, status=400)
+            return Response(
+                {"success": False, "message": f"{name} already exists"}, status=400
+            )
 
         # 👇 Employee code save kar rahe hain
         operator = Operator.objects.create(
-            name=name.strip(), 
-            plant=plant,
-            employee_code=emp_code
+            name=name.strip(), plant=plant, employee_code=emp_code
         )
 
-        return Response({
-            "success": True,
-            "message": f"{name} added successfully",
-            "operator": {
-                "id": operator.id,
-                "name": operator.name,
-                "plant": operator.plant
-            },
-        })
+        return Response(
+            {
+                "success": True,
+                "message": f"{name} added successfully",
+                "operator": {
+                    "id": operator.id,
+                    "name": operator.name,
+                    "plant": operator.plant,
+                },
+            }
+        )
 
     except Exception as e:
         print(f"❌ Error adding operator: {e}")
@@ -4353,11 +5383,13 @@ def get_machines_by_plant(request):
     except Exception as e:
         print(f"❌ Error fetching machines: {e}")
         return Response({"success": False, "error": str(e)}, status=500)
-    
+
+
 from rest_framework.response import Response
 from rest_framework.decorators import api_view
 from django.utils import timezone
-from .models import Operator, OperatorAssignment # Ensure ye models imported hain
+from .models import Operator, OperatorAssignment  # Ensure ye models imported hain
+
 
 @api_view(["POST"])
 def save_operator_assignment(request):
@@ -4368,20 +5400,26 @@ def save_operator_assignment(request):
         machine_no = request.data.get("machine_no")
         shift = request.data.get("shift")
         assigned_by = request.data.get("assigned_by", "Admin")
-        
+
         # Frontend se override ka order
-        override = request.data.get("override", False) 
+        override = request.data.get("override", False)
 
         if not all([plant, operator_name, machine_no, shift]):
-            return Response({"success": False, "message": "All fields are required"}, status=400)
+            return Response(
+                {"success": False, "message": "All fields are required"}, status=400
+            )
 
         # 1. Operator ID nikalo
         if operator_name == "No Operator Available":
             operator_id = 0
         else:
-            operator = Operator.objects.filter(name=operator_name, plant=plant, is_active=True).first()
+            operator = Operator.objects.filter(
+                name=operator_name, plant=plant, is_active=True
+            ).first()
             if not operator:
-                return Response({"success": False, "message": "Operator not found"}, status=404)
+                return Response(
+                    {"success": False, "message": "Operator not found"}, status=404
+                )
             operator_id = operator.id
 
         # 2. Check karo kya Machine pehle se busy hai?
@@ -4397,9 +5435,18 @@ def save_operator_assignment(request):
         # Agar Override FALSE hai aur koi ek bhi busy hai, toh error do
         if not override:
             if existing_machine:
-                return Response({"success": False, "message": f"Machine {machine_no} is busy"}, status=400)
+                return Response(
+                    {"success": False, "message": f"Machine {machine_no} is busy"},
+                    status=400,
+                )
             if existing_operator and operator_id != 0:
-                return Response({"success": False, "message": f"{operator_name} is busy on Machine {existing_operator.machine_no}"}, status=400)
+                return Response(
+                    {
+                        "success": False,
+                        "message": f"{operator_name} is busy on Machine {existing_operator.machine_no}",
+                    },
+                    status=400,
+                )
 
         # 🔥 SMART LOGIC: Agar Override TRUE hai, toh dono ko purani duty se free karo!
         if override:
@@ -4409,7 +5456,7 @@ def save_operator_assignment(request):
                 existing_machine.end_time = timezone.now()
                 existing_machine.is_current = False
                 existing_machine.save()
-            
+
             # B. Agar naya operator (Bablu) pehle kisi aur machine par tha, uski wo duty khatam karo
             if existing_operator and operator_id != 0:
                 existing_operator.status = "Transferred"
@@ -4432,16 +5479,19 @@ def save_operator_assignment(request):
             is_current=True,
         )
 
-        return Response({
-            "success": True,
-            "message": f"{operator_name} assigned successfully",
-            "assignment": {"id": assignment.id}
-        })
+        return Response(
+            {
+                "success": True,
+                "message": f"{operator_name} assigned successfully",
+                "assignment": {"id": assignment.id},
+            }
+        )
 
     except Exception as e:
         print(f"❌ Error saving assignment: {e}")
         return Response({"success": False, "error": str(e)}, status=500)
-        
+
+
 @api_view(["GET"])
 def get_operator_assignments(request):
     """Current machine assignments"""
@@ -4468,7 +5518,9 @@ def get_operator_assignments(request):
                     "operator_name": a.operator_name,
                     "shift": a.shift,
                     "status": a.status,
-                    "start_time": timezone.localtime(a.start_time).strftime("%Y-%m-%d %I:%M %p"),
+                    "start_time": timezone.localtime(a.start_time).strftime(
+                        "%Y-%m-%d %I:%M %p"
+                    ),
                 }
             )
 
@@ -4487,6 +5539,7 @@ def get_operator_assignments(request):
             },
             status=500,
         )
+
 
 @api_view(["POST"])
 def transfer_operator(request):
@@ -4590,17 +5643,19 @@ def transfer_operator(request):
             },
             status=500,
         )
-        
+
+
 from django.utils import timezone
 from django.db.models import Q
 from datetime import datetime
+
 
 @api_view(["GET"])
 def get_assignment_history(request):
     """Complete operator transfer history with Duration Calculation"""
     try:
         plant = request.GET.get("plant")
-        date_filter = request.GET.get("date") # Format: YYYY-MM-DD
+        date_filter = request.GET.get("date")  # Format: YYYY-MM-DD
 
         query = OperatorAssignment.objects.all()
 
@@ -4620,45 +5675,61 @@ def get_assignment_history(request):
             # Time ko India timezone (IST) mein convert kar rahe hain
             start_local = timezone.localtime(h.start_time) if h.start_time else None
             end_local = timezone.localtime(h.end_time) if h.end_time else None
-            
+
             # 🔥 NAYA: Kitne ghante kaam kiya (Working Hours Calculation)
             working_hours = "0h 0m"
             if start_local:
                 # Agar operator abhi bhi kaam kar raha hai, toh current time se minus karenge
-                end_calc = end_local if end_local else timezone.localtime(timezone.now())
+                end_calc = (
+                    end_local if end_local else timezone.localtime(timezone.now())
+                )
                 diff = end_calc - start_local
                 total_seconds = int(diff.total_seconds())
                 hours = total_seconds // 3600
                 minutes = (total_seconds % 3600) // 60
                 working_hours = f"{hours}h {minutes}m"
 
-            data.append({
-                "id": h.id,
-                "plant": h.plant,
-                "operator_name": h.operator_name,
-                "machine_no": h.machine_no,
-                "shift": h.shift,
-                "status": h.status,
-                "reason": h.reason,
-                "remarks": h.remarks,
-                "assigned_by": h.assigned_by,
-                "start_time": start_local.strftime("%Y-%m-%d %I:%M %p") if start_local else None,
-                "end_time": end_local.strftime("%Y-%m-%d %I:%M %p") if end_local else None,
-                "duration": working_hours,  # Bhejo UI ko ki kitni der kaam kiya
-                "is_current": h.is_current,
-            })
+            data.append(
+                {
+                    "id": h.id,
+                    "plant": h.plant,
+                    "operator_name": h.operator_name,
+                    "machine_no": h.machine_no,
+                    "shift": h.shift,
+                    "status": h.status,
+                    "reason": h.reason,
+                    "remarks": h.remarks,
+                    "assigned_by": h.assigned_by,
+                    "start_time": (
+                        start_local.strftime("%Y-%m-%d %I:%M %p")
+                        if start_local
+                        else None
+                    ),
+                    "end_time": (
+                        end_local.strftime("%Y-%m-%d %I:%M %p") if end_local else None
+                    ),
+                    "duration": working_hours,  # Bhejo UI ko ki kitni der kaam kiya
+                    "is_current": h.is_current,
+                }
+            )
 
-        return Response({
-            "success": True,
-            "history": data,
-        })
+        return Response(
+            {
+                "success": True,
+                "history": data,
+            }
+        )
 
     except Exception as e:
         print(f"❌ History Error: {e}")
-        return Response({
-            "success": False,
-            "error": str(e),
-        }, status=500)
+        return Response(
+            {
+                "success": False,
+                "error": str(e),
+            },
+            status=500,
+        )
+
 
 @api_view(["GET"])
 def plant2_hourly_idle(request):
@@ -4814,22 +5885,21 @@ def plant2_hourly_idle_summary(request):
 #         else:
 #             data["role"] = "Default_User"
 
+
 #         data["username"] = self.user.username
 #         return data
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     def validate(self, attrs):
         data = super().validate(attrs)
 
-        groups = list(
-            self.user.groups.values_list("name", flat=True)
-        )
+        groups = list(self.user.groups.values_list("name", flat=True))
 
         data["role"] = groups[0] if groups else "Default_User"
         data["groups"] = groups
         data["username"] = self.user.username
         data["is_superuser"] = self.user.is_superuser
 
-        return data    
+        return data
 
 
 class CustomLoginView(TokenObtainPairView):
@@ -5135,57 +6205,185 @@ def machine_analysis(request):
 @api_view(["POST"])
 def log_idle_reason(request):
     """
-    Frontend se downtime reason receive karta hai aur
-    usse RAM buffer (Pending State) mein save karta hai.
+    Save live idle/offline reason in backend state
+    and immediately notify all browsers for that plant.
     """
+    print("🟡 IDLE API 1: REQUEST ENTERED", flush=True)
+    
     try:
-        # ✅ FIX: Import ko function ke ANDAR daal diya taaki Circular Import error na aaye
-        from apps.mqtt.simple_plant2 import EXACT_REQUIREMENT_STATE
-
         data = request.data
 
         machine_no = data.get("machine_no")
         plant_no = data.get("plant_no")
-        category = data.get("category")
-        reason = data.get("reason")
-        remarks = data.get("remarks", "")
+        category = str(data.get("category", "")).strip()
+        reason = str(data.get("reason", "")).strip()
+        remarks = str(data.get("remarks", "")).strip()
+        machine_status = str(
+            data.get("machine_status", "ONLINE")
+        ).strip().upper()
 
-        # Basic validation
-        if not machine_no or not category or not reason:
+        # -----------------------------
+        # 1. Validation
+        # -----------------------------
+        if not machine_no:
             return Response(
                 {
                     "success": False,
-                    "error": "Missing required fields (machine_no, category, reason)",
+                    "error": "machine_no is required",
                 },
                 status=400,
             )
 
-        machine_no = int(machine_no)
-
-        if int(plant_no) == 2:
-            # Agar abhi bhi None hoga, toh ye code bata dega
-            if EXACT_REQUIREMENT_STATE is None:
-                return Response(
-                    {"success": False, "error": "EXACT_REQUIREMENT_STATE is None!"},
-                    status=500,
-                )
-
-            EXACT_REQUIREMENT_STATE.set_pending_reason(
-                machine_no=machine_no, category=category, reason=reason, remarks=remarks
-            )
+        if not plant_no:
             return Response(
                 {
-                    "success": True,
-                    "message": f"Reason buffered successfully for Machine {machine_no}",
-                }
+                    "success": False,
+                    "error": "plant_no is required",
+                },
+                status=400,
             )
+
+        if not category or not reason:
+            return Response(
+                {
+                    "success": False,
+                    "error": "category and reason are required",
+                },
+                status=400,
+            )
+
+        try:
+            machine_no = int(machine_no)
+            plant_no = int(plant_no)
+        except (TypeError, ValueError):
+            return Response(
+                {
+                    "success": False,
+                    "error": "Invalid machine_no or plant_no",
+                },
+                status=400,
+            )
+
+        # -----------------------------
+        # 2. Select correct Plant state
+        # -----------------------------
+        if plant_no == 1:
+            from apps.mqtt.simple_plant1 import (
+                PLANT1_EXACT_REQUIREMENT_STATE,
+            )
+
+            state_obj = PLANT1_EXACT_REQUIREMENT_STATE
+            group_name = "plant1_live_updates"
+            plant_location = "Plant 1"
+
+        elif plant_no == 2:
+            from apps.mqtt.simple_plant2 import (
+                PLANT2_EXACT_REQUIREMENT_STATE,
+            )
+
+            state_obj = PLANT2_EXACT_REQUIREMENT_STATE
+            group_name = "plant2_live_updates"
+            plant_location = "Plant 2"
+
         else:
             return Response(
-                {"success": False, "error": "Invalid Plant Number"}, status=400
+                {
+                    "success": False,
+                    "error": "plant_no must be 1 or 2",
+                },
+                status=400,
             )
+
+        if state_obj is None:
+            return Response(
+                {
+                    "success": False,
+                    "error": "Plant MQTT state is not available",
+                },
+                status=500,
+            )
+
+        # -----------------------------
+        # 3. Save reason in backend
+        # -----------------------------
+        state_obj.set_pending_reason(
+            machine_no=machine_no,
+            category=category,
+            reason=reason,
+            remarks=remarks,
+        )
+
+        reason_state = (
+            "OFFLINE"
+            if machine_status == "OFFLINE"
+            else "IDLE"
+        )
+
+        # -----------------------------
+        # 4. Notify ALL browsers
+        # -----------------------------
+        try:
+            channel_layer = get_channel_layer()
+
+            if channel_layer:
+                async_to_sync(
+                    channel_layer.group_send
+                )(
+                    group_name,
+                    {
+                        "type": "send_machine_update",
+                        "message": {
+                            "event_type": "idle_reason_updated",
+                            "plant_no": plant_no,
+                            "plant": plant_location,
+                            "machine_no": machine_no,
+                            "machine_status": machine_status,
+                            "reason_state": reason_state,
+                            "has_pending_reason": True,
+                            "category": category,
+                            "reason": reason,
+                        },
+                    },
+                )
+
+                print(
+                    f"📡 IDLE REASON WS SENT | "
+                    f"{plant_location} | "
+                    f"M{machine_no} | "
+                    f"{reason_state}"
+                )
+
+        except Exception as ws_err:
+            print(
+                f"⚠️ Idle Reason WebSocket Error: {ws_err}"
+            )
+
+        return Response(
+            {
+                "success": True,
+                "message": (
+                    f"Reason saved successfully "
+                    f"for Machine {machine_no}"
+                ),
+                "plant_no": plant_no,
+                "machine_no": machine_no,
+                "reason_state": reason_state,
+                "has_pending_reason": True,
+            },
+            status=200,
+        )
 
     except Exception as e:
         print(f"❌ API Error in log_idle_reason: {e}")
+        traceback.print_exc()
+
+        return Response(
+            {
+                "success": False,
+                "error": str(e),
+            },
+            status=500,
+        )
 
 
 import json
@@ -5662,7 +6860,6 @@ class GetQANotificationsView(APIView):
 # ==============================================================================
 
 
-
 from django.contrib.auth.models import User
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -5976,5 +7173,3 @@ def get_department_stats(request):
 
     response_data = list(user_data_dict.values())
     return Response(response_data)
-
-

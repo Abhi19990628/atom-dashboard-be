@@ -6,61 +6,75 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('api', '0060_alter_operator_options_and_more'),
+        ("api", "0060_alter_operator_options_and_more"),
     ]
 
     operations = [
         migrations.RemoveField(
-            model_name='operatorassignment',
-            name='created_at',
+            model_name="operatorassignment",
+            name="created_at",
         ),
         migrations.AddField(
-            model_name='operator',
-            name='employee_code',
+            model_name="operator",
+            name="employee_code",
             field=models.CharField(blank=True, max_length=50, null=True),
         ),
         migrations.AddField(
-            model_name='operatorassignment',
-            name='assigned_by',
+            model_name="operatorassignment",
+            name="assigned_by",
             field=models.CharField(blank=True, max_length=100, null=True),
         ),
         migrations.AddField(
-            model_name='operatorassignment',
-            name='end_time',
+            model_name="operatorassignment",
+            name="end_time",
             field=models.DateTimeField(blank=True, null=True),
         ),
         migrations.AddField(
-            model_name='operatorassignment',
-            name='is_current',
+            model_name="operatorassignment",
+            name="is_current",
             field=models.BooleanField(default=True),
         ),
         migrations.AddField(
-            model_name='operatorassignment',
-            name='operator_id',
+            model_name="operatorassignment",
+            name="operator_id",
             field=models.BigIntegerField(blank=True, null=True),
         ),
         migrations.AddField(
-            model_name='operatorassignment',
-            name='reason',
+            model_name="operatorassignment",
+            name="reason",
             field=models.TextField(blank=True, null=True),
         ),
         migrations.AddField(
-            model_name='operatorassignment',
-            name='remarks',
+            model_name="operatorassignment",
+            name="remarks",
             field=models.TextField(blank=True, null=True),
         ),
         migrations.AddField(
-            model_name='operatorassignment',
-            name='status',
-            field=models.CharField(choices=[('Assigned', 'Assigned'), ('Transferred', 'Transferred'), ('Completed', 'Completed'), ('Removed', 'Removed')], default='Assigned', max_length=20),
+            model_name="operatorassignment",
+            name="status",
+            field=models.CharField(
+                choices=[
+                    ("Assigned", "Assigned"),
+                    ("Transferred", "Transferred"),
+                    ("Completed", "Completed"),
+                    ("Removed", "Removed"),
+                ],
+                default="Assigned",
+                max_length=20,
+            ),
         ),
         migrations.AlterField(
-            model_name='operatorassignment',
-            name='machine_no',
+            model_name="operatorassignment",
+            name="machine_no",
             field=models.CharField(max_length=20),
         ),
-        migrations.AlterUniqueTogether(
-            name='operator',
-            unique_together={('name', 'plant')},
+        migrations.SeparateDatabaseAndState(
+            database_operations=[],
+            state_operations=[
+                migrations.AlterUniqueTogether(
+                    name="operator",
+                    unique_together={("name", "plant")},
+                ),
+            ],
         ),
     ]
