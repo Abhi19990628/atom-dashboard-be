@@ -157,4 +157,8 @@ urlpatterns = [
     ),
     path("log-report/", views.SaveReportLogView.as_view(), name="api_log_report"),
     path("profile/me/", CurrentUserProfileView.as_view(), name="current-user-profile"),
+    path('attendance/', views.attendance_dashboard, name='attendance_dashboard'),
+    path('attendance/employees-master/', views.attendance_employee_master, name='attendance_employee_master'),
+    path('attendance/employees/<str:paycode>/', views.attendance_employee_profile, name='attendance_employee_profile'),
+    path('attendance/employees/<str:paycode>/calendar/', views.attendance_employee_calendar, name='attendance_employee_calendar'),
 ]

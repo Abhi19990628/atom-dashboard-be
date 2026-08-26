@@ -152,18 +152,18 @@ DATABASES = {
             "options": "-c search_path=production,quality,machine_maintenance,tool_maintenance,live_data,master_data,public -c timezone=Asia/Kolkata"
         },
     },
-    # 'sqlserver_db': {
-    #     'ENGINE': 'mssql',
-    #     'NAME': os.getenv('SQL_DB_NAME'),
-    #     'USER': os.getenv('SQL_DB_USER'),
-    #     'PASSWORD': os.getenv('SQL_DB_PASSWORD'),
-    #     'HOST': os.getenv('SQL_DB_HOST'),
-    #     'PORT': '',
-    #     'OPTIONS': {
-    #         'driver': 'ODBC Driver 17 for SQL Server',
-    #         'extra_params': 'TrustServerCertificate=yes;',  # Kyunki SSMS me 'Trust Server Certificate' checked hai
-    #     },
-    # }
+    'sqlserver_db': {
+       'ENGINE': 'mssql',
+       'NAME': os.getenv('SQL_DB_NAME'),
+       'USER': os.getenv('SQL_DB_USER'),
+       'PASSWORD': os.getenv('SQL_DB_PASSWORD'),
+       'HOST': os.getenv('SQL_DB_HOST'),
+       'PORT': '',
+          'OPTIONS': {
+          'driver': 'ODBC Driver 18 for SQL Server',
+          'extra_params': 'TrustServerCertificate=yes;Encrypt=no;',
+       },
+   }
 }
 
 # Email

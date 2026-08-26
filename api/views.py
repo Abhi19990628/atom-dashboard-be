@@ -9,7 +9,7 @@ from .models import (
     IdleReport,
     IdealTimeSegmentReason,
 )
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dt_time
 
 # from apps.mqtt.mqtt_client import PLANT1_TOPICS, PLANT2_TOPICS
 from django.views.decorators.cache import cache_control, never_cache
@@ -32,6 +32,8 @@ from django.shortcuts import get_object_or_404
 
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework_simplejwt.views import TokenObtainPairView
+from django.db import connections
+
 
 
 @api_view(["GET"])
@@ -7173,3 +7175,960 @@ def get_department_stats(request):
 
     response_data = list(user_data_dict.values())
     return Response(response_data)
+
+
+
+
+# ==========================================================
+# ATTENDANCE SECTION V2 - paste in views.py
+# Required imports at top of views.py:
+# from rest_framework.decorators import api_view
+# from rest_framework.response import Response
+# from django.db import connections
+# from datetime import datetime, timedelta, time
+# ==========================================================
+
+DEPARTMENT_MAP = {
+    "001": "HR & Admin",
+    "002": "Accounts",
+    "003": "Dispatch",
+    "004": "Maintenance",
+    "005": "Tool Room",
+    "006": "Quality",
+    "007": "Production",
+    "008": "NPD",
+    "009": "CNC",
+    "010": "IOT Dev",
+    "011": "R&D",
+    "013": "Design",
+    "014": "QMS",
+    "015": "Weld Shop",
+}
+
+DAY_SHIFT_START = dt_time(8, 30)
+DAY_SHIFT_END = dt_time(17, 30)
+LATE_GRACE_MINUTES = 10
+GATE_PASS_LIMIT_MINUTES = 120
+HALF_DAY_MIN_WORK_MINUTES = 270
+
+
+def clean_sql_value(value):
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def row_get(row, key, default=None):
+    if key in row:
+        return row.get(key, default)
+
+    key_lower = key.lower()
+    for k, v in row.items():
+        if str(k).lower() == key_lower:
+            return v
+    return default
+
+
+def serialize_sql_value(value):
+    if value is None:
+        return None
+    if hasattr(value, "strftime"):
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    return clean_sql_value(value)
+
+
+def get_raw_master(row):
+    raw = {}
+    for key, value in row.items():
+        key_text = str(key)
+        if key_text.startswith("att") or key_text.startswith("life") or key_text.startswith("month"):
+            continue
+        raw[key] = serialize_sql_value(value)
+    return raw
+
+
+def plant_to_company_code(plant):
+    plant = clean_sql_value(plant)
+    if plant in ["Plant 1", "plant_1", "1", "001"]:
+        return "001"
+    if plant in ["Plant 2", "plant_2", "2", "002"]:
+        return "002"
+    return ""
+
+
+def company_code_to_plant(company_code):
+    code = clean_sql_value(company_code).zfill(3)
+    if code == "001":
+        return "Plant 1"
+    if code == "002":
+        return "Plant 2"
+    return "Unknown"
+
+
+def get_department_name(code):
+    code = clean_sql_value(code).zfill(3)
+    return DEPARTMENT_MAP.get(code, f"Dept {code}" if code else "--")
+
+
+def get_numeric_paycode(paycode):
+    value = clean_sql_value(paycode).upper()
+    if value.startswith("E"):
+        return None
+    digits = "".join(ch for ch in value if ch.isdigit())
+    if not digits:
+        return None
+    try:
+        return int(digits.lstrip("0") or "0")
+    except Exception:
+        return None
+
+
+def classify_employee_type_and_vendor(paycode, company_code):
+    """
+    E / EE series = Office Employee.
+    Numeric worker series = Worker.
+    Vendor name only for vendor workers.
+    """
+    paycode_clean = clean_sql_value(paycode).upper()
+    plant = company_code_to_plant(company_code)
+    number_code = get_numeric_paycode(paycode_clean)
+
+    if paycode_clean.startswith("E"):
+        return "Employee", "Office Employee", ""
+
+    if number_code is None:
+        return "Worker", "Company Worker", ""
+
+    if plant == "Plant 1":
+        if 24000 <= number_code <= 24999:
+            return "Worker", "Vendor Worker", "Shiv"
+        if 22000 <= number_code <= 22999:
+            return "Worker", "Vendor Worker", "Unati"
+        if 21000 <= number_code <= 21999:
+            return "Worker", "Vendor Worker", "Abhishek"
+        if 20000 <= number_code <= 20999:
+            return "Worker", "Vendor Worker", "VVMS"
+        if 2000 <= number_code <= 2999:
+            return "Worker", "Company Worker", ""
+        return "Worker", "Company Worker", ""
+
+    if plant == "Plant 2":
+        if 18000 <= number_code <= 18999:
+            return "Worker", "Vendor Worker", "Abhishek"
+        if 17000 <= number_code <= 17999:
+            return "Worker", "Vendor Worker", "VVMS"
+        if 16000 <= number_code <= 16999:
+            return "Worker", "Vendor Worker", "Shiv"
+        if 14000 <= number_code <= 14999:
+            return "Worker", "Vendor Worker", "Unati"
+        if 4000 <= number_code <= 4999:
+            return "Worker", "Vendor Worker", "VVMS"
+        if 7000 <= number_code <= 7999:
+            return "Worker", "Vendor Worker", "VVMS"
+        if 1000 <= number_code <= 1999:
+            return "Worker", "Company Worker", ""
+        return "Worker", "Company Worker", ""
+
+    return "Worker", "Company Worker", ""
+
+
+def get_display_designation(row, employee_type, department):
+    designation = clean_sql_value(row_get(row, "DESIGNATION"))
+    if designation:
+        return designation
+    if employee_type == "Employee":
+        return department or "Office Employee"
+    return "Worker"
+
+
+def format_att_time(value):
+    if not value:
+        return "--"
+    try:
+        return value.strftime("%I:%M %p").lstrip("0")
+    except Exception:
+        return str(value)
+
+
+def format_att_date(value):
+    if not value:
+        return "--"
+    try:
+        return value.strftime("%d %b %Y")
+    except Exception:
+        return str(value)
+
+
+def format_api_date(value):
+    if not value:
+        return None
+    try:
+        return value.strftime("%Y-%m-%d")
+    except Exception:
+        return str(value)
+
+
+def number_value(value):
+    try:
+        return float(value or 0)
+    except Exception:
+        return 0
+
+
+def minutes_to_working_hours(value):
+    minutes = int(number_value(value))
+    if minutes <= 0:
+        return "--"
+    hours = minutes // 60
+    mins = minutes % 60
+    return f"{hours}h {mins:02d}m"
+
+
+def minutes_to_total_hours(value):
+    minutes = int(number_value(value))
+    hours = minutes // 60
+    mins = minutes % 60
+    return {"minutes": minutes, "label": f"{hours}h {mins:02d}m"}
+
+
+def safe_datetime(value):
+    if not value:
+        return None
+    if hasattr(value, "date") and hasattr(value, "time"):
+        return value
+    return None
+
+
+def minutes_between(start_dt, end_dt):
+    try:
+        if not start_dt or not end_dt:
+            return 0
+        if end_dt < start_dt:
+            end_dt = end_dt + timedelta(days=1)
+        return int((end_dt - start_dt).total_seconds() // 60)
+    except Exception:
+        return 0
+
+
+def calculate_late_minutes(punch_in, shift_start):
+    db_late = number_value(shift_start.get("late") if isinstance(shift_start, dict) else None)
+    if db_late > 0:
+        return int(db_late)
+    return 0
+
+
+def get_late_minutes(row, prefix="att"):
+    db_late = int(number_value(row_get(row, f"{prefix}LateArrival")))
+    if db_late > 0:
+        return db_late
+
+    punch_in = safe_datetime(row_get(row, f"{prefix}In1"))
+    shift_start = safe_datetime(row_get(row, f"{prefix}ShiftStartTime"))
+
+    if not punch_in:
+        return 0
+
+    # If shift start is missing, use standard office shift 08:30.
+    if not shift_start:
+        shift_start = datetime.combine(punch_in.date(), DAY_SHIFT_START)
+
+    if punch_in <= shift_start:
+        return 0
+
+    return minutes_between(shift_start, punch_in)
+
+
+def get_worked_minutes(row, prefix="att"):
+    hours_worked = int(number_value(row_get(row, f"{prefix}HoursWorked")))
+    if hours_worked > 0:
+        return hours_worked
+
+    punch_in = safe_datetime(row_get(row, f"{prefix}In1"))
+    out_time = safe_datetime(row_get(row, f"{prefix}Out2")) or safe_datetime(row_get(row, f"{prefix}Out1"))
+    return minutes_between(punch_in, out_time)
+
+
+def has_any_punch(row, prefix="att"):
+    return bool(
+        row_get(row, f"{prefix}In1") or
+        row_get(row, f"{prefix}In2") or
+        row_get(row, f"{prefix}Out1") or
+        row_get(row, f"{prefix}Out2")
+    )
+
+
+def get_fe_status(row, prefix="att"):
+    """
+    Final rule:
+    - ABSENT only when no punch in/out exists.
+    - If punch exists, do not mark absent just because raw STATUS says A.
+    - Late/Gate Pass/Half Day are based on shift 08:30 and attendance gap.
+    """
+    raw_status = clean_sql_value(row_get(row, f"{prefix}Status")).upper()
+    leave_value = number_value(row_get(row, f"{prefix}LeaveValue"))
+    holiday_value = number_value(row_get(row, f"{prefix}HolidayValue"))
+    wo_value = number_value(row_get(row, f"{prefix}WoValue"))
+
+    punch_available = has_any_punch(row, prefix)
+
+    if not punch_available:
+        if leave_value > 0 or raw_status.startswith("L"):
+            return "ON LEAVE"
+        if holiday_value > 0 or raw_status in ["HLD", "H", "HOLIDAY"]:
+            return "HOLIDAY"
+        if wo_value > 0 or raw_status in ["WO", "WEEK OFF", "WEEKOFF"]:
+            return "WEEK OFF"
+        return "ABSENT"
+
+    late_minutes = get_late_minutes(row, prefix)
+    worked_minutes = get_worked_minutes(row, prefix)
+
+    if worked_minutes and worked_minutes < HALF_DAY_MIN_WORK_MINUTES:
+        return "HALF DAY"
+
+    if late_minutes > GATE_PASS_LIMIT_MINUTES:
+        return "HALF DAY"
+
+    if late_minutes > LATE_GRACE_MINUTES:
+        return "GATE PASS"
+
+    if late_minutes > 0:
+        return "LATE"
+
+    return "PRESENT"
+
+
+def get_status_type(status):
+    value = clean_sql_value(status).upper()
+    if value == "PRESENT":
+        return "success"
+    if value in ["LATE", "GATE PASS", "HALF DAY"]:
+        return "warning"
+    if value == "ABSENT":
+        return "danger"
+    return "info"
+
+
+def get_status_remark(row, prefix="att"):
+    status = get_fe_status(row, prefix)
+    late_minutes = get_late_minutes(row, prefix)
+
+    if status == "LATE" and late_minutes:
+        return f"Late {late_minutes}m"
+    if status == "GATE PASS" and late_minutes:
+        return f"Gate pass {late_minutes}m"
+    if status == "HALF DAY" and late_minutes:
+        return f"Half day gap {late_minutes}m"
+    return None
+
+
+def get_fe_shift(shift_start, employee_type="Worker"):
+    if employee_type == "Employee":
+        return "Day"
+    if not shift_start:
+        return "Day"
+    try:
+        hour = shift_start.hour
+        if 5 <= hour < 18:
+            return "Day"
+        return "Night"
+    except Exception:
+        return "Day"
+
+
+def get_today_dt():
+    return datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def get_month_range(selected_date):
+    selected_dt = datetime.strptime(selected_date, "%Y-%m-%d")
+    today_dt = get_today_dt()
+    if selected_dt > today_dt:
+        selected_dt = today_dt
+
+    month_start = selected_dt.replace(day=1)
+    if month_start.month == 12:
+        next_month = month_start.replace(year=month_start.year + 1, month=1)
+    else:
+        next_month = month_start.replace(month=month_start.month + 1)
+
+    return selected_dt, month_start, next_month, today_dt
+
+
+def build_full_employee_row(row):
+    paycode = clean_sql_value(row_get(row, "PAYCODE"))
+    company_code = clean_sql_value(row_get(row, "COMPANYCODE")).zfill(3)
+
+    employee_type, worker_category, vendor_name = classify_employee_type_and_vendor(paycode, company_code)
+    department_name = get_department_name(row_get(row, "DEPARTMENTCODE"))
+    display_designation = get_display_designation(row, employee_type, department_name)
+
+    active = clean_sql_value(row_get(row, "ACTIVE")).upper()
+    is_active = active == "Y"
+
+    shift_start = row_get(row, "attShiftStartTime")
+    shift_end = row_get(row, "attShiftEndTime")
+    out_time = row_get(row, "attOut2") or row_get(row, "attOut1")
+
+    if employee_type == "Employee":
+        shift_start_label = "8:30 AM"
+        shift_end_label = "5:30 PM"
+    else:
+        shift_start_label = format_att_time(shift_start)
+        shift_end_label = format_att_time(shift_end)
+
+    month_total_days = int(number_value(row_get(row, "monthTotalDays")))
+    month_present_days = int(number_value(row_get(row, "monthPresentDays")))
+    month_absent_days = int(number_value(row_get(row, "monthAbsentDays")))
+    month_leave_days = int(number_value(row_get(row, "monthLeaveDays")))
+    month_holiday_days = int(number_value(row_get(row, "monthHolidayDays")))
+    month_weekoff_days = int(number_value(row_get(row, "monthWeekOffDays")))
+    month_late_days = int(number_value(row_get(row, "monthLateDays")))
+    month_gate_pass_days = int(number_value(row_get(row, "monthGatePassDays")))
+    month_half_days = int(number_value(row_get(row, "monthHalfDays")))
+    month_worked_minutes = int(number_value(row_get(row, "monthTotalWorkedMinutes")))
+    month_percentage = round((month_present_days / month_total_days) * 100, 1) if month_total_days else 0
+
+    life_total_days = int(number_value(row_get(row, "lifeTotalDays")))
+    life_present_days = int(number_value(row_get(row, "lifePresentDays")))
+    life_absent_days = int(number_value(row_get(row, "lifeAbsentDays")))
+    life_percentage = round((life_present_days / life_total_days) * 100, 1) if life_total_days else 0
+
+    status = get_fe_status(row, "att")
+
+    return {
+        "id": paycode,
+        "paycode": paycode,
+        "name": clean_sql_value(row_get(row, "EMPNAME")),
+        "designation": display_designation,
+        "department": department_name,
+        "departmentCode": clean_sql_value(row_get(row, "DEPARTMENTCODE")).zfill(3),
+        "employeeType": employee_type,
+        "typeDisplay": "Office Employee" if employee_type == "Employee" else worker_category,
+        "workerCategory": worker_category,
+        "vendorName": vendor_name,
+        "plant": company_code_to_plant(company_code),
+        "companyCode": company_code,
+        "shift": get_fe_shift(shift_start, employee_type),
+        "inTime": format_att_time(row_get(row, "attIn1")),
+        "outTime": format_att_time(out_time),
+        "workingHours": minutes_to_working_hours(row_get(row, "attHoursWorked")),
+        "status": status,
+        "attendancePercentage": month_percentage,
+        "avatar": "/default-avatar.png",
+        "active": active,
+        "isActive": is_active,
+        "activeText": "Active" if is_active else "Inactive",
+        "cardNo": clean_sql_value(row_get(row, "PRESENTCARDNO")),
+        "dateOfJoining": format_att_date(row_get(row, "DateOFJOIN")),
+        "joiningDate": format_att_date(row_get(row, "DateOFJOIN")),
+        "dateOfBirth": format_att_date(row_get(row, "DateOFBIRTH")),
+        "guardianName": clean_sql_value(row_get(row, "GUARDIANNAME")),
+        "gender": clean_sql_value(row_get(row, "SEX")),
+        "qualification": clean_sql_value(row_get(row, "QUALIFICATION")),
+        "address": clean_sql_value(row_get(row, "ADDRESS1")),
+        "address2": clean_sql_value(row_get(row, "ADDRESS2")),
+        "telephone": clean_sql_value(row_get(row, "TELEPHONE1")),
+        "mobile": clean_sql_value(row_get(row, "MobileNo")),
+        "email": clean_sql_value(row_get(row, "Email")) or clean_sql_value(row_get(row, "E_MAIL1")),
+        "leavingDate": format_att_date(row_get(row, "Leavingdate")),
+        "todayAttendance": {
+            "date": format_att_date(row_get(row, "attDateOffice")),
+            "shiftStart": shift_start_label,
+            "shiftEnd": shift_end_label,
+            "punchIn": format_att_time(row_get(row, "attIn1")),
+            "punchOut": format_att_time(out_time),
+            "hoursWorked": minutes_to_working_hours(row_get(row, "attHoursWorked")),
+            "rawStatus": clean_sql_value(row_get(row, "attStatus")),
+            "status": status,
+            "lateMinutes": get_late_minutes(row, "att"),
+            "remark": get_status_remark(row, "att"),
+        },
+        "monthlyAttendance": {
+            "totalDays": month_total_days,
+            "presentDays": month_present_days,
+            "absentDays": month_absent_days,
+            "leaveDays": month_leave_days,
+            "holidayDays": month_holiday_days,
+            "weekOffDays": month_weekoff_days,
+            "lateDays": month_late_days,
+            "gatePassDays": month_gate_pass_days,
+            "halfDays": month_half_days,
+            "totalWorking": minutes_to_total_hours(month_worked_minutes),
+            "attendancePercentage": month_percentage,
+        },
+        "attendanceFromJoining": {
+            "totalDays": life_total_days,
+            "presentDays": life_present_days,
+            "absentDays": life_absent_days,
+            "attendancePercentage": life_percentage,
+        },
+        "rawMaster": get_raw_master(row),
+    }
+
+
+def summarize_history_records(records):
+    total = len(records)
+    present = late = gate_pass = half_day = absent = leave = holiday = weekoff = 0
+    total_worked = 0
+
+    for row in records:
+        status = get_fe_status(row, "att")
+        total_worked += get_worked_minutes(row, "att")
+
+        if status == "PRESENT":
+            present += 1
+        elif status == "LATE":
+            late += 1
+            present += 1
+        elif status == "GATE PASS":
+            gate_pass += 1
+            present += 1
+        elif status == "HALF DAY":
+            half_day += 1
+            present += 0.5
+        elif status == "ABSENT":
+            absent += 1
+        elif status == "ON LEAVE":
+            leave += 1
+        elif status == "HOLIDAY":
+            holiday += 1
+        elif status == "WEEK OFF":
+            weekoff += 1
+
+    percentage = round((present / total) * 100, 1) if total else 0
+
+    return {
+        "totalDays": total,
+        "presentDays": int(present) if float(present).is_integer() else present,
+        "absentDays": absent,
+        "leaveDays": leave,
+        "holidayDays": holiday,
+        "weekOffDays": weekoff,
+        "lateDays": late,
+        "gatePassDays": gate_pass,
+        "halfDays": half_day,
+        "totalWorking": minutes_to_total_hours(total_worked),
+        "attendancePercentage": percentage,
+    }
+
+
+def records_to_history(records):
+    history = []
+    for row in records:
+        out_time = row_get(row, "attOut2") or row_get(row, "attOut1")
+        status = get_fe_status(row, "att")
+        history.append({
+            "date": format_att_date(row_get(row, "attDateOffice")),
+            "displayDate": format_att_date(row_get(row, "attDateOffice")),
+            "inTime": None if not row_get(row, "attIn1") else format_att_time(row_get(row, "attIn1")),
+            "outTime": None if not out_time else format_att_time(out_time),
+            "hours": None if not get_worked_minutes(row, "att") else minutes_to_working_hours(get_worked_minutes(row, "att")),
+            "late": get_status_remark(row, "att"),
+            "lateMinutes": get_late_minutes(row, "att"),
+            "status": status,
+            "type": get_status_type(status),
+        })
+    return history
+
+
+def get_employee_month_records(paycode, month_start, next_month, today_dt):
+    month_end = min(next_month, today_dt + timedelta(days=1))
+
+    with connections["sqlserver_db"].cursor() as cursor:
+        cursor.execute("""
+            SELECT
+                DateOFFICE AS attDateOffice,
+                SHIFTSTARTTIME AS attShiftStartTime,
+                SHIFTENDTIME AS attShiftEndTime,
+                HOURSWORKED AS attHoursWorked,
+                STATUS AS attStatus,
+                SHIFT AS attShift,
+                SHIFTATTENDED AS attShiftAttended,
+                IN1 AS attIn1,
+                IN2 AS attIn2,
+                OUT1 AS attOut1,
+                OUT2 AS attOut2,
+                PRESENTVALUE AS attPresentValue,
+                ABSENTVALUE AS attAbsentValue,
+                LEAVEVALUE AS attLeaveValue,
+                HOLIDAY_VALUE AS attHolidayValue,
+                WO_VALUE AS attWoValue,
+                LATEARRIVAL AS attLateArrival
+            FROM dbo.tblTimeRegister
+            WHERE LTRIM(RTRIM(PAYCODE)) = %s
+              AND DateOFFICE >= %s
+              AND DateOFFICE < %s
+            ORDER BY DateOFFICE
+        """, [paycode, month_start.strftime("%Y-%m-%d"), month_end.strftime("%Y-%m-%d")])
+        columns = [col[0] for col in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+
+# ==========================================================
+# GET /api/attendance/
+# ==========================================================
+@api_view(["GET"])
+def attendance_dashboard(request):
+    try:
+        plant = request.GET.get("plant", "Plant 1")
+        employee_type = request.GET.get("employee_type", "Worker")
+        shift_filter = request.GET.get("shift", "Day")
+        selected_date = request.GET.get("date") or datetime.now().strftime("%Y-%m-%d")
+        active_filter = request.GET.get("active", "Y")
+
+        company_code = plant_to_company_code(plant)
+        if not company_code:
+            return Response({"success": False, "message": "Invalid plant", "employees": [], "summary": {}}, status=400)
+
+        selected_dt, month_start, next_month, today_dt = get_month_range(selected_date)
+        next_day = selected_dt + timedelta(days=1)
+        month_end = min(next_month, today_dt + timedelta(days=1))
+        selected_date = selected_dt.strftime("%Y-%m-%d")
+
+        where_parts = ["e.COMPANYCODE = %s"]
+        where_params = [company_code]
+
+        if clean_sql_value(active_filter).upper() in ["Y", "N"]:
+            where_parts.append("e.ACTIVE = %s")
+            where_params.append(clean_sql_value(active_filter).upper())
+
+        where_sql = " AND ".join(where_parts)
+
+        query = f"""
+            ;WITH life_summary AS (
+                SELECT
+                    LTRIM(RTRIM(PAYCODE)) AS lifePaycode,
+                    COUNT(*) AS lifeTotalDays,
+                    SUM(CASE WHEN ISNULL(PRESENTVALUE, 0) > 0 THEN 1 ELSE 0 END) AS lifePresentDays,
+                    SUM(CASE WHEN ISNULL(ABSENTVALUE, 0) > 0 THEN 1 ELSE 0 END) AS lifeAbsentDays
+                FROM dbo.tblTimeRegister
+                WHERE DateOFFICE <= %s
+                GROUP BY LTRIM(RTRIM(PAYCODE))
+            ),
+            month_summary AS (
+                SELECT
+                    LTRIM(RTRIM(PAYCODE)) AS monthPaycode,
+                    COUNT(*) AS monthTotalDays,
+                    SUM(CASE WHEN ISNULL(PRESENTVALUE, 0) > 0 THEN 1 ELSE 0 END) AS monthPresentDays,
+                    SUM(CASE WHEN ISNULL(ABSENTVALUE, 0) > 0 THEN 1 ELSE 0 END) AS monthAbsentDays,
+                    SUM(CASE WHEN ISNULL(LEAVEVALUE, 0) > 0 THEN 1 ELSE 0 END) AS monthLeaveDays,
+                    SUM(CASE WHEN ISNULL(HOLIDAY_VALUE, 0) > 0 THEN 1 ELSE 0 END) AS monthHolidayDays,
+                    SUM(CASE WHEN ISNULL(WO_VALUE, 0) > 0 THEN 1 ELSE 0 END) AS monthWeekOffDays,
+                    SUM(CASE WHEN ISNULL(LATEARRIVAL, 0) > 0 AND ISNULL(LATEARRIVAL, 0) <= 10 THEN 1 ELSE 0 END) AS monthLateDays,
+                    SUM(CASE WHEN ISNULL(LATEARRIVAL, 0) > 10 AND ISNULL(LATEARRIVAL, 0) <= 120 THEN 1 ELSE 0 END) AS monthGatePassDays,
+                    SUM(CASE WHEN ISNULL(LATEARRIVAL, 0) > 120 THEN 1 ELSE 0 END) AS monthHalfDays,
+                    SUM(ISNULL(HOURSWORKED, 0)) AS monthTotalWorkedMinutes
+                FROM dbo.tblTimeRegister
+                WHERE DateOFFICE >= %s
+                  AND DateOFFICE < %s
+                GROUP BY LTRIM(RTRIM(PAYCODE))
+            )
+            SELECT
+                e.*,
+                tr.DateOFFICE AS attDateOffice,
+                tr.SHIFTSTARTTIME AS attShiftStartTime,
+                tr.SHIFTENDTIME AS attShiftEndTime,
+                tr.HOURSWORKED AS attHoursWorked,
+                tr.STATUS AS attStatus,
+                tr.SHIFT AS attShift,
+                tr.SHIFTATTENDED AS attShiftAttended,
+                tr.IN1 AS attIn1,
+                tr.IN2 AS attIn2,
+                tr.OUT1 AS attOut1,
+                tr.OUT2 AS attOut2,
+                tr.PRESENTVALUE AS attPresentValue,
+                tr.ABSENTVALUE AS attAbsentValue,
+                tr.LEAVEVALUE AS attLeaveValue,
+                tr.HOLIDAY_VALUE AS attHolidayValue,
+                tr.WO_VALUE AS attWoValue,
+                tr.LATEARRIVAL AS attLateArrival,
+                ISNULL(ls.lifeTotalDays, 0) AS lifeTotalDays,
+                ISNULL(ls.lifePresentDays, 0) AS lifePresentDays,
+                ISNULL(ls.lifeAbsentDays, 0) AS lifeAbsentDays,
+                ISNULL(ms.monthTotalDays, 0) AS monthTotalDays,
+                ISNULL(ms.monthPresentDays, 0) AS monthPresentDays,
+                ISNULL(ms.monthAbsentDays, 0) AS monthAbsentDays,
+                ISNULL(ms.monthLeaveDays, 0) AS monthLeaveDays,
+                ISNULL(ms.monthHolidayDays, 0) AS monthHolidayDays,
+                ISNULL(ms.monthWeekOffDays, 0) AS monthWeekOffDays,
+                ISNULL(ms.monthLateDays, 0) AS monthLateDays,
+                ISNULL(ms.monthGatePassDays, 0) AS monthGatePassDays,
+                ISNULL(ms.monthHalfDays, 0) AS monthHalfDays,
+                ISNULL(ms.monthTotalWorkedMinutes, 0) AS monthTotalWorkedMinutes
+            FROM dbo.TblEmployee e
+            LEFT JOIN dbo.tblTimeRegister tr
+                ON LTRIM(RTRIM(e.PAYCODE)) = LTRIM(RTRIM(tr.PAYCODE))
+               AND tr.DateOFFICE >= %s
+               AND tr.DateOFFICE < %s
+            LEFT JOIN life_summary ls
+                ON LTRIM(RTRIM(e.PAYCODE)) = ls.lifePaycode
+            LEFT JOIN month_summary ms
+                ON LTRIM(RTRIM(e.PAYCODE)) = ms.monthPaycode
+            WHERE {where_sql}
+            ORDER BY e.EMPNAME
+        """
+
+        params = [today_dt.strftime("%Y-%m-%d"), month_start.strftime("%Y-%m-%d"), month_end.strftime("%Y-%m-%d"), selected_dt.strftime("%Y-%m-%d"), next_day.strftime("%Y-%m-%d"), *where_params]
+
+        with connections["sqlserver_db"].cursor() as cursor:
+            cursor.execute(query, params)
+            columns = [col[0] for col in cursor.description]
+            rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+        employees = []
+        for row in rows:
+            emp = build_full_employee_row(row)
+            if emp["employeeType"] != employee_type:
+                continue
+            if emp["shift"] != shift_filter:
+                continue
+            employees.append(emp)
+
+        summary = {
+            "total": len(employees),
+            "present": len([x for x in employees if x["status"] == "PRESENT"]),
+            "absent": len([x for x in employees if x["status"] == "ABSENT"]),
+            "leave": len([x for x in employees if x["status"] == "ON LEAVE"]),
+            "late": len([x for x in employees if x["status"] in ["LATE", "GATE PASS", "HALF DAY"]]),
+            "active": len([x for x in employees if x["isActive"]]),
+            "inactive": len([x for x in employees if not x["isActive"]]),
+        }
+
+        return Response({"success": True, "date": selected_date, "month": month_start.strftime("%Y-%m"), "plant": plant, "employee_type": employee_type, "shift": shift_filter, "active_filter": active_filter, "summary": summary, "employees": employees})
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return Response({"success": False, "message": str(e), "employees": [], "summary": {"total": 0, "present": 0, "absent": 0, "leave": 0, "late": 0, "active": 0, "inactive": 0}}, status=500)
+
+
+# ==========================================================
+# GET /api/attendance/employees-master/
+# ==========================================================
+@api_view(["GET"])
+def attendance_employee_master(request):
+    # This endpoint uses the same dashboard logic but without shift/date attendance row requirement.
+    # Keep previous employees-master API if already working. Dashboard/profile/calendar are the important updated APIs.
+    try:
+        plant = request.GET.get("plant", "")
+        employee_type = request.GET.get("employee_type", "")
+        active_filter = request.GET.get("active", "all")
+        selected_date = request.GET.get("date") or datetime.now().strftime("%Y-%m-%d")
+        selected_dt, month_start, next_month, today_dt = get_month_range(selected_date)
+        month_end = min(next_month, today_dt + timedelta(days=1))
+
+        where_parts = ["1 = 1"]
+        where_params = []
+        company_code = plant_to_company_code(plant)
+        if company_code:
+            where_parts.append("e.COMPANYCODE = %s")
+            where_params.append(company_code)
+        if clean_sql_value(active_filter).upper() in ["Y", "N"]:
+            where_parts.append("e.ACTIVE = %s")
+            where_params.append(clean_sql_value(active_filter).upper())
+        where_sql = " AND ".join(where_parts)
+
+        query = f"""
+            ;WITH life_summary AS (
+                SELECT LTRIM(RTRIM(PAYCODE)) AS lifePaycode, COUNT(*) AS lifeTotalDays,
+                       SUM(CASE WHEN ISNULL(PRESENTVALUE, 0) > 0 THEN 1 ELSE 0 END) AS lifePresentDays,
+                       SUM(CASE WHEN ISNULL(ABSENTVALUE, 0) > 0 THEN 1 ELSE 0 END) AS lifeAbsentDays
+                FROM dbo.tblTimeRegister
+                WHERE DateOFFICE <= %s
+                GROUP BY LTRIM(RTRIM(PAYCODE))
+            ),
+            month_summary AS (
+                SELECT LTRIM(RTRIM(PAYCODE)) AS monthPaycode, COUNT(*) AS monthTotalDays,
+                       SUM(CASE WHEN ISNULL(PRESENTVALUE, 0) > 0 THEN 1 ELSE 0 END) AS monthPresentDays,
+                       SUM(CASE WHEN ISNULL(ABSENTVALUE, 0) > 0 THEN 1 ELSE 0 END) AS monthAbsentDays,
+                       SUM(CASE WHEN ISNULL(LEAVEVALUE, 0) > 0 THEN 1 ELSE 0 END) AS monthLeaveDays,
+                       SUM(CASE WHEN ISNULL(HOLIDAY_VALUE, 0) > 0 THEN 1 ELSE 0 END) AS monthHolidayDays,
+                       SUM(CASE WHEN ISNULL(WO_VALUE, 0) > 0 THEN 1 ELSE 0 END) AS monthWeekOffDays,
+                       SUM(CASE WHEN ISNULL(LATEARRIVAL, 0) > 0 AND ISNULL(LATEARRIVAL, 0) <= 10 THEN 1 ELSE 0 END) AS monthLateDays,
+                       SUM(CASE WHEN ISNULL(LATEARRIVAL, 0) > 10 AND ISNULL(LATEARRIVAL, 0) <= 120 THEN 1 ELSE 0 END) AS monthGatePassDays,
+                       SUM(CASE WHEN ISNULL(LATEARRIVAL, 0) > 120 THEN 1 ELSE 0 END) AS monthHalfDays,
+                       SUM(ISNULL(HOURSWORKED, 0)) AS monthTotalWorkedMinutes
+                FROM dbo.tblTimeRegister
+                WHERE DateOFFICE >= %s AND DateOFFICE < %s
+                GROUP BY LTRIM(RTRIM(PAYCODE))
+            )
+            SELECT e.*, NULL AS attDateOffice, NULL AS attShiftStartTime, NULL AS attShiftEndTime, NULL AS attHoursWorked,
+                   NULL AS attStatus, NULL AS attShift, NULL AS attShiftAttended, NULL AS attIn1, NULL AS attIn2,
+                   NULL AS attOut1, NULL AS attOut2, 0 AS attPresentValue, 0 AS attAbsentValue, 0 AS attLeaveValue,
+                   0 AS attHolidayValue, 0 AS attWoValue, 0 AS attLateArrival,
+                   ISNULL(ls.lifeTotalDays, 0) AS lifeTotalDays, ISNULL(ls.lifePresentDays, 0) AS lifePresentDays,
+                   ISNULL(ls.lifeAbsentDays, 0) AS lifeAbsentDays,
+                   ISNULL(ms.monthTotalDays, 0) AS monthTotalDays, ISNULL(ms.monthPresentDays, 0) AS monthPresentDays,
+                   ISNULL(ms.monthAbsentDays, 0) AS monthAbsentDays, ISNULL(ms.monthLeaveDays, 0) AS monthLeaveDays,
+                   ISNULL(ms.monthHolidayDays, 0) AS monthHolidayDays, ISNULL(ms.monthWeekOffDays, 0) AS monthWeekOffDays,
+                   ISNULL(ms.monthLateDays, 0) AS monthLateDays, ISNULL(ms.monthGatePassDays, 0) AS monthGatePassDays,
+                   ISNULL(ms.monthHalfDays, 0) AS monthHalfDays, ISNULL(ms.monthTotalWorkedMinutes, 0) AS monthTotalWorkedMinutes
+            FROM dbo.TblEmployee e
+            LEFT JOIN life_summary ls ON LTRIM(RTRIM(e.PAYCODE)) = ls.lifePaycode
+            LEFT JOIN month_summary ms ON LTRIM(RTRIM(e.PAYCODE)) = ms.monthPaycode
+            WHERE {where_sql}
+            ORDER BY e.COMPANYCODE, e.EMPNAME
+        """
+        params = [today_dt.strftime("%Y-%m-%d"), month_start.strftime("%Y-%m-%d"), month_end.strftime("%Y-%m-%d"), *where_params]
+        with connections["sqlserver_db"].cursor() as cursor:
+            cursor.execute(query, params)
+            columns = [col[0] for col in cursor.description]
+            rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+        employees = []
+        for row in rows:
+            emp = build_full_employee_row(row)
+            if employee_type and emp["employeeType"] != employee_type:
+                continue
+            employees.append(emp)
+
+        return Response({"success": True, "employees": employees, "summary": {"total": len(employees), "active": len([x for x in employees if x["isActive"]]), "inactive": len([x for x in employees if not x["isActive"]])}})
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return Response({"success": False, "message": str(e), "employees": []}, status=500)
+
+
+# ==========================================================
+# GET /api/attendance/employees/<paycode>/
+# ==========================================================
+@api_view(["GET"])
+def attendance_employee_profile(request, paycode):
+    try:
+        selected_date = request.GET.get("date") or datetime.now().strftime("%Y-%m-%d")
+        selected_dt, month_start, next_month, today_dt = get_month_range(selected_date)
+        next_day = selected_dt + timedelta(days=1)
+        month_end = min(next_month, today_dt + timedelta(days=1))
+
+        query = """
+            ;WITH life_summary AS (
+                SELECT LTRIM(RTRIM(PAYCODE)) AS lifePaycode, COUNT(*) AS lifeTotalDays,
+                       SUM(CASE WHEN ISNULL(PRESENTVALUE, 0) > 0 THEN 1 ELSE 0 END) AS lifePresentDays,
+                       SUM(CASE WHEN ISNULL(ABSENTVALUE, 0) > 0 THEN 1 ELSE 0 END) AS lifeAbsentDays
+                FROM dbo.tblTimeRegister
+                WHERE DateOFFICE <= %s
+                GROUP BY LTRIM(RTRIM(PAYCODE))
+            )
+            SELECT e.*,
+                   tr.DateOFFICE AS attDateOffice, tr.SHIFTSTARTTIME AS attShiftStartTime, tr.SHIFTENDTIME AS attShiftEndTime,
+                   tr.HOURSWORKED AS attHoursWorked, tr.STATUS AS attStatus, tr.SHIFT AS attShift, tr.SHIFTATTENDED AS attShiftAttended,
+                   tr.IN1 AS attIn1, tr.IN2 AS attIn2, tr.OUT1 AS attOut1, tr.OUT2 AS attOut2,
+                   tr.PRESENTVALUE AS attPresentValue, tr.ABSENTVALUE AS attAbsentValue, tr.LEAVEVALUE AS attLeaveValue,
+                   tr.HOLIDAY_VALUE AS attHolidayValue, tr.WO_VALUE AS attWoValue, tr.LATEARRIVAL AS attLateArrival,
+                   ISNULL(ls.lifeTotalDays, 0) AS lifeTotalDays, ISNULL(ls.lifePresentDays, 0) AS lifePresentDays,
+                   ISNULL(ls.lifeAbsentDays, 0) AS lifeAbsentDays,
+                   0 AS monthTotalDays, 0 AS monthPresentDays, 0 AS monthAbsentDays, 0 AS monthLeaveDays,
+                   0 AS monthHolidayDays, 0 AS monthWeekOffDays, 0 AS monthLateDays, 0 AS monthGatePassDays,
+                   0 AS monthHalfDays, 0 AS monthTotalWorkedMinutes
+            FROM dbo.TblEmployee e
+            LEFT JOIN dbo.tblTimeRegister tr
+                ON LTRIM(RTRIM(e.PAYCODE)) = LTRIM(RTRIM(tr.PAYCODE))
+               AND tr.DateOFFICE >= %s
+               AND tr.DateOFFICE < %s
+            LEFT JOIN life_summary ls ON LTRIM(RTRIM(e.PAYCODE)) = ls.lifePaycode
+            WHERE LTRIM(RTRIM(e.PAYCODE)) = %s
+        """
+
+        params = [today_dt.strftime("%Y-%m-%d"), selected_dt.strftime("%Y-%m-%d"), next_day.strftime("%Y-%m-%d"), paycode]
+        with connections["sqlserver_db"].cursor() as cursor:
+            cursor.execute(query, params)
+            columns = [col[0] for col in cursor.description]
+            row = cursor.fetchone()
+
+        if not row:
+            return Response({"success": False, "message": "Employee not found"}, status=404)
+
+        emp = build_full_employee_row(dict(zip(columns, row)))
+        month_records = get_employee_month_records(paycode, month_start, next_month, today_dt)
+        month_summary = summarize_history_records(month_records)
+        month_history = records_to_history(month_records)
+        today_status = emp["todayAttendance"]["status"]
+
+        emp["monthlyAttendance"] = month_summary
+        emp["attendancePercentage"] = month_summary["attendancePercentage"]
+
+        profile = {
+            **emp,
+            "manager": "--",
+            "shiftTiming": "8:30 AM - 5:30 PM" if emp["employeeType"] == "Employee" else f"{emp['todayAttendance']['shiftStart']} - {emp['todayAttendance']['shiftEnd']}",
+            "today": {
+                "punchIn": None if emp["inTime"] == "--" else emp["inTime"],
+                "punchOut": None if emp["outTime"] == "--" else emp["outTime"],
+                "workingHours": None if emp["workingHours"] == "--" else emp["workingHours"],
+                "status": today_status,
+                "shiftStart": "8:30 AM" if emp["employeeType"] == "Employee" else emp["todayAttendance"]["shiftStart"],
+                "shiftEnd": "5:30 PM" if emp["employeeType"] == "Employee" else emp["todayAttendance"]["shiftEnd"],
+            },
+            "machineWorking": None if emp["employeeType"] == "Employee" else None,
+            "attendanceHealth": {
+                "score": month_summary["attendancePercentage"],
+                "totalDays": month_summary["totalDays"],
+                "presentDays": month_summary["presentDays"],
+                "lateArrivals": month_summary["lateDays"],
+                "gatePassDays": month_summary["gatePassDays"],
+                "halfDays": month_summary["halfDays"],
+                "absentDays": month_summary["absentDays"],
+                "previousMonthDifference": 0,
+            },
+            "history": month_history,
+            "shiftInformation": {
+                "shift": emp["shift"],
+                "timing": "8:30 AM - 5:30 PM" if emp["employeeType"] == "Employee" else f"{emp['todayAttendance']['shiftStart']} - {emp['todayAttendance']['shiftEnd']}",
+                "breakTime": "Lunch included",
+                "gracePeriod": f"{LATE_GRACE_MINUTES} min",
+                "weeklyOff": "Sunday",
+                "fullDayMinimum": "As per HR rule",
+                "halfDayMinimum": "More than 2 hours gap / low working hours",
+                "nextShift": {"time": "8:30 AM" if emp["employeeType"] == "Employee" else "--", "date": "Next working day"},
+            },
+            "recentActivity": [
+                {"date": "Selected Date", "text": f"Attendance status: {today_status}", "type": get_status_type(today_status)},
+                {"date": "Selected Date", "text": emp["todayAttendance"].get("remark") or "Punch data checked", "type": get_status_type(today_status)},
+            ],
+        }
+
+        return Response(profile)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return Response({"success": False, "message": str(e)}, status=500)
+
+
+# ==========================================================
+# GET /api/attendance/employees/<paycode>/calendar/
+# ==========================================================
+@api_view(["GET"])
+def attendance_employee_calendar(request, paycode):
+    try:
+        year = int(request.GET.get("year"))
+        month = int(request.GET.get("month"))
+        start_date = datetime(year, month, 1)
+        if month == 12:
+            end_date = datetime(year + 1, 1, 1)
+        else:
+            end_date = datetime(year, month + 1, 1)
+
+        today_dt = get_today_dt()
+        rows = get_employee_month_records(paycode, start_date, end_date, today_dt)
+        records = []
+
+        for row in rows:
+            out_time = row_get(row, "attOut2") or row_get(row, "attOut1")
+            worked_minutes = get_worked_minutes(row, "att")
+            records.append({
+                "date": format_api_date(row_get(row, "attDateOffice")),
+                "displayDate": format_att_date(row_get(row, "attDateOffice")),
+                "status": get_fe_status(row, "att"),
+                "punchIn": None if not row_get(row, "attIn1") else format_att_time(row_get(row, "attIn1")),
+                "punchOut": None if not out_time else format_att_time(out_time),
+                "workingHours": None if not worked_minutes else minutes_to_working_hours(worked_minutes),
+                "lateMinutes": get_late_minutes(row, "att"),
+                "remark": get_status_remark(row, "att"),
+            })
+
+        return Response(records)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return Response({"success": False, "message": str(e), "records": []}, status=500)
