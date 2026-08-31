@@ -27,6 +27,7 @@ from django.views.decorators.http import require_http_methods
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
 import pytz
+import calendar
 import traceback
 from django.shortcuts import get_object_or_404
 
@@ -5908,18 +5909,118 @@ class CustomLoginView(TokenObtainPairView):
     serializer_class = CustomTokenObtainPairSerializer
 
 
-# Helper function table name validate karne ke liye
-def get_plant_table(plant_param):
-    if plant_param == "plant2":
-        return "plant2_data", 49
-    return "plant1_data", 57
+import calendar
+from datetime import datetime, timedelta
+from django.db import connection
+from django.views.decorators.cache import never_cache
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
 
+# ==========================================
+# HELPER FUNCTIONS
+# ==========================================
+
+def get_plant_table(plant_code):
+    """Returns the database table name and total machine count for the given plant."""
+    if plant_code == "plant2":
+        return "live_data.plant2_data", 49
+    # Default to Plant 1
+    return "live_data.plant1_data", 57
+
+def get_plant_location_name(plant_code):
+    return "Plant 1" if plant_code == "plant1" else "Plant 2"
+
+# UPDATED: Added shift parameter to handle specific shift timings
+def get_time_boundaries(year, month, period, target_date_str=None, shift="fullday"):
+    now = datetime.now()
+    
+    # Agar frontend se koi date aayi hai to use base_date manein, warna aaj ki date lein
+    if target_date_str:
+        try:
+            base_date = datetime.strptime(target_date_str, "%Y-%m-%d")
+            # FIX: Override year and month with the target date's year/month
+            year = base_date.year
+            month = base_date.month
+        except ValueError:
+            base_date = now
+    else:
+        base_date = now
+
+    if period == "today":
+        group_by = "EXTRACT(HOUR FROM timestamp)"
+        ideal_group_by = "EXTRACT(HOUR FROM ideal_start_at)"
+        
+        # SHIFT WISE TIMING LOGIC
+        if shift == "shiftA":
+            # Shift A: 08:30 AM to 08:00 PM (20:00)
+            start_date = base_date.replace(hour=8, minute=30, second=0, microsecond=0)
+            end_date = base_date.replace(hour=20, minute=0, second=0, microsecond=0)
+        elif shift == "shiftB":
+            # Shift B: 08:30 PM (20:30) to 08:00 AM Next Day
+            start_date = base_date.replace(hour=20, minute=30, second=0, microsecond=0)
+            end_date = (base_date + timedelta(days=1)).replace(hour=8, minute=0, second=0, microsecond=0)
+        else:
+            # Full Day: 00:00 to 24:00
+            start_date = base_date.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_date = start_date + timedelta(days=1)
+            
+    elif period == "weekly":
+        # Specific Date ko hafte ka aakhri din maan kar pichle 7 din ka data
+        end_date = base_date.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        start_date = end_date - timedelta(days=7)
+        group_by = "EXTRACT(DAY FROM timestamp)"
+        ideal_group_by = "EXTRACT(DAY FROM ideal_start_at)"
+    elif period == "yearly":
+        # Pure saal ka data - Monthly grouping
+        start_date = datetime(year, 1, 1)
+        end_date = datetime(year + 1, 1, 1)
+        group_by = "EXTRACT(MONTH FROM timestamp)"
+        ideal_group_by = "EXTRACT(MONTH FROM ideal_start_at)"
+    else: # default 'monthly'
+        # Current month ka data - Daily grouping
+        start_date = datetime(year, month, 1)
+        if month == 12:
+            end_date = datetime(year + 1, 1, 1)
+        else:
+            end_date = datetime(year, month + 1, 1)
+        group_by = "EXTRACT(DAY FROM timestamp)"
+        ideal_group_by = "EXTRACT(DAY FROM ideal_start_at)"
+        
+    return start_date, end_date, group_by, ideal_group_by
+
+# UPDATED: Added shift parameter to return only required hours
+def generate_expected_keys(period, start_date, end_date, year, month, shift="fullday"):
+    expected_keys = []
+    if period == 'today':
+        if shift == 'shiftA':
+            # Covers 08:30 to 19:59 (Hours 8 to 19)
+            expected_keys = [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+        elif shift == 'shiftB':
+            # Covers 20:30 to 07:59 (Hours 20 to 23, then 0 to 7)
+            expected_keys = [20, 21, 22, 23, 0, 1, 2, 3, 4, 5, 6, 7]
+        else:
+            expected_keys = list(range(24)) # 0 to 23 hours
+    elif period == 'weekly':
+        curr = start_date
+        while curr < end_date:
+            expected_keys.append(curr.day)
+            curr += timedelta(days=1)
+    elif period == 'yearly':
+        expected_keys = list(range(1, 13)) # 1 to 12 months
+    else: # monthly
+        days_in_month = calendar.monthrange(year, month)[1]
+        expected_keys = list(range(1, days_in_month + 1))
+    return expected_keys
+
+
+# ==========================================
+# APIs
+# ==========================================
 
 @never_cache
 @api_view(["GET"])
 def plant_wise_total(request):
     try:
-        # Dono plants ka ek basic total bhejte hain
         return Response(
             {
                 "success": True,
@@ -5930,7 +6031,6 @@ def plant_wise_total(request):
     except Exception as e:
         return Response({"success": False, "error": str(e)}, status=500)
 
-
 @never_cache
 @api_view(["GET"])
 def date_range(request):
@@ -5939,56 +6039,45 @@ def date_range(request):
 
     try:
         with connection.cursor() as cursor:
-            cursor.execute(
-                f"SELECT MIN(DATE(timestamp)), MAX(DATE(timestamp)) FROM {table_name}"
-            )
+            cursor.execute(f"SELECT MIN(timestamp), MAX(timestamp) FROM {table_name}")
             row = cursor.fetchone()
 
-        return Response(
-            {
-                "success": True,
-                "first_date": row[0] if row[0] else "2024-01-01",
-                "last_date": row[1] if row[1] else datetime.now().strftime("%Y-%m-%d"),
-            }
-        )
+        first_date = row[0].strftime("%Y-%m-%d") if row[0] else "2024-01-01"
+        last_date = row[1].strftime("%Y-%m-%d") if row[1] else datetime.now().strftime("%Y-%m-%d")
+
+        return Response({"success": True, "first_date": first_date, "last_date": last_date})
     except Exception as e:
         return Response({"success": False, "error": str(e)}, status=500)
-
 
 @never_cache
 @api_view(["GET"])
 def realtime_dashboard(request):
-    # Ye wahi data dega jo aapka original function aaj ka nikalta hai, par summary format me
     plant = request.GET.get("plant", "plant1")
     table_name, total_machines = get_plant_table(plant)
-    today = datetime.now().strftime("%Y-%m-%d")
+    
+    today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    tomorrow_start = today_start + timedelta(days=1)
+    today_str = datetime.now().strftime("%Y-%m-%d")
 
     try:
         with connection.cursor() as cursor:
             cursor.execute(
-                f"""
-                SELECT COUNT(DISTINCT machine_no), SUM(count)
-                FROM {table_name} 
-                WHERE DATE(timestamp) = %s
-            """,
-                [today],
+                f"SELECT COUNT(DISTINCT machine_no), SUM(count) FROM {table_name} WHERE timestamp >= %s AND timestamp < %s",
+                [today_start, tomorrow_start],
             )
             row = cursor.fetchone()
 
-        return Response(
-            {
-                "success": True,
-                "summary": {
-                    "active_machines": row[0] or 0,
-                    "total_machines": total_machines,
-                    "total_production": row[1] or 0,
-                    "date": today,
-                },
-            }
-        )
+        return Response({
+            "success": True,
+            "summary": {
+                "active_machines": row[0] or 0,
+                "total_machines": total_machines,
+                "total_production": row[1] or 0,
+                "date": today_str,
+            },
+        })
     except Exception as e:
         return Response({"success": False, "error": str(e)}, status=500)
-
 
 @never_cache
 @api_view(["GET"])
@@ -5996,76 +6085,247 @@ def monthly_summary(request):
     plant = request.GET.get("plant", "plant1")
     month = int(request.GET.get("month", datetime.now().month))
     year = int(request.GET.get("year", datetime.now().year))
+    period = request.GET.get("period", "monthly")
+    target_date_str = request.GET.get("date") # GET THE SPECIFIC DATE
+    shift = request.GET.get("shift", "fullday") # GET SHIFT PARAMETER
 
     table_name, _ = get_plant_table(plant)
-    days_in_month = calendar.monthrange(year, month)[1]
+    plant_location = get_plant_location_name(plant)
+
+    # Date Parameter Passed here along with shift
+    start_date, end_date, group_by, ideal_group_by = get_time_boundaries(year, month, period, target_date_str, shift)
+    
+    # Update year/month for expected keys in case target_date_str changed them
+    if target_date_str:
+        try:
+            base = datetime.strptime(target_date_str, "%Y-%m-%d")
+            year, month = base.year, base.month
+        except ValueError:
+            pass
+
+    expected_keys = generate_expected_keys(period, start_date, end_date, year, month, shift)
 
     try:
         with connection.cursor() as cursor:
+            # 1. Main table se Production Count
+            cursor.execute(
+                f"""
+                SELECT {group_by} as time_key, SUM(count) as total_prod
+                FROM {table_name}
+                WHERE timestamp >= %s AND timestamp < %s
+                GROUP BY {group_by}
+                """,
+                [start_date, end_date],
+            )
+            prod_results = cursor.fetchall()
+
+            # 2. Ideal time table se ONLINE / OFFLINE data
             cursor.execute(
                 f"""
                 SELECT 
-                    EXTRACT(DAY FROM timestamp) as day,
-                    SUM(count) as total_prod,
-                    SUM(idle_time) as total_idle
-                FROM {table_name}
-                WHERE EXTRACT(MONTH FROM timestamp) = %s AND EXTRACT(YEAR FROM timestamp) = %s
-                GROUP BY EXTRACT(DAY FROM timestamp)
-                ORDER BY day
-            """,
-                [month, year],
+                    {ideal_group_by} as time_key,
+                    SUM(CASE WHEN ideal_mode = 'ONLINE' THEN ideal_time ELSE 0 END) / 60.0 as online_idle_mins,
+                    SUM(CASE WHEN ideal_mode = 'OFFLINE' THEN ideal_time ELSE 0 END) / 60.0 as offline_shutdown_mins
+                FROM live_data.ideal_time_segments_reason
+                WHERE plant_location = %s AND ideal_start_at >= %s AND ideal_start_at < %s
+                GROUP BY {ideal_group_by}
+                """,
+                [plant_location, start_date, end_date],
             )
-            results = cursor.fetchall()
+            idle_results = cursor.fetchall()
 
-        # Data map banate hain taaki daily chart me gap na aaye
-        db_data = {
-            int(row[0]): {"prod": row[1] or 0, "idle": row[2] or 0} for row in results
-        }
+        # Data merging dynamically
+        db_data = {key: {"prod": 0, "idle": 0, "shutdown": 0} for key in expected_keys}
+        
+        for row in prod_results:
+            key = int(row[0]) if row[0] is not None else -1
+            if key in db_data:
+                db_data[key]["prod"] += row[1] or 0
+                
+        for row in idle_results:
+            key = int(row[0]) if row[0] is not None else -1
+            if key in db_data:
+                db_data[key]["idle"] += round(float(row[1] or 0), 2)
+                db_data[key]["shutdown"] += round(float(row[2] or 0), 2)
+
+        daily_breakdown = []
+        total_prod = 0
+        total_idle_and_shutdown_mins = 0
+        days_with_data = 0
+
+        for key in expected_keys:
+            prod = db_data[key]["prod"]
+            idle = db_data[key]["idle"]
+            shutdown = db_data[key]["shutdown"]
+            
+            has_data = prod > 0 or idle > 0 or shutdown > 0
+            if has_data:
+                days_with_data += 1
+                
+            total_prod += prod
+            total_idle_and_shutdown_mins += (idle + shutdown)
+
+            # Name Formatting
+            name_label = str(key)
+            if period == "today": name_label = f"{key}:00"
+            elif period == "yearly": name_label = calendar.month_abbr[key]
+            else: name_label = f"Day {key}"
+
+            daily_breakdown.append({
+                "day": key,
+                "name": name_label,
+                "production": prod,
+                "idle_minutes": idle,
+                "shutdown_minutes": shutdown,
+                "has_data": has_data,
+            })
+
+        return Response({
+            "success": True,
+            "month_name": calendar.month_name[month] if period == "monthly" else period.capitalize(),
+            "summary": {
+                "total_production": total_prod,
+                "total_idle_hours": round(total_idle_and_shutdown_mins / 60, 1), 
+                "days_with_data": days_with_data,
+                "days_in_month": len(expected_keys),
+                "coverage": round((days_with_data / max(len(expected_keys), 1)) * 100, 1),
+            },
+            "daily_breakdown": daily_breakdown,
+        })
+    except Exception as e:
+        return Response({"success": False, "error": str(e)}, status=500)
+
+@never_cache
+@api_view(["GET"])
+def machine_analysis(request):
+    plant = request.GET.get("plant", "plant1")
+    machine_no = request.GET.get("machine_no")
+    month = int(request.GET.get("month", datetime.now().month))
+    year = int(request.GET.get("year", datetime.now().year))
+    period = request.GET.get("period", "monthly")
+    target_date_str = request.GET.get("date") # GET THE SPECIFIC DATE
+    shift = request.GET.get("shift", "fullday") # GET SHIFT PARAMETER
+
+    table_name, _ = get_plant_table(plant)
+    plant_location = get_plant_location_name(plant)
+
+    # Date Parameter Passed here along with shift
+    start_date, end_date, group_by, ideal_group_by = get_time_boundaries(year, month, period, target_date_str, shift)
+    
+    # Update year/month for expected keys in case target_date_str changed them
+    if target_date_str:
+        try:
+            base = datetime.strptime(target_date_str, "%Y-%m-%d")
+            year, month = base.year, base.month
+        except ValueError:
+            pass
+            
+    expected_keys = generate_expected_keys(period, start_date, end_date, year, month, shift)
+
+    try:
+        with connection.cursor() as cursor:
+            # Main table for production
+            cursor.execute(
+                f"""
+                SELECT {group_by} as time_key, SUM(count) as total_prod
+                FROM {table_name}
+                WHERE machine_no = %s AND timestamp >= %s AND timestamp < %s
+                GROUP BY {group_by}
+                """,
+                [machine_no, start_date, end_date],
+            )
+            prod_results = cursor.fetchall()
+
+            # Ideal time table for this specific machine
+            cursor.execute(
+                f"""
+                SELECT 
+                    {ideal_group_by} as time_key,
+                    SUM(CASE WHEN ideal_mode = 'ONLINE' THEN ideal_time ELSE 0 END) / 60.0 as online_idle_mins,
+                    SUM(CASE WHEN ideal_mode = 'OFFLINE' THEN ideal_time ELSE 0 END) / 60.0 as offline_shutdown_mins
+                FROM live_data.ideal_time_segments_reason
+                WHERE machine_no = %s AND plant_location = %s AND ideal_start_at >= %s AND ideal_start_at < %s
+                GROUP BY {ideal_group_by}
+                """,
+                [machine_no, plant_location, start_date, end_date],
+            )
+            idle_results = cursor.fetchall()
+
+        db_data = {key: {"prod": 0, "idle": 0, "shutdown": 0} for key in expected_keys}
+        
+        for row in prod_results:
+            key = int(row[0]) if row[0] is not None else -1
+            if key in db_data:
+                db_data[key]["prod"] += row[1] or 0
+                
+        for row in idle_results:
+            key = int(row[0]) if row[0] is not None else -1
+            if key in db_data:
+                db_data[key]["idle"] += round(float(row[1] or 0), 2)
+                db_data[key]["shutdown"] += round(float(row[2] or 0), 2)
 
         daily_breakdown = []
         total_prod = 0
         total_idle_mins = 0
-        days_with_data = 0
+        total_shutdown_mins = 0
+        active_days = 0
 
-        for day in range(1, days_in_month + 1):
-            if day in db_data:
-                prod = db_data[day]["prod"]
-                idle = db_data[day]["idle"]
-                has_data = True
-                days_with_data += 1
-                total_prod += prod
-                total_idle_mins += idle
-            else:
-                prod = 0
-                idle = 0
-                has_data = False
+        for key in expected_keys:
+            prod = db_data[key]["prod"]
+            idle = db_data[key]["idle"]
+            shutdown = db_data[key]["shutdown"]
+            
+            has_data = prod > 0 or idle > 0 or shutdown > 0
+            if has_data:
+                active_days += 1
+                
+            total_prod += prod
+            total_idle_mins += idle
+            total_shutdown_mins += shutdown
 
-            daily_breakdown.append(
-                {
-                    "day": day,
-                    "production": prod,
-                    "idle_minutes": idle,
-                    "has_data": has_data,
-                }
-            )
+            # Formatting labels
+            name_label = str(key)
+            if period == "today": name_label = f"{key}:00"
+            elif period == "yearly": name_label = calendar.month_abbr[key]
+            else: name_label = f"Day {key}"
 
-        return Response(
-            {
-                "month_name": calendar.month_name[month],
-                "summary": {
-                    "total_production": total_prod,
-                    "total_idle_hours": round(total_idle_mins / 60, 1),
-                    "days_with_data": days_with_data,
-                    "days_in_month": days_in_month,
-                    "coverage": (
-                        round((days_with_data / days_in_month) * 100, 1)
-                        if days_in_month > 0
-                        else 0
-                    ),
-                },
-                "daily_breakdown": daily_breakdown,
-            }
-        )
+            daily_breakdown.append({
+                "day": key,
+                "name": name_label,
+                "production": prod,
+                "idle_minutes": idle,
+                "shutdown_minutes": shutdown,
+                "has_data": has_data,
+                "status": "Active" if has_data else "Offline",
+            })
+
+        total_days = max(len(expected_keys), 1)
+
+        return Response({
+            "success": True,
+            "machine_info": {
+                "machine_no": machine_no,
+                "machine_id": f"M-{str(machine_no).zfill(2)}",
+                "month_name": calendar.month_name[month] if period == "monthly" else period.capitalize(),
+                "days_in_month": total_days,
+                "period_type": period
+            },
+            "production_summary": {
+                "total_production": total_prod,
+                "average_daily": round(total_prod / active_days, 1) if active_days > 0 else 0,
+            },
+            "idle_summary": {
+                "total_idle_hours": round(total_idle_mins / 60, 1),
+                "total_shutdown_hours": round(total_shutdown_mins / 60, 1),
+            },
+            "machine_status": {
+                "active_days": active_days,
+                "inactive_days": total_days - active_days,
+                "active_percentage": round((active_days / total_days) * 100, 1),
+                "status": "Operational" if active_days > 0 else "Offline",
+            },
+            "daily_breakdown": daily_breakdown,
+        })
     except Exception as e:
         return Response({"success": False, "error": str(e)}, status=500)
 
@@ -6076,133 +6336,70 @@ def machine_wise(request):
     plant = request.GET.get("plant", "plant1")
     month = int(request.GET.get("month", datetime.now().month))
     year = int(request.GET.get("year", datetime.now().year))
+    
     table_name, total_machines = get_plant_table(plant)
+    plant_location = get_plant_location_name(plant)
+    
+    # UPDATED: Replaced old get_month_boundaries with get_time_boundaries 
+    # Unpacked the 4 values but ignored the last two variables using '_'
+    start_date, end_date, _, _ = get_time_boundaries(year, month, "monthly") 
 
     try:
         with connection.cursor() as cursor:
             cursor.execute(
                 f"""
-                SELECT machine_no, SUM(count), SUM(idle_time)
+                SELECT machine_no, SUM(count) as total_prod
                 FROM {table_name}
-                WHERE EXTRACT(MONTH FROM timestamp) = %s AND EXTRACT(YEAR FROM timestamp) = %s
+                WHERE timestamp >= %s AND timestamp < %s
                 GROUP BY machine_no
-            """,
-                [month, year],
+                """,
+                [start_date, end_date],
             )
-            results = cursor.fetchall()
+            prod_results = cursor.fetchall()
+
+            cursor.execute(
+                """
+                SELECT 
+                    machine_no,
+                    SUM(CASE WHEN ideal_mode = 'ONLINE' THEN ideal_time ELSE 0 END) / 60.0 as online_idle_mins,
+                    SUM(CASE WHEN ideal_mode = 'OFFLINE' THEN ideal_time ELSE 0 END) / 60.0 as offline_shutdown_mins
+                FROM live_data.ideal_time_segments_reason
+                WHERE plant_location = %s AND ideal_start_at >= %s AND ideal_start_at < %s
+                GROUP BY machine_no
+                """,
+                [plant_location, start_date, end_date],
+            )
+            idle_results = cursor.fetchall()
+
+        db_data = {}
+        for row in prod_results:
+            m_no = int(row[0])
+            db_data[m_no] = {"prod": row[1] or 0, "idle": 0, "shutdown": 0}
+            
+        for row in idle_results:
+            m_no = int(row[0])
+            if m_no not in db_data:
+                db_data[m_no] = {"prod": 0, "idle": 0, "shutdown": 0}
+            # FLOAT FIX: Round decimal directly so that seconds can be captured in frontend
+            db_data[m_no]["idle"] = round(float(row[1] or 0), 2)
+            db_data[m_no]["shutdown"] = round(float(row[2] or 0), 2)
 
         machine_data = []
-        for row in results:
+        for m_no, data in db_data.items():
             machine_data.append(
                 {
-                    "machine_no": row[0],
-                    "production": row[1] or 0,
-                    "idle_minutes": row[2] or 0,
+                    "machine_no": m_no,
+                    "production": data["prod"],
+                    "idle_minutes": data["idle"],
+                    "shutdown_minutes": data["shutdown"],
                 }
             )
+            
+        machine_data = sorted(machine_data, key=lambda x: x["machine_no"])
 
         return Response({"success": True, "data": machine_data})
     except Exception as e:
         return Response({"success": False, "error": str(e)}, status=500)
-
-
-import calendar
-
-
-@never_cache
-@api_view(["GET"])
-def machine_analysis(request):
-    # Jab user frontend pe kisi specific machine (e.g., "01") par click karega toh ye chalega
-    plant = request.GET.get("plant", "plant1")
-    machine_no = request.GET.get("machine_no")
-    month = int(request.GET.get("month", datetime.now().month))
-    year = int(request.GET.get("year", datetime.now().year))
-
-    table_name, _ = get_plant_table(plant)
-    days_in_month = calendar.monthrange(year, month)[1]
-
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                f"""
-                SELECT 
-                    EXTRACT(DAY FROM timestamp) as day,
-                    SUM(count) as total_prod,
-                    SUM(idle_time) as total_idle
-                FROM {table_name}
-                WHERE machine_no = %s AND EXTRACT(MONTH FROM timestamp) = %s AND EXTRACT(YEAR FROM timestamp) = %s
-                GROUP BY EXTRACT(DAY FROM timestamp)
-                ORDER BY day
-            """,
-                [machine_no, month, year],
-            )
-            results = cursor.fetchall()
-
-        db_data = {
-            int(row[0]): {"prod": row[1] or 0, "idle": row[2] or 0} for row in results
-        }
-
-        daily_breakdown = []
-        total_prod = 0
-        total_idle_mins = 0
-        active_days = 0
-
-        for day in range(1, days_in_month + 1):
-            if day in db_data:
-                prod = db_data[day]["prod"]
-                idle = db_data[day]["idle"]
-                has_data = True
-                if prod > 0 or idle > 0:
-                    active_days += 1
-                total_prod += prod
-                total_idle_mins += idle
-            else:
-                prod = 0
-                idle = 0
-                has_data = False
-
-            daily_breakdown.append(
-                {
-                    "day": day,
-                    "production": prod,
-                    "idle_minutes": idle,
-                    "idle_hours": round(idle / 60, 2),
-                    "has_data": has_data,
-                    "status": "Active" if has_data else "Offline",
-                }
-            )
-
-        return Response(
-            {
-                "machine_info": {
-                    "machine_no": machine_no,
-                    "machine_id": f"M-{str(machine_no).zfill(2)}",
-                    "month_name": calendar.month_name[month],
-                    "days_in_month": days_in_month,
-                },
-                "production_summary": {
-                    "total_production": total_prod,
-                    "average_daily": (
-                        round(total_prod / active_days, 1) if active_days > 0 else 0
-                    ),
-                },
-                "idle_summary": {
-                    "total_idle_hours": round(total_idle_mins / 60, 1),
-                    "total_idle_minutes": total_idle_mins,
-                },
-                "machine_status": {
-                    "active_days": active_days,
-                    "inactive_days": days_in_month - active_days,
-                    "days_without_data": days_in_month - len(db_data),
-                    "active_percentage": round((active_days / days_in_month) * 100, 1),
-                    "status": "Operational" if active_days > 0 else "Offline",
-                },
-                "daily_breakdown": daily_breakdown,
-            }
-        )
-    except Exception as e:
-        return Response({"success": False, "error": str(e)}, status=500)
-
 
 @api_view(["POST"])
 def log_idle_reason(request):

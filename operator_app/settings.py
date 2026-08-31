@@ -107,10 +107,10 @@ REST_FRAMEWORK = {
 # JWT TOKEN SETTINGS
 # ==============================================================================
 
-# SIMPLE_JWT = {
-#     "ACCESS_TOKEN_LIFETIME": timedelta(hours=12),
-#     "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
-# }
+SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME": timedelta(hours=12),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
+}
 
 ROOT_URLCONF = "operator_app.urls"
 
