@@ -1,4 +1,5 @@
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from django.db import transaction
 from django.utils import timezone
@@ -241,44 +242,170 @@ def create_assignment(request):
 
 @api_view(["GET"])
 def get_auto_fill_data(request, machine_no):
-    """IdleCase.js ke liye auto-fill data"""
-    try:
-        # Operator name from operator_assignments
-        try:
-            latest_assignment = OperatorAssignment.objects.filter(
-                machine_no=machine_no
-            ).latest("created_at")
-            operator_name = latest_assignment.operator_name
-        except OperatorAssignment.DoesNotExist:
-            operator_name = "Auto Operator"
 
-        # Tool ID from plant1_data (you can make this dynamic too)
+    """
+    Plant 1 + Plant 2 common auto-fill API.
+
+    Example:
+    /api/machines/3/auto-fill/?plant=2
+    """
+
+    try:
+
+        # =========================================================
+        # 1. PLANT DETECTION
+        # =========================================================
+
+        plant_value = str(
+            request.GET.get("plant", "1")
+        ).strip().lower()
+
+
+        if plant_value in [
+            "2",
+            "plant2",
+            "plant_2",
+            "plant 2",
+        ]:
+
+            plant_key = "plant_2"
+
+            table_name = (
+                '"live_data"."plant2_data"'
+            )
+
+            plant_no = 2
+
+
+        elif plant_value in [
+            "1",
+            "plant1",
+            "plant_1",
+            "plant 1",
+        ]:
+
+            plant_key = "plant_1"
+
+            table_name = (
+                '"live_data"."plant1_data"'
+            )
+
+            plant_no = 1
+
+
+        else:
+
+            return Response(
+                {
+                    "success": False,
+                    "message": "Invalid plant value.",
+                },
+                status=400,
+            )
+
+
+        # =========================================================
+        # 2. OPERATOR AUTO FILL
+        # =========================================================
+
+        latest_assignment = (
+            OperatorAssignment.objects
+            .filter(
+                machine_no=str(machine_no),
+                plant=plant_key,
+            )
+            .order_by("-start_time", "-id")
+            .first()
+        )
+
+
+        operator_name = (
+            latest_assignment.operator_name
+            if latest_assignment
+            else "Auto Operator"
+        )
+        
+        if latest_assignment is None:
+            latest_assignment = (
+                OperatorAssignment.objects
+                .filter(
+                    machine_no=str(machine_no),
+                    plant=plant_key,
+                )
+                .order_by("-start_time", "-id")
+                .first()
+            )
+        # =========================================================
+        # 3. TOOL AUTO FILL
+        # =========================================================
+
+        tool_id = "Unknown Tool"
+
+
         with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT tool_id 
-                FROM plant1_data 
-                WHERE machine_no = %s 
-                ORDER BY timestamp DESC 
+
+            query = f"""
+                SELECT tool_id
+                FROM {table_name}
+                WHERE TRIM(machine_no::text) = %s
+                  AND tool_id IS NOT NULL
+                ORDER BY timestamp DESC
                 LIMIT 1
-            """,
-                [machine_no],
+            """
+
+            cursor.execute(
+                query,
+                [str(machine_no)],
             )
 
             result = cursor.fetchone()
-            tool_id = result[0] if result else "Unknown Tool"
+
+
+            if (
+                result
+                and result[0] is not None
+            ):
+
+                tool_id = str(
+                    result[0]
+                ).strip()
+
+
+        # =========================================================
+        # 4. SUCCESS
+        # =========================================================
 
         return Response(
             {
                 "success": True,
+                "plant": plant_no,
                 "machine_no": machine_no,
                 "operator_name": operator_name,
                 "tool_id": tool_id,
             }
         )
-    except Exception as e:
-        return Response({"success": False, "message": f"Error: {str(e)}"}, status=400)
 
+
+    except Exception as e:
+
+        import traceback
+
+        traceback.print_exc()
+
+        print(
+            f"❌ AUTO FILL ERROR | "
+            f"Machine={machine_no} | "
+            f"Error={e}",
+            flush=True,
+        )
+
+        return Response(
+            {
+                "success": False,
+                "message": str(e),
+            },
+            status=400,
+        )
 
 @api_view(["POST"])
 def create_idle_report(request):
@@ -323,8 +450,15 @@ def get_pending_ideal_reports(request):
             if not dt:
                 return None
 
-            naive_dt = dt.replace(tzinfo=None)
-            return ist.localize(naive_dt).isoformat()
+            # PostgreSQL timestamptz / Django aware datetime
+            if dt.tzinfo is not None:
+                dt = dt.astimezone(ist)
+
+            # Safety only if some old value comes as naive
+            else:
+                dt = ist.localize(dt)
+
+            return dt.isoformat()
 
         # --------------------------------------------------
         # 1. Plant validation
@@ -576,6 +710,7 @@ def get_pending_ideal_reports(request):
 
 
 @api_view(["POST"])
+@permission_classes([IsAuthenticated])
 def submit_ideal_report(request, event_id):
     """
     Submit one logical Ideal event.
@@ -590,13 +725,29 @@ def submit_ideal_report(request, event_id):
 
     try:
         data = request.data
-
+        submission_source = str(data.get("submission_source") or "").strip().upper()
         plant_no = str(data.get("plant_no", "")).strip()
-        machine_no = str(data.get("machine_no", "")).strip()
-        operator_name = str(data.get("operator_name", "")).strip()
-        tool_name = str(data.get("tool_name", "")).strip()
-        reason = str(data.get("reason", "")).strip()
 
+        machine_no = str(data.get("machine_no", "")).strip()
+
+        operator_name = str(data.get("operator_name", "")).strip()
+
+        tool_name = str(data.get("tool_name", "")).strip()
+
+        # ==================================================
+        # NEW PLANT-LIVE STYLE REASON DATA
+        # ==================================================
+
+        reason_category = str(data.get("reason_category", "")).strip()
+
+        specific_reason = str(data.get("specific_reason", "")).strip()
+
+        remark = str(data.get("remark", "")).strip()
+
+        # Notification identity
+        notification_id = data.get("notification_id")
+
+        notification_ideal_mode = str(data.get("ideal_mode") or "").strip().upper()
         # ==================================================
         # 1. Validate incoming form
         # ==================================================
@@ -619,13 +770,37 @@ def submit_ideal_report(request, event_id):
                 status=400,
             )
 
-        valid_reasons = {choice[0] for choice in IdleReport.IDLE_REASON_CHOICES}
+        # ==================================================
+        # VALIDATE NEW REASON FORM
+        # ==================================================
 
-        if reason not in valid_reasons:
+        if not reason_category:
+
             return Response(
                 {
                     "success": False,
-                    "message": "Invalid idle reason.",
+                    "message": "Reason category is required.",
+                },
+                status=400,
+            )
+
+        if not specific_reason:
+
+            return Response(
+                {
+                    "success": False,
+                    "message": "Specific reason is required.",
+                },
+                status=400,
+            )
+
+        # Other selected -> remark compulsory
+        if specific_reason == "Other" and not remark:
+
+            return Response(
+                {
+                    "success": False,
+                    "message": ("Remark is required when " "'Other' is selected."),
                 },
                 status=400,
             )
@@ -726,13 +901,32 @@ def submit_ideal_report(request, event_id):
 
         last_segment = logical_segments[-1]
 
+        # ==================================================
+        # EVENT MUST BE PHYSICALLY CLOSED BEFORE SUBMISSION
+        #
+        # New architecture:
+        #   OPEN event -> ideal_end_at = NULL
+        #
+        # Legacy compatibility:
+        #   HOUR_CHANGE -> physical event still continuing
+        # ==================================================
+
+        # ==================================================
+        # CURRENT / CLOSED EVENT SUBMISSION RULE
+        # ==================================================
+
+        is_open_event = (
+            last_segment.ideal_end_at is None or last_segment.ideal_time is None
+        )
+
+        # Legacy HOUR_CHANGE incomplete event is never allowed.
         if last_segment.closed_by == "HOUR_CHANGE":
             return Response(
                 {
                     "success": False,
                     "message": (
                         "This Ideal event is still continuing "
-                        "and cannot be submitted yet."
+                        "through a legacy hour-change segment."
                     ),
                     "event_id": canonical_event_id,
                     "segment_ids": segment_ids,
@@ -740,6 +934,61 @@ def submit_ideal_report(request, event_id):
                 status=409,
             )
 
+        # ==================================================
+        # OPEN EVENT
+        #
+        # Allowed ONLY when:
+        # - current Plant dashboard, OR
+        # - exact current notification
+        #
+        # Normal IdleCase manual submission still requires
+        # a closed event.
+        # ==================================================
+
+        if is_open_event:
+
+            if submission_source not in {
+                "PLANT_DASHBOARD",
+                "IDLE_NOTIFICATION",
+            }:
+                return Response(
+                    {
+                        "success": False,
+                        "message": (
+                            "This Ideal event is still continuing. "
+                            "Current events can only be submitted "
+                            "from the Plant dashboard or its exact notification."
+                        ),
+                        "event_id": canonical_event_id,
+                    },
+                    status=409,
+                )
+
+            from api.models import Notification
+
+            # Current physical event must have its exact
+            # still-open notification.
+            active_notification_exists = Notification.objects.filter(
+                pk=canonical_event_id,
+                ideal_event_id=canonical_event_id,
+                # Current event =
+                # linked Ideal row still OPEN
+                ideal_event__ideal_end_at__isnull=True,
+                ideal_event__report_status="PENDING",
+            ).exists()
+
+            if not active_notification_exists:
+                return Response(
+                    {
+                        "success": False,
+                        "message": (
+                            "Current active notification was not found "
+                            "for this Ideal event."
+                        ),
+                        "event_id": canonical_event_id,
+                    },
+                    status=409,
+                )
         # ==================================================
         # 6. ATOMIC TRANSACTION + deterministic row locking
         # ==================================================
@@ -870,14 +1119,37 @@ def submit_ideal_report(request, event_id):
             # 11. Create ONE IdleReport only
             # ==============================================
 
+            # ==================================================
+            # LEGACY IdleReport COMPATIBILITY
+            #
+            # Detailed reason / submission ka ONLY source of truth:
+            #   IdealTimeSegmentReason
+            #
+            # Notification ab sirf delivery/read relation hai.
+            # Notification.status temporarily frontend compatibility
+            # ke liye mirror kar rahe hain.
+            #
+            # Old idle_reports table only legacy code rakhega.
+            # ==================================================
+
+            legacy_reason_map = {
+                "Tool Breakdown": "TOOL_BD",
+                "Machine Breakdown": "MC_BD",
+                "Material Shortage": "NO_MATERIAL",
+            }
+
+            legacy_reason = legacy_reason_map.get(
+                reason_category,
+                "OTHER",
+            )
+
             idle_report = IdleReport.objects.create(
                 plant=f"plant_{expected_plant_no}",
                 machine_no=str(canonical_segment.machine_no),
                 operator_name=operator_name,
                 tool_id=tool_name,
-                reason=reason,
+                reason=legacy_reason,
             )
-
             # ==============================================
             # 12. Submitted by
             # ==============================================
@@ -902,21 +1174,213 @@ def submit_ideal_report(request, event_id):
                 id__in=segment_ids,
                 report_status="PENDING",
             ).update(
-                reason=reason,
+                reason=reason_category,
+                specific_reason=specific_reason,
+                remark=remark,
                 report_status="SUBMITTED",
                 submitted_by=submitted_by,
                 submitted_at=submitted_at,
             )
 
-            # Extra safety
+            # ==================================================
+            # 14. SAVE FORM SUBMITTER IN ONE NOTIFICATION
+            #
+            # ONE Ideal Event = ONE Notification
+            # Notification.id = Ideal event ID
+            #
+            # user_id means:
+            # jis authenticated person ne reason form submit kiya.
+            #
+            # Notification status field ki zaroorat nahi.
+            # Ideal.report_status is source of truth.
+            # ==================================================
+
+            from api.models import Notification
+
+            # ==================================================
+            # FINAL NOTIFICATION UPDATE
+            #
+            # Runs ONLY when reason form is successfully submitted.
+            #
+            # Works for:
+            # - Plant 1 Dashboard
+            # - Plant 2 Dashboard
+            # - Notification -> IdleCase
+            # ==================================================
+
+            # ==================================================
+            # 1. CALCULATE IDLE / OFFLINE DURATION
+            # ==================================================
+
+            if last_segment.ideal_end_at is not None:
+
+                # ----------------------------------------------
+                # EVENT ALREADY CLOSED
+                #
+                # For old HOUR_CHANGE events there may be
+                # multiple physical segments.
+                # Add all duration together.
+                # ----------------------------------------------
+
+                total_seconds = sum(
+                    int(segment.ideal_time or 0) for segment in logical_segments
+                )
+
+                # Safety fallback
+                if total_seconds <= 0 and canonical_segment.ideal_start_at is not None:
+
+                    total_seconds = max(
+                        0,
+                        int(
+                            (
+                                last_segment.ideal_end_at
+                                - canonical_segment.ideal_start_at
+                            ).total_seconds()
+                        ),
+                    )
+
+            elif canonical_segment.ideal_start_at is not None:
+
+                # ----------------------------------------------
+                # CURRENT ACTIVE EVENT
+                #
+                # User submitted reason directly from dashboard
+                # while machine is still IDLE/OFFLINE.
+                #
+                # For now duration = start -> submission time.
+                #
+                # On actual machine resume, Plant MQTT code
+                # will update this to final exact duration,
+                # BUT ONLY because form has already been filled.
+                # ----------------------------------------------
+
+                total_seconds = max(
+                    0,
+                    int(
+                        (
+                            submitted_at - canonical_segment.ideal_start_at
+                        ).total_seconds()
+                    ),
+                )
+
+            else:
+
+                total_seconds = 0
+
+            # ==================================================
+            # 2. FORMAT DURATION
+            # ==================================================
+
+            hours = total_seconds // 3600
+
+            minutes = (total_seconds % 3600) // 60
+
+            seconds = total_seconds % 60
+
+            if hours > 0:
+
+                duration_text = f"{hours} hr " f"{minutes} min " f"{seconds} sec"
+
+            elif minutes > 0:
+
+                duration_text = f"{minutes} min " f"{seconds} sec"
+
+            else:
+
+                duration_text = f"{seconds} sec"
+
+            # ==================================================
+            # 3. MODE
+            #
+            # OFFLINE = machine signal lost/off
+            # ONLINE Ideal = machine ON but no production = IDLE
+            # ==================================================
+
+            status_text = (
+                "OFFLINE"
+                if str(canonical_segment.ideal_mode or "").upper() == "OFFLINE"
+                else "IDLE"
+            )
+
+            # ==================================================
+            # 4. FINAL MESSAGE
+            # ==================================================
+
+            final_notification_message = (
+                f"{canonical_segment.plant_location} "
+                f"Machine "
+                f"M-{int(canonical_segment.machine_no):02d} "
+                f"was {status_text} for "
+                f"{duration_text}. "
+                f"Reason submitted."
+            )
+
+            # ==================================================
+            # 5. UPDATE EXACT NOTIFICATION
+            #
+            # SAME ID:
+            # Notification ID == Ideal Event ID
+            #
+            # Form submission means:
+            # user_id = submitter
+            # is_read = TRUE
+            # message = final summary
+            # ==================================================
+
+            updated_notifications = Notification.objects.filter(
+                pk=canonical_event_id
+            ).update(
+                user_id=request.user.id,
+                is_read=True,
+                message=final_notification_message,
+            )
+
+            print(
+                f"✅ FINAL NOTIFICATION UPDATED | "
+                f"{canonical_segment.plant_location} | "
+                f"M{canonical_segment.machine_no} | "
+                f"IdealID={canonical_event_id} | "
+                f"UserID={request.user.id} | "
+                f"Read=True | "
+                f"Duration={duration_text} | "
+                f"Message={final_notification_message}",
+                flush=True,
+            )
+
+            if updated_notifications:
+
+                print(
+                    f"✅ NOTIFICATION SUBMITTER SAVED | "
+                    f"{canonical_segment.plant_location} | "
+                    f"M{canonical_segment.machine_no} | "
+                    f"IdealID={canonical_event_id} | "
+                    f"NotificationID={canonical_event_id} | "
+                    f"UserID={request.user.id} | "
+                    f"Username={request.user.username}",
+                    flush=True,
+                )
+
+            else:
+
+                # Submission ko fail nahi karenge.
+                # Ideal report DB me source of truth hai.
+                print(
+                    f"⚠️ NOTIFICATION ROW NOT FOUND | "
+                    f"{canonical_segment.plant_location} | "
+                    f"M{canonical_segment.machine_no} | "
+                    f"IdealID={canonical_event_id}",
+                    flush=True,
+                )
+
+                # Extra safety
             if updated_count != len(segment_ids):
                 raise RuntimeError("Not all Ideal event segments " "were updated.")
 
         # ==================================================
         # 14. Success
         # ==================================================
-        
-                # ==================================================
+
+        # ==================================================
         # 14. Notify all open browsers AFTER DB COMMIT
         # ==================================================
 
@@ -930,19 +1394,24 @@ def submit_ideal_report(request, event_id):
                 else:
                     group_name = "plant2_live_updates"
 
-                async_to_sync(
-                    channel_layer.group_send
-                )(
+                async_to_sync(channel_layer.group_send)(
                     group_name,
                     {
                         "type": "send_machine_update",
                         "message": {
                             "event_type": "ideal_report_updated",
+
                             "event_id": canonical_event_id,
                             "segment_ids": segment_ids,
+
                             "machine_no": canonical_segment.machine_no,
                             "plant": canonical_segment.plant_location,
+
+                            "ideal_mode": canonical_segment.ideal_mode,
+
                             "report_status": "SUBMITTED",
+
+                            "submitted_by": request.user.username,
                         },
                     },
                 )
@@ -957,10 +1426,8 @@ def submit_ideal_report(request, event_id):
         except Exception as ws_err:
             # Report is already safely committed in DB.
             # WebSocket failure must NOT undo successful submission.
-            print(
-                f"⚠️ Ideal Report WebSocket Error: {ws_err}"
-            )
-        
+            print(f"⚠️ Ideal Report WebSocket Error: {ws_err}")
+
         return Response(
             {
                 "success": True,
@@ -971,9 +1438,14 @@ def submit_ideal_report(request, event_id):
                 "report_id": idle_report.id,
                 "plant": (canonical_segment.plant_location),
                 "machine_no": (canonical_segment.machine_no),
+                "reason_category": reason_category,
+                "specific_reason": specific_reason,
+                "remark": remark,
                 "report_status": "SUBMITTED",
                 "submitted_by": submitted_by,
                 "submitted_at": (submitted_at.isoformat()),
+                "notification_status": "SUBMITTED",
+                "updated_notifications": updated_notifications,
             },
             status=200,
         )
@@ -1794,16 +2266,12 @@ def _plant_live_common(
                 offline_ideal_hour_seconds = db_ideal_hour["OFFLINE"] + (
                     live_ideal_hour_seconds if live_ideal_mode == "OFFLINE" else 0
                 )
-                
-                pending_reason = getattr(
-                    state_obj,
-                    "pending_reasons",
-                    {}
-                ).get(machine_no)
-                
-                has_pending_reason = bool(
-                    pending_reason
+
+                pending_reason = getattr(state_obj, "pending_reasons", {}).get(
+                    machine_no
                 )
+
+                has_pending_reason = bool(pending_reason)
 
                 exact_data = {
                     "machine_no": machine_no,
@@ -1858,8 +2326,7 @@ def _plant_live_common(
                     "shift": current_shift,
                     "machine_on": is_on,
                     "is_producing": is_producing,
-                    "has_pending_reason":
-                        has_pending_reason,
+                    "has_pending_reason": has_pending_reason,
                     "has_count_data": status_info.get("has_count_data", False),
                     "has_json_data": status_info.get("has_json_data", False),
                     "count_seconds_ago": status_info.get("count_seconds_ago"),
@@ -6408,7 +6875,7 @@ def log_idle_reason(request):
     and immediately notify all browsers for that plant.
     """
     print("🟡 IDLE API 1: REQUEST ENTERED", flush=True)
-    
+
     try:
         data = request.data
 
@@ -6417,9 +6884,7 @@ def log_idle_reason(request):
         category = str(data.get("category", "")).strip()
         reason = str(data.get("reason", "")).strip()
         remarks = str(data.get("remarks", "")).strip()
-        machine_status = str(
-            data.get("machine_status", "ONLINE")
-        ).strip().upper()
+        machine_status = str(data.get("machine_status", "ONLINE")).strip().upper()
 
         # -----------------------------
         # 1. Validation
@@ -6512,11 +6977,7 @@ def log_idle_reason(request):
             remarks=remarks,
         )
 
-        reason_state = (
-            "OFFLINE"
-            if machine_status == "OFFLINE"
-            else "IDLE"
-        )
+        reason_state = "OFFLINE" if machine_status == "OFFLINE" else "IDLE"
 
         # -----------------------------
         # 4. Notify ALL browsers
@@ -6525,9 +6986,7 @@ def log_idle_reason(request):
             channel_layer = get_channel_layer()
 
             if channel_layer:
-                async_to_sync(
-                    channel_layer.group_send
-                )(
+                async_to_sync(channel_layer.group_send)(
                     group_name,
                     {
                         "type": "send_machine_update",
@@ -6553,17 +7012,12 @@ def log_idle_reason(request):
                 )
 
         except Exception as ws_err:
-            print(
-                f"⚠️ Idle Reason WebSocket Error: {ws_err}"
-            )
+            print(f"⚠️ Idle Reason WebSocket Error: {ws_err}")
 
         return Response(
             {
                 "success": True,
-                "message": (
-                    f"Reason saved successfully "
-                    f"for Machine {machine_no}"
-                ),
+                "message": (f"Reason saved successfully " f"for Machine {machine_no}"),
                 "plant_no": plant_no,
                 "machine_no": machine_no,
                 "reason_state": reason_state,

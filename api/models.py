@@ -1462,20 +1462,64 @@ from django.contrib.auth.models import User
 
 
 class Notification(models.Model):
-    user = models.ForeignKey(
-        User, on_delete=models.CASCADE, related_name="notifications"
+    """
+    ONE IdealTimeSegmentReason event = ONE Notification row.
+
+    Physical api_notification columns:
+
+        id
+        message
+        is_read
+        created_at
+        user_id
+
+    IMPORTANT:
+    physical column `id` is both:
+        - Notification primary key
+        - FK to IdealTimeSegmentReason.id
+    """
+
+    ideal_event = models.OneToOneField(
+        "IdealTimeSegmentReason",
+        on_delete=models.CASCADE,
+        primary_key=True,
+        db_column="id",
+        related_name="notification",
     )
-    machine_no = models.CharField(max_length=50, null=True, blank=True)
+
     message = models.TextField()
-    is_read = models.BooleanField(default=False)
-    created_at = models.DateTimeField(auto_now_add=True)
+
+    is_read = models.BooleanField(
+        default=False,
+    )
+
+    # Machine resume / Ideal close timestamp.
+    # While physical Ideal is still active -> NULL.
+    created_at = models.DateTimeField(
+        default=timezone.now,
+    )
+
+    # The ONE authenticated user who finally submits
+    # the downtime reason form.
+    #
+    # Before form submission -> NULL.
+    user = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="submitted_idle_notifications",
+    )
 
     class Meta:
-        ordering = ["-created_at"]
+        db_table = "api_notification"
 
     def __str__(self):
-        return f"Notification for {self.user.username} - {self.machine_no}"
-
+        return (
+            f"Idle Notification "
+            f"{self.pk} | "
+            f"Ideal {self.ideal_event_id}"
+        )
 
 ##############################################
 # machine maintenance weekly report model
@@ -2293,9 +2337,14 @@ class FourMInformationSheet(models.Model):
 
 
 class IdealTimeSegmentReason(models.Model):
+
+    # =====================================================
+    # CHOICES
+    # =====================================================
+
     IDEAL_MODE_CHOICES = [
-        ("ONLINE", "Online Ideal"),  # Machine ON hai but count nahi aa raha
-        ("OFFLINE", "Offline Ideal"),  # Machine OFF hai
+        ("ONLINE", "Online Ideal"),
+        ("OFFLINE", "Offline Ideal"),
     ]
 
     CLOSED_BY_CHOICES = [
@@ -2306,46 +2355,96 @@ class IdealTimeSegmentReason(models.Model):
         ("SHIFT_END", "Shift End"),
     ]
 
-    plant_location = models.CharField(max_length=50, db_index=True)  # Plant 1 / Plant 2
-
-    machine_no = models.IntegerField(db_index=True)
-
-    ideal_mode = models.CharField(
-        max_length=20, choices=IDEAL_MODE_CHOICES, db_index=True
-    )
-
-    ideal_start_at = models.DateTimeField(db_index=True)
-    ideal_end_at = models.DateTimeField(db_index=True)
-
-    # Exact duration seconds me save hoga
-    # FE me 11 min 12 sec / 2 hour 11 min format me dikhayenge
-    ideal_time = models.PositiveIntegerField(default=0)
-
-    closed_by = models.CharField(
-        max_length=30, choices=CLOSED_BY_CHOICES, blank=True, null=True
-    )
-
-    reason = models.CharField(
-        max_length=100, default="Uncategorized", blank=True, null=True
-    )
-
-    specific_reason = models.CharField(
-        max_length=255, default="Reason Not Provided", blank=True, null=True
-    )
-
-    remark = models.TextField(blank=True, null=True)
-
-    shift = models.CharField(max_length=20, db_index=True)
-
-    # =====================================================
-    # IDEAL REPORT SUBMISSION STATUS - Plant 1 + Plant 2
-    # =====================================================
-
     REPORT_STATUS_CHOICES = [
         ("PENDING", "Pending"),
         ("SUBMITTED", "Submitted"),
         ("LEGACY", "Legacy"),
     ]
+
+    # =====================================================
+    # MACHINE / PLANT
+    # =====================================================
+
+    plant_location = models.CharField(
+        max_length=50,
+        db_index=True,
+    )
+
+    machine_no = models.IntegerField(
+        db_index=True,
+    )
+
+    ideal_mode = models.CharField(
+        max_length=20,
+        choices=IDEAL_MODE_CHOICES,
+        db_index=True,
+    )
+
+    # =====================================================
+    # EVENT TIMING
+    # =====================================================
+
+    ideal_start_at = models.DateTimeField(
+        db_index=True,
+    )
+
+    # NULL = event currently running
+    ideal_end_at = models.DateTimeField(
+        null=True,
+        blank=True,
+    )
+
+    # Exact duration in seconds.
+    # NULL allowed while event is running.
+    ideal_time = models.IntegerField(
+        null=True,
+        blank=True,
+    )
+
+    closed_by = models.CharField(
+        max_length=30,
+        choices=CLOSED_BY_CHOICES,
+        null=True,
+        blank=True,
+    )
+
+    # =====================================================
+    # SHIFT
+    # =====================================================
+
+    shift = models.CharField(
+        max_length=20,
+        db_index=True,
+    )
+
+    # =====================================================
+    # DOWNTIME REASON
+    #
+    # Existing NULL compatibility abhi retain kar rahe hain.
+    # =====================================================
+
+    reason = models.CharField(
+        max_length=100,
+        default="Uncategorized",
+        blank=True,
+        null=True,
+    )
+
+    specific_reason = models.CharField(
+        max_length=255,
+        default="Reason Not Provided",
+        blank=True,
+        null=True,
+    )
+
+    remark = models.TextField(
+        blank=True,
+        null=True,
+    )
+
+    # =====================================================
+    # REPORT STATUS
+    # =====================================================
 
     report_status = models.CharField(
         max_length=20,
@@ -2354,41 +2453,104 @@ class IdealTimeSegmentReason(models.Model):
         db_index=True,
     )
 
+    # =====================================================
+    # SUBMISSION DETAILS
+    # =====================================================
+
     submitted_by = models.CharField(
         max_length=150,
-        blank=True,
         null=True,
+        blank=True,
     )
 
     submitted_at = models.DateTimeField(
-        blank=True,
         null=True,
+        blank=True,
     )
 
+    # =====================================================
+    # META
+    # =====================================================
+
     class Meta:
+
         db_table = '"live_data"."ideal_time_segments_reason"'
-        ordering = ["-ideal_start_at"]
+
+        ordering = [
+            "-ideal_start_at"
+        ]
 
         indexes = [
-            models.Index(fields=["plant_location", "machine_no", "shift"]),
-            models.Index(fields=["plant_location", "ideal_mode"]),
-            models.Index(fields=["ideal_start_at", "ideal_end_at"]),
+
+            # Machine history / latest events
             models.Index(
-    fields=[
-        "plant_location",
-        "machine_no",
-        "report_status",
-        "ideal_start_at",
-    ],
-    name="ideal_pending_lookup_idx",
-),
+                fields=[
+                    "plant_location",
+                    "machine_no",
+                    "ideal_start_at",
+                ],
+                name="ideal_machine_time_idx",
+            ),
+
+            # Pending Idle Case lookup
+            #
+            # plant + status first rakha hai because
+            # pending API generally plant/status filter karti hai.
+            models.Index(
+                fields=[
+                    "plant_location",
+                    "report_status",
+                    "machine_no",
+                    "ideal_start_at",
+                ],
+                name="ideal_pending_lookup_idx",
+            ),
+
+            # ONLINE/OFFLINE reporting
+            models.Index(
+                fields=[
+                    "plant_location",
+                    "ideal_mode",
+                    "ideal_start_at",
+                ],
+                name="ideal_mode_time_idx",
+            ),
         ]
 
         constraints = [
+
+            # =================================================
+            # END TIME VALIDATION
+            #
+            # Running:
+            # ideal_end_at = NULL
+            #
+            # Closed:
+            # ideal_end_at > ideal_start_at
+            # =================================================
+
             models.CheckConstraint(
-                check=models.Q(ideal_end_at__gt=models.F("ideal_start_at")),
-                name="ideal_end_after_start",
+                condition=(
+                    models.Q(
+                        ideal_end_at__isnull=True
+                    )
+                    |
+                    models.Q(
+                        ideal_end_at__gt=models.F(
+                            "ideal_start_at"
+                        )
+                    )
+                ),
+                name="ideal_end_after_start_or_open",
             ),
+
+            # =================================================
+            # OLD DUPLICATE PROTECTION
+            #
+            # IMPORTANT:
+            # Current backend migrate hone tak retain karo.
+            # =================================================
+
             models.UniqueConstraint(
                 fields=[
                     "plant_location",
@@ -2401,9 +2563,37 @@ class IdealTimeSegmentReason(models.Model):
             ),
         ]
 
+    # =====================================================
+    # HELPER PROPERTY
+    # =====================================================
+
     @property
     def ideal_minutes(self):
-        return round(self.ideal_time / 60, 2)
+
+        if self.ideal_time is None:
+            return 0
+
+        return round(
+            self.ideal_time / 60,
+            2,
+        )
+
+    # =====================================================
+    # STRING
+    # =====================================================
 
     def __str__(self):
-        return f"{self.plant_location}-M{self.machine_no} {self.ideal_mode} {self.ideal_minutes} min"
+
+        if self.ideal_end_at is None:
+            event_status = "RUNNING"
+        else:
+            event_status = (
+                f"{self.ideal_minutes} min"
+            )
+
+        return (
+            f"{self.plant_location} | "
+            f"M{self.machine_no} | "
+            f"{self.ideal_mode} | "
+            f"{event_status}"
+        )
