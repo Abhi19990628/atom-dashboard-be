@@ -2955,17 +2955,25 @@ def _plant_history_common(
                     elif event_type == "SHUT_HEIGHT_CHANGE":
                         bucket["shut_height_changes"].append(bucket_event)
 
-            # 4) Ideal segments.
+        
+            # For same:
+            #   machine + mode + exact start time
+            # keep the EARLIEST ending row.
+            # ==========================================================
+
             ideal_params = [
                 plant_location,
                 int(machine_no),
-                end_str_naive,
-                start_str_naive,
+                end_str_tz,
+                start_str_tz,
             ]
+
             shift_filter_sql = ""
+
             if selected_shift in ["A", "B"]:
                 shift_filter_sql = " AND shift = %s"
                 ideal_params.append(selected_shift)
+
 
             cursor.execute(
                 f"""
@@ -2980,17 +2988,60 @@ def _plant_history_common(
                     specific_reason,
                     remark,
                     shift
-                FROM live_data.ideal_time_segments_reason
-                WHERE plant_location = %s
-                  AND machine_no = %s
-                  AND ideal_start_at <  %s::timestamp WITHOUT TIME ZONE
-                  AND ideal_end_at   >  %s::timestamp WITHOUT TIME ZONE
-                  AND ideal_time >= 180
-                  {shift_filter_sql}
-                ORDER BY ideal_start_at ASC
+
+                FROM (
+                    SELECT DISTINCT ON (
+                        UPPER(TRIM(ideal_mode)),
+                        ideal_start_at
+                    )
+
+                        id,
+                        ideal_mode,
+                        ideal_start_at,
+                        ideal_end_at,
+                        ideal_time,
+                        closed_by,
+                        reason,
+                        specific_reason,
+                        remark,
+                        shift
+
+                    FROM live_data.ideal_time_segments_reason
+
+                    WHERE plant_location = %s
+                      AND machine_no = %s
+
+                      AND ideal_start_at <
+                          %s::timestamp WITH TIME ZONE
+
+                      AND ideal_end_at >
+                          %s::timestamp WITH TIME ZONE
+
+                      AND ideal_end_at IS NOT NULL
+
+                      AND ideal_time >= 180
+
+                      {shift_filter_sql}
+
+                    ORDER BY
+                        UPPER(TRIM(ideal_mode)),
+                        ideal_start_at,
+
+                        -- Same start ke duplicate rows me
+                        -- shortest / earliest closed event keep karo
+                        ideal_end_at ASC,
+
+                        id ASC
+
+                ) AS deduplicated_ideal
+
+                ORDER BY
+                    ideal_start_at ASC,
+                    id ASC
                 """,
                 ideal_params,
             )
+
             ideal_rows = cursor.fetchall()
             for row in ideal_rows:
                 (
@@ -7643,17 +7694,23 @@ class CurrentUserProfileView(APIView):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get(self, request):
-        profile = UserProfile.objects.get(user=request.user)
+        profile = self.get_object()
+
         serializer = UserDepartmentProfileSerializer(
-            profile, context={"request": request}
+            profile,
+            context={"request": request}
         )
+
         return Response(serializer.data)
 
     def patch(self, request):
-        profile = UserProfile.objects.get(user=request.user)
+        profile = self.get_object()
 
         serializer = UserDepartmentProfileSerializer(
-            profile, data=request.data, partial=True, context={"request": request}
+            profile,
+            data=request.data,
+            partial=True,
+            context={"request": request}
         )
 
         if serializer.is_valid():

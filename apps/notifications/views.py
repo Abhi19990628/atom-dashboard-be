@@ -63,28 +63,42 @@ def get_my_notifications(request):
     # ----------------------------------------------------------
     # Superuser can see all plant notifications
     # ----------------------------------------------------------
+    # ----------------------------------------------------------
+    # Only Idle_Reason_Responder users can see
+    # machine Idle / Offline notifications.
+    #
+    # Superuser/Admin does NOT bypass this rule.
+    # ----------------------------------------------------------
+    
+    if not user.groups.filter(
+        name="Idle_Reason_Responder"
+    ).exists():
+    
+        return Response({
+            "success": True,
+            "data": [],
+        })
+    
+    
+    # ----------------------------------------------------------
+    # Normal responder user:
+    # show only his/her plant notifications.
+    #
+    # If someday a superuser is intentionally added to
+    # Idle_Reason_Responder, superuser can see all plants.
+    # ----------------------------------------------------------
+    
     if not user.is_superuser:
-
-        # Only Idle Reason Responders should see these notifications
-        if not user.groups.filter(
-            name="Idle_Reason_Responder"
-        ).exists():
-
-            return Response({
-                "success": True,
-                "data": [],
-            })
-
+    
         profile = getattr(user, "profile", None)
-
+    
         if profile is None or not profile.location:
-
+        
             return Response({
                 "success": True,
                 "data": [],
             })
-
-        # User sees notification of his/her plant only
+    
         notifications = notifications.filter(
             ideal_event__plant_location=profile.location
         )
