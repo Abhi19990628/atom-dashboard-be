@@ -36,7 +36,6 @@ def send_push_alert(request):
         status=410,
     )
 
-# 2. Logged-in user ki notifications fetch karne ke liye API
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def get_my_notifications(request):
@@ -44,11 +43,26 @@ def get_my_notifications(request):
     user = request.user
 
     # ==========================================================
-    # ONE EVENT = ONE GLOBAL NOTIFICATION
+    # STRICT NOTIFICATION VISIBILITY
     #
-    # Notification kisi recipient user ki property nahi hai.
-    # Visibility Ideal event + logged-in user's plant/group
-    # se decide hogi.
+    # Machine idle notifications are visible ONLY to users
+    # having Idle_Reason_Responder group.
+    #
+    # This applies to Admin / Superuser also.
+    # ==========================================================
+
+    has_idle_notification_access = user.groups.filter(
+        name="Idle_Reason_Responder"
+    ).exists()
+
+    if not has_idle_notification_access:
+        return Response({
+            "success": True,
+            "data": [],
+        })
+
+    # ==========================================================
+    # USER HAS Idle_Reason_Responder ACCESS
     # ==========================================================
 
     notifications = (
@@ -60,22 +74,22 @@ def get_my_notifications(request):
         .select_related("ideal_event")
     )
 
-    # ----------------------------------------------------------
-    # Superuser can see all plant notifications
-    # ----------------------------------------------------------
+    # ==========================================================
+    # NORMAL USER:
+    # Show only his/her plant notifications.
+    #
+    # SUPERUSER:
+    # If Idle_Reason_Responder is assigned,
+    # allow notifications from all plants as before.
+    # ==========================================================
+
     if not user.is_superuser:
 
-        # Only Idle Reason Responders should see these notifications
-        if not user.groups.filter(
-            name="Idle_Reason_Responder"
-        ).exists():
-
-            return Response({
-                "success": True,
-                "data": [],
-            })
-
-        profile = getattr(user, "profile", None)
+        profile = getattr(
+            user,
+            "profile",
+            None,
+        )
 
         if profile is None or not profile.location:
 
@@ -84,14 +98,13 @@ def get_my_notifications(request):
                 "data": [],
             })
 
-        # User sees notification of his/her plant only
         notifications = notifications.filter(
             ideal_event__plant_location=profile.location
         )
 
     notifications = notifications.order_by(
-    "-ideal_event__ideal_start_at",
-    "-ideal_event_id",
+        "-ideal_event__ideal_start_at",
+        "-ideal_event_id",
     )
 
     serializer = NotificationSerializer(

@@ -2561,6 +2561,18 @@ class IdealTimeSegmentReason(models.Model):
                 ],
                 name="unique_ideal_time_segment",
             ),
+            
+            
+            models.UniqueConstraint(
+                fields=[
+                    "plant_location",
+                    "machine_no",
+                ],
+                condition=models.Q(
+                    ideal_end_at__isnull=True
+                ),
+                name="one_open_ideal_per_machine",
+            ),
         ]
 
     # =====================================================

@@ -1130,21 +1130,7 @@ def submit_ideal_report(request, event_id):
                 )
 
             # ==============================================
-            # 11. Create ONE IdleReport only
-            # ==============================================
-
-            # ==================================================
-            # LEGACY IdleReport COMPATIBILITY
-            #
-            # Detailed reason / submission ka ONLY source of truth:
-            #   IdealTimeSegmentReason
-            #
-            # Notification ab sirf delivery/read relation hai.
-            # Notification.status temporarily frontend compatibility
-            # ke liye mirror kar rahe hain.
-            #
-            # Old idle_reports table only legacy code rakhega.
-            # ==================================================
+            
 
             legacy_reason_map = {
                 "Tool Breakdown": "TOOL_BD",
@@ -1257,15 +1243,7 @@ def submit_ideal_report(request, event_id):
 
                 # ----------------------------------------------
                 # CURRENT ACTIVE EVENT
-                #
-                # User submitted reason directly from dashboard
-                # while machine is still IDLE/OFFLINE.
-                #
-                # For now duration = start -> submission time.
-                #
-                # On actual machine resume, Plant MQTT code
-                # will update this to final exact duration,
-                # BUT ONLY because form has already been filled.
+        
                 # ----------------------------------------------
 
                 total_seconds = max(
@@ -2529,6 +2507,7 @@ def _plant_live_common(
                 live_ideal_mode = None
                 live_ideal_seconds = 0
                 live_ideal_hour_seconds = 0
+                online_live_prefix_seconds = 0
                 offline_live_prefix_seconds = 0
 
                 last_signal_time = None
@@ -2710,6 +2689,38 @@ def _plant_live_common(
                             ).total_seconds()
                         ),
                     )
+                    
+                    # ==========================================================
+                    # ONLINE HOUR-BOUNDARY EDGE CASE
+                    #
+                    # ONLINE is also physically hour-split.
+                    #
+                    # If first HOUR_CHANGE piece is < 180 sec but complete
+                    # logical event has qualified, preserve that small prefix.
+                    # ==========================================================
+
+                    if (
+                        live_ideal_seconds >= 180
+                        and online_start_obj < current_hour
+                    ):
+
+                        prefix_start = max(
+                            online_start_obj,
+                            shift_start,
+                        )
+
+                        prefix_seconds = max(
+                            0,
+                            int(
+                                (
+                                    current_hour -
+                                    prefix_start
+                                ).total_seconds()
+                            ),
+                        )
+
+                        if 0 < prefix_seconds < 180:
+                            online_live_prefix_seconds = prefix_seconds
 
                 # ==========================================================
                 # FINAL IDEAL TOTAL CALCULATION
@@ -2725,14 +2736,18 @@ def _plant_live_common(
                 # ==========================================================
 
                 online_ideal_today_seconds = (
-                    db_ideal_today["ONLINE"]
-                    +
+                db_ideal_today["ONLINE"]
+                +
+                (
                     (
-                        live_ideal_seconds
-                        if live_ideal_mode == "ONLINE"
-                        else 0
+                        online_live_prefix_seconds
+                        +
+                        live_ideal_hour_seconds
                     )
+                    if live_ideal_mode == "ONLINE"
+                    else 0
                 )
+            )
 
 
                 offline_ideal_today_seconds = (
@@ -2754,7 +2769,11 @@ def _plant_live_common(
                     db_ideal_shift["ONLINE"]
                     +
                     (
-                        live_ideal_seconds
+                        (
+                            online_live_prefix_seconds
+                            +
+                            live_ideal_hour_seconds
+                        )
                         if live_ideal_mode == "ONLINE"
                         else 0
                     )
@@ -3691,380 +3710,17 @@ def _plant_history_common(
                         bucket["shut_height_changes"].append(bucket_event)
             
                         # ==========================================================
-            # PLANT 1 + PLANT 2 REAL OFFLINE HISTORY
+                        # ==========================================================
+            # FINAL IDEAL HISTORY SOURCE
             #
-            # OFFLINE timing comes from physical ON/OFF transitions.
-            # HOUR_CHANGE Ideal rows are DB persistence only.
+            # ONLINE + OFFLINE timing both come ONLY from:
+            # live_data.ideal_time_segments_reason
+            #
+            # Machine_Event_Logs is used only for showing
+            # ON / OFF / TOOL_CHANGE / SHUT_HEIGHT_CHANGE events.
+            #
+            # Do NOT calculate OFFLINE duration separately here.
             # ==========================================================
-
-            valid_offline_intervals = []
-
-            if plant_no in (1, 2):
-
-                power_events = []
-
-                for (
-                    event_type,
-                    event_time,
-                    _event_shift,
-                    _event_details,
-                ) in machine_event_rows:
-
-                    event_type = str(
-                        event_type or ""
-                    ).upper()
-
-                    if event_type not in {
-                        "ON",
-                        "OFF",
-                    }:
-                        continue
-
-                    event_time = localize_ist(
-                        event_time
-                    )
-
-                    if (
-                        shift_start
-                        <= event_time
-                        < effective_end
-                    ):
-                        power_events.append(
-                            (
-                                event_type,
-                                event_time,
-                            )
-                        )
-
-                power_events.sort(
-                    key=lambda item: item[1]
-                )
-
-                # ----------------------------------------------
-                # State at shift start
-                # ----------------------------------------------
-
-                                # ======================================================
-                # STATE AT SHIFT START
-                #
-                # Priority:
-                #
-                # 1. Today's first ON/OFF transition is strongest proof.
-                #
-                #    First event = ON
-                #       => machine was OFF before that ON.
-                #
-                #    First event = OFF
-                #       => machine was ON before that OFF.
-                #
-                # 2. No power event, but production exists
-                #       => do NOT assume morning OFFLINE.
-                #
-                # 3. No power event + no production
-                #       => machine is treated OFFLINE from shift start.
-                #
-                # Old previous ON event must NOT override today's
-                # first ON event.
-                # ======================================================
-
-                # ======================================================
-                # STATE AT SHIFT START - FINAL
-                #
-                # IMPORTANT:
-                # Production/count is hard proof that machine was ON.
-                #
-                # Example:
-                # 08:30 shift starts
-                # 08:35 first count
-                # 01:18 PM first ON log
-                #
-                # We MUST NOT say:
-                # 08:30 -> 01:18 OFFLINE
-                #
-                # because production already happened before 01:18.
-                # ======================================================
-
-                first_production_time = None
-
-                if count_summary["first_count_time"] is not None:
-                    first_production_time = localize_ist(
-                        count_summary["first_count_time"]
-                    )
-
-
-                if power_events:
-
-                    first_power_event_type = (
-                        power_events[0][0]
-                    )
-
-                    first_power_event_time = (
-                        power_events[0][1]
-                    )
-
-                    # --------------------------------------------------
-                    # Production happened BEFORE first ON/OFF event.
-                    #
-                    # This proves machine was already ON.
-                    # --------------------------------------------------
-                    if (
-                        first_production_time is not None
-                        and first_production_time
-                        < first_power_event_time
-                    ):
-
-                        power_state = "ON"
-
-                    elif first_power_event_type == "ON":
-
-                        # No production before first ON.
-                        #
-                        # Example:
-                        # Shift start 08:30
-                        # Count = 0
-                        # First ON = 10:34
-                        #
-                        # Therefore:
-                        # 08:30 -> 10:34 OFFLINE
-                        power_state = "OFF"
-
-                    else:
-
-                        # First event is OFF.
-                        # Therefore machine was ON before this OFF.
-                        power_state = "ON"
-
-
-                elif count_summary["total_count"] > 0:
-
-                    # Production exists but no ON/OFF events.
-                    # Machine cannot be considered OFFLINE from shift start.
-                    power_state = "ON"
-
-
-                elif (
-                    previous_power_row
-                    and str(
-                        previous_power_row[0] or ""
-                    ).upper() == "OFF"
-                ):
-
-                    power_state = "OFF"
-
-
-                else:
-
-                    # No production + no current shift power event.
-                    # Treat machine as OFF from shift start.
-                    power_state = "OFF"
-
-                offline_start = (
-                    shift_start
-                    if power_state == "OFF"
-                    else None
-                )
-
-                for event_type, event_time in power_events:
-
-                    if event_type == "OFF":
-
-                        if power_state != "OFF":
-                            power_state = "OFF"
-                            offline_start = event_time
-
-                    elif event_type == "ON":
-
-                        if (
-                            power_state == "OFF"
-                            and offline_start is not None
-                            and event_time > offline_start
-                        ):
-
-                            physical_offline_seconds = int(
-                                (
-                                    event_time -
-                                    offline_start
-                                ).total_seconds()
-                            )
-
-                            if physical_offline_seconds >= 180:
-                            
-                                valid_offline_intervals.append(
-                                    (
-                                        offline_start,
-                                        event_time,
-                                    )
-                                )
-
-                        power_state = "ON"
-                        offline_start = None
-
-                # Machine abhi bhi physically OFF.
-                if (
-                    power_state == "OFF"
-                    and offline_start is not None
-                    and effective_end > offline_start
-                ):
-
-                    current_offline_seconds = int(
-                        (
-                            effective_end -
-                            offline_start
-                        ).total_seconds()
-                    )
-
-                    if current_offline_seconds >= 180:
-                    
-                        valid_offline_intervals.append(
-                            (
-                                offline_start,
-                                effective_end,
-                            )
-                        )
-                    
-            # ==========================================================
-            # PLANT 1 + PLANT 2 CURRENT OPEN OFFLINE FALLBACK
-            #
-            # CASE:
-            # Machine was ON earlier.
-            # Later machine became OFF again.
-            # No further event change happened yet.
-            #
-            # MQTT already keeps current OFFLINE as an OPEN Ideal row:
-            #     ideal_end_at = NULL
-            #
-            # History must show:
-            #     OFFLINE start -> current/effective time
-            #
-            # This DOES NOT use old HOUR_CHANGE rows.
-            # ==========================================================
-
-            if (
-                plant_no in (1, 2)
-                and target_date == now_ist.date()
-            ):
-
-                open_offline_params = [
-                    plant_location,
-                    int(machine_no),
-                    end_str_tz,
-                    start_str_tz,
-                ]
-
-                open_offline_shift_sql = ""
-
-                if selected_shift in ["A", "B"]:
-                    open_offline_shift_sql = (
-                        " AND shift = %s "
-                    )
-
-                    open_offline_params.append(
-                        selected_shift
-                    )
-
-
-                cursor.execute(
-                    f"""
-                    SELECT
-                        id,
-                        ideal_start_at
-                    FROM live_data.ideal_time_segments_reason
-                    WHERE plant_location = %s
-                      AND machine_no = %s
-                      AND UPPER(TRIM(ideal_mode)) = 'OFFLINE'
-                      AND ideal_end_at IS NULL
-                      AND ideal_start_at < %s::timestamp WITH TIME ZONE
-                      AND ideal_start_at >= %s::timestamp WITH TIME ZONE
-
-                      {open_offline_shift_sql}
-
-                    ORDER BY
-                        ideal_start_at DESC,
-                        id DESC
-                    LIMIT 1
-                    """,
-                    open_offline_params,
-                )
-
-                current_open_offline = (
-                    cursor.fetchone()
-                )
-
-
-                if current_open_offline:
-
-                    (
-                        current_open_offline_id,
-                        current_open_offline_start,
-                    ) = current_open_offline
-
-                    current_open_offline_start = (
-                        localize_ist(
-                            current_open_offline_start
-                        )
-                    )
-
-
-                    # ==============================================
-                    # STALE ROW PROTECTION
-                    #
-                    # Example bad old row:
-                    # 08:30 -> NULL
-                    #
-                    # but machine had an ON event at 10:34.
-                    #
-                    # Then 08:30 open row is stale and must NOT
-                    # become current OFFLINE.
-                    # ==============================================
-
-                    has_on_after_open_start = any(
-                        (
-                            event_type == "ON"
-                            and event_time
-                            > current_open_offline_start
-                        )
-                        for (
-                            event_type,
-                            event_time,
-                        ) in power_events
-                    )
-
-
-                    if not has_on_after_open_start:
-
-                        current_offline_start = max(
-                            current_open_offline_start,
-                            shift_start,
-                        )
-
-                        if (
-                            effective_end
-                            > current_offline_start
-                        ):
-
-                            # Avoid adding same current OFFLINE incident twice.
-                            already_covered = any(
-                                (
-                                    existing_start
-                                    <= current_offline_start
-                                    and existing_end
-                                    >= effective_end
-                                )
-                                for (
-                                    existing_start,
-                                    existing_end,
-                                ) in valid_offline_intervals
-                            )
-
-                            if not already_covered:
-
-                                valid_offline_intervals.append(
-                                    (
-                                        current_offline_start,
-                                        effective_end,
-                                    )
-                                )       
-            
             # 4) Ideal segments.
             ideal_params = [
                 plant_location,
@@ -4073,14 +3729,80 @@ def _plant_history_common(
                 start_str_tz,
             ]
             shift_filter_sql = ""
-            if selected_shift in ["A", "B"]:
+
+            # Plant 1 working logic unchanged.
+            # Plant 2 history physical time overlap se decide hogi,
+            # stored shift field se nahi.
+            if selected_shift in ["A", "B"] and plant_no != 2:
                 shift_filter_sql = " AND shift = %s"
                 ideal_params.append(selected_shift)
                 
             if plant_no in (1, 2):
+
+                # ==========================================================
+                # BOTH ONLINE + OFFLINE come from ONE authoritative table.
+                #
+                # Qualification of complete logical event is done below
+                # in Python so short HOUR_CHANGE pieces remain valid only
+                # when their complete event reaches 180 sec.
                 ideal_mode_filter_sql = """
-                    AND UPPER(TRIM(s.ideal_mode)) = 'ONLINE'
-                    AND s.ideal_time >= 180
+                    AND UPPER(TRIM(s.ideal_mode))
+                        IN ('ONLINE', 'OFFLINE')
+                
+                    AND s.ideal_time > 0
+                
+                    AND (
+                        -- Normal >= 3 minute physical row
+                        s.ideal_time >= 180
+                
+                        -- Short intermediate piece caused by hour change
+                        OR UPPER(
+                            TRIM(
+                                COALESCE(
+                                    s.closed_by,
+                                    ''
+                                )
+                            )
+                        ) = 'HOUR_CHANGE'
+                
+                        -- Short final piece is valid only when it directly
+                        -- continues an HOUR_CHANGE piece of SAME mode.
+                        OR EXISTS (
+                            SELECT 1
+                
+                            FROM live_data.ideal_time_segments_reason prev
+                
+                            WHERE
+                                prev.plant_location =
+                                    s.plant_location
+                
+                                AND prev.machine_no =
+                                    s.machine_no
+                
+                                AND UPPER(
+                                    TRIM(
+                                        prev.ideal_mode
+                                    )
+                                ) =
+                                    UPPER(
+                                        TRIM(
+                                            s.ideal_mode
+                                        )
+                                    )
+                
+                                AND prev.ideal_end_at =
+                                    s.ideal_start_at
+                
+                                AND UPPER(
+                                    TRIM(
+                                        COALESCE(
+                                            prev.closed_by,
+                                            ''
+                                        )
+                                    )
+                                ) = 'HOUR_CHANGE'
+                        )
+                    )
                 """
             else:
                 ideal_mode_filter_sql = """
@@ -4121,7 +3843,409 @@ def _plant_history_common(
                 """,
                 ideal_params,
             )
-            ideal_rows = cursor.fetchall()
+            # ==========================================================
+            # REMOVE EXACT DUPLICATE IDEAL ROWS FROM HISTORY
+            #
+            # Same:
+            # plant + machine + mode + start + end
+            # should appear only once.
+            #
+            # Latest DB ID wins.
+            # ==========================================================
+
+            raw_ideal_rows = cursor.fetchall()
+
+            unique_ideal_rows = {}
+
+            for row in raw_ideal_rows:
+            
+                (
+                    row_id,
+                    row_mode,
+                    row_start,
+                    row_end,
+                    row_time,
+                    row_closed_by,
+                    row_reason,
+                    row_specific_reason,
+                    row_remark,
+                    row_shift,
+                ) = row
+
+                if (
+                    row_start is None
+                    or row_end is None
+                ):
+                    continue
+                
+                row_mode_key = str(
+                    row_mode or ""
+                ).strip().upper()
+
+                row_start_key = localize_ist(
+                    row_start
+                )
+
+                row_end_key = localize_ist(
+                    row_end
+                )
+
+                unique_key = (
+                    row_mode_key,
+                    row_start_key,
+                    row_end_key,
+                )
+
+                existing_row = unique_ideal_rows.get(
+                    unique_key
+                )
+
+                if (
+                    existing_row is None
+                    or int(row_id)
+                    > int(existing_row[0])
+                ):
+                    unique_ideal_rows[
+                        unique_key
+                    ] = row
+
+
+            ideal_rows = sorted(
+                unique_ideal_rows.values(),
+                key=lambda row: (
+                    localize_ist(row[2]),
+                    int(row[0]),
+                ),
+            )
+
+
+            # ==========================================================
+            # ==========================================================
+            # CURRENT OPEN IDEAL - ONLINE OR OFFLINE
+            #
+            # One machine can have only ONE current physical Ideal mode.
+            #
+            # ONLINE:
+            #     machine signal ON but no count
+            #
+            # OFFLINE:
+            #     machine signal lost / machine OFF
+            #
+            # Latest OPEN DB row is treated as current state.
+            # ==========================================================
+            
+            if (
+                plant_no in (1, 2)
+                and target_date == now_ist.date()
+            ):
+            
+                # ==========================================================
+                # CURRENT OPEN IDEAL QUERY PARAMS
+                #
+                # Plant 1:
+                #   Existing working behaviour unchanged.
+                #
+                # Plant 2:
+                #   Current open OFFLINE tail can begin at previous
+                #   hour boundary:
+                #
+                #       08:00 -> NULL
+                #
+                #   while Shift A history begins:
+                #
+                #       08:30
+                #
+                #   So allow one-hour lookback and decide displayed
+                #   duration later by clipping to shift_start.
+                # ==========================================================
+
+                if plant_no == 2:
+                
+                    plant2_open_lookup_start = (
+                        shift_start - timedelta(hours=1)
+                    )
+
+                    plant2_open_lookup_start_str = (
+                        localize_ist(
+                            plant2_open_lookup_start
+                        ).strftime(
+                            "%Y-%m-%d %H:%M:%S+05:30"
+                        )
+                    )
+
+                    open_ideal_params = [
+                        plant_location,
+                        int(machine_no),
+                        end_str_tz,
+                        plant2_open_lookup_start_str,
+                    ]
+
+                    # Do NOT use stored shift for Plant 2 current OPEN event.
+                    open_ideal_shift_sql = ""
+
+                else:
+                
+                    # Plant 1 - KEEP EXISTING WORKING LOGIC
+                    open_ideal_params = [
+                        plant_location,
+                        int(machine_no),
+                        end_str_tz,
+                        start_str_tz,
+                    ]
+
+                    open_ideal_shift_sql = ""
+
+                    if selected_shift in ["A", "B"]:
+                    
+                        open_ideal_shift_sql = (
+                            " AND s.shift = %s "
+                        )
+
+                        open_ideal_params.append(
+                            selected_shift
+                        )
+            
+            
+                cursor.execute(
+                    f"""
+                    SELECT
+                        s.id,
+                        s.ideal_mode,
+                        s.ideal_start_at,
+                        s.reason,
+                        s.specific_reason,
+                        s.remark,
+                        s.shift
+            
+                    FROM live_data.ideal_time_segments_reason s
+            
+                    WHERE
+                        s.plant_location = %s
+            
+                        AND s.machine_no = %s
+            
+                        AND UPPER(
+                            TRIM(s.ideal_mode)
+                        ) IN (
+                            'ONLINE',
+                            'OFFLINE'
+                        )
+            
+                        AND s.ideal_end_at IS NULL
+            
+                        AND s.ideal_start_at
+                            < %s::timestamp WITH TIME ZONE
+            
+                        AND s.ideal_start_at
+                            >= %s::timestamp WITH TIME ZONE
+            
+                        {open_ideal_shift_sql}
+            
+                    ORDER BY
+                        s.ideal_start_at DESC,
+                        s.id DESC
+            
+                    LIMIT 1
+                    """,
+                    open_ideal_params,
+                )
+            
+            
+                current_open_ideal = cursor.fetchone()
+            
+            
+                if current_open_ideal:
+                
+                    (
+                        open_ideal_id,
+                        open_ideal_mode,
+                        open_ideal_start,
+                        open_ideal_reason,
+                        open_ideal_specific_reason,
+                        open_ideal_remark,
+                        open_ideal_shift,
+                    ) = current_open_ideal
+            
+            
+                    open_ideal_mode = str(
+                        open_ideal_mode or ""
+                    ).strip().upper()
+            
+            
+                    open_ideal_start = localize_ist(
+                        open_ideal_start
+                    )
+                    
+                    # ==========================================================
+                    # HISTORY DISPLAY START
+                    #
+                    # Plant 2 OPEN event previous hour / previous shift se
+                    # start hua ho sakta hai.
+                    #
+                    # Example:
+                    # DB      = 08:00 -> CURRENT
+                    # Shift A = 08:30 -> CURRENT
+                    #
+                    # History me only 08:30 onward count/show karna hai.
+                    # ==========================================================
+
+                    history_open_start = open_ideal_start
+
+                    if plant_no == 2:
+                        history_open_start = max(
+                            open_ideal_start,
+                            shift_start,
+                        )
+            
+            
+                    # ==================================================
+                    # FIND ORIGINAL LOGICAL EVENT START
+                    #
+                    # Example:
+                    #
+                    # 02:58 -> 03:00 HOUR_CHANGE
+                    # 03:00 -> NOW   OPEN
+                    #
+                    # Complete event starts from 02:58.
+                    # ==================================================
+            
+                    logical_start = open_ideal_start
+            
+            
+                    while True:
+                    
+                        previous_candidates = [
+                            row
+                            for row in ideal_rows
+                            if (
+                                str(
+                                    row[1] or ""
+                                ).strip().upper()
+                                == open_ideal_mode
+            
+                                and row[3] is not None
+            
+                                and localize_ist(
+                                    row[3]
+                                ) == logical_start
+            
+                                and str(
+                                    row[5] or ""
+                                ).strip().upper()
+                                == "HOUR_CHANGE"
+                            )
+                        ]
+            
+            
+                        if not previous_candidates:
+                            break
+                        
+                        
+                        previous_row = max(
+                            previous_candidates,
+                            key=lambda row: int(
+                                row[0]
+                            ),
+                        )
+            
+            
+                        previous_start = localize_ist(
+                            previous_row[2]
+                        )
+            
+            
+                        if previous_start >= logical_start:
+                            break
+                        
+                        
+                        logical_start = previous_start
+            
+            
+                    logical_event_seconds = max(
+                        0,
+                        int(
+                            (
+                                effective_end
+                                - logical_start
+                            ).total_seconds()
+                        ),
+                    )
+            
+            
+                    current_piece_seconds = max(
+                        0,
+                        int(
+                            (
+                                effective_end
+                                - history_open_start
+                            ).total_seconds()
+                        ),
+                    )
+            
+            
+                    # ==================================================
+                    # THRESHOLD
+                    #
+                    # BOTH ONLINE + OFFLINE use 180-second threshold.
+                    #
+                    # But if current piece itself is short because an
+                    # already-qualified event crossed the hour,
+                    # logical_event_seconds keeps it valid.
+                    # ==================================================
+            
+                    show_current_ideal = (
+                        logical_event_seconds >= 180
+                    )
+            
+            
+                    if (
+                        show_current_ideal
+                        and current_piece_seconds > 0
+                    ):
+            
+                        ideal_rows.append(
+                            (
+                                open_ideal_id,
+                                open_ideal_mode,
+
+                                # Plant 2 ke liye selected history shift ke andar clip.
+                                history_open_start,
+
+                                effective_end,
+                                current_piece_seconds,
+                                "CURRENT",
+
+                                (
+                                    open_ideal_reason
+                                    or (
+                                        "Machine Off"
+                                        if open_ideal_mode == "OFFLINE"
+                                        else "Uncategorized"
+                                    )
+                                ),
+
+                                (
+                                    open_ideal_specific_reason
+                                    or (
+                                        "Machine offline / no signal"
+                                        if open_ideal_mode == "OFFLINE"
+                                        else "Reason Not Provided"
+                                    )
+                                ),
+
+                                open_ideal_remark or "",
+
+                                (
+                                    selected_shift
+                                    if (
+                                        plant_no == 2
+                                        and selected_shift in ["A", "B"]
+                                    )
+                                    else open_ideal_shift
+                                ),
+                            )
+                        )
+            
             for row in ideal_rows:
                 (
                     ideal_id,
@@ -4233,245 +4357,7 @@ def _plant_history_common(
                             )
                         )
                 # ==========================================================
-        # PLANT 1 + PLANT 2: PUT REAL OFFLINE TIME INTO HOURLY BUCKETS
-        # ==========================================================
-
-        if plant_no in (1, 2):
-
-            for (
-                offline_start,
-                offline_end,
-            ) in valid_offline_intervals:
-                
-        
-        
-                # ==================================================
-                # FULL TIMELINE:
-                # One complete physical OFFLINE incident.
-                #
-                # Hourly cards remain clipped separately.
-                # ==================================================
-
-                offline_total_seconds = max(
-                    0,
-                    int(
-                        (
-                            offline_end -
-                            offline_start
-                        ).total_seconds()
-                    ),
-                )
-
-                if offline_total_seconds > 0:
-
-                    offline_segment_payload = {
-                        "id": None,
-                        "mode": "OFFLINE",
-
-                        "start_time": (
-                            offline_start.strftime(
-                                "%I:%M:%S %p"
-                            )
-                        ),
-
-                        "end_time": (
-                            offline_end.strftime(
-                                "%I:%M:%S %p"
-                            )
-                        ),
-
-                        "start_system_time": (
-                            system_time(
-                                offline_start
-                            )
-                        ),
-
-                        "end_system_time": (
-                            system_time(
-                                offline_end
-                            )
-                        ),
-
-                        "duration_seconds": (
-                            offline_total_seconds
-                        ),
-
-                        "duration_display": (
-                            _seconds_to_display(
-                                offline_total_seconds
-                            )
-                        ),
-
-                        "closed_by": (
-                            "MACHINE_ON"
-                            if offline_end < effective_end
-                            else "CURRENT"
-                        ),
-
-                        "reason": "Machine Off",
-
-                        "specific_reason": (
-                            "Machine offline / no signal"
-                        ),
-
-                        "remark": "",
-                        "shift": selected_shift,
-                    }
-
-                    add_timeline_event(
-                        events,
-                        offline_start,
-                        "IDEAL_OFFLINE",
-                        "Offline Ideal",
-                        (
-                            f"Offline Ideal: "
-                            f"{_seconds_to_display(offline_total_seconds)} "
-                            f"("
-                            f"{offline_start.strftime('%I:%M:%S %p')} - "
-                            f"{offline_end.strftime('%I:%M:%S %p')}"
-                            f")."
-                        ),
-                        selected_shift,
-                        extra={
-                            "ideal_segment": (
-                                offline_segment_payload
-                            )
-                        },
-                    )        
-
-                for bucket in hour_buckets:
-
-                    bucket_end = min(
-                        bucket["scheduled_end"],
-                        effective_end,
-                    )
-
-                    overlap_start = max(
-                        offline_start,
-                        bucket["start"],
-                    )
-
-                    overlap_end = min(
-                        offline_end,
-                        bucket_end,
-                    )
-
-                    if overlap_end <= overlap_start:
-                        continue
-
-                    overlap_seconds = int(
-                        (
-                            overlap_end -
-                            overlap_start
-                        ).total_seconds()
-                    )
-
-                    if overlap_seconds <= 0:
-                        continue
-
-                    # Header total:
-                    # Offline badge uses ALL real physical offline time.
-                    bucket[
-                        "_offline_ideal_intervals"
-                    ].append(
-                        (
-                            overlap_start,
-                            overlap_end,
-                        )
-                    )
-
-                    # ----------------------------------------------
-                    # DISPLAY CARD RULE
-                    #
-                    # Do not display HOUR_CHANGE-like repeated
-                    # cards in every middle full hour.
-                    # ----------------------------------------------
-
-                    is_first_piece = (
-                        overlap_start
-                        == offline_start
-                    )
-
-                    is_last_piece = (
-                        overlap_end
-                        == offline_end
-                    )
-
-                    if not (
-                        is_first_piece
-                        or is_last_piece
-                    ):
-                        continue
-
-                    bucket["ideal_segments"].append(
-                        {
-                            "id": None,
-                            "mode": "OFFLINE",
-
-                            "start_time": (
-                                overlap_start.strftime(
-                                    "%I:%M:%S %p"
-                                )
-                            ),
-
-                            "end_time": (
-                                overlap_end.strftime(
-                                    "%I:%M:%S %p"
-                                )
-                            ),
-
-                            "start_system_time": (
-                                system_time(
-                                    overlap_start
-                                )
-                            ),
-
-                            "end_system_time": (
-                                system_time(
-                                    overlap_end
-                                )
-                            ),
-
-                            "duration_seconds": (
-                                overlap_seconds
-                            ),
-
-                            "duration_display": (
-                                _seconds_to_display(
-                                    overlap_seconds
-                                )
-                            ),
-
-                            "bucket_overlap_seconds": (
-                                overlap_seconds
-                            ),
-
-                            "bucket_overlap_display": (
-                                _seconds_to_display(
-                                    overlap_seconds
-                                )
-                            ),
-
-                            "closed_by": (
-                                "MACHINE_ON"
-                                if offline_end < effective_end
-                                else "CURRENT"
-                            ),
-
-                            "reason": "Machine Off",
-
-                            "specific_reason": (
-                                "Machine offline / no signal"
-                            ),
-
-                            "remark": "",
-
-                            "shift": selected_shift,
-
-                            "_overlap_start_dt": overlap_start,
-                            "_overlap_end_dt": overlap_end,
-                        }
-                    )           
+                  
         
         
         def merge_time_intervals(intervals):
@@ -4818,126 +4704,120 @@ def _plant_history_common(
 
 
             # ======================================================
-            # OFFLINE CARDS
+           
             #
-            # Plant 1:
-            # Keep only explicitly selected physical transition cards.
-            #
-            # Plant 2:
-            # Keep current behaviour until Plant 2 implementation.
+            # Therefore duplicate/overlapping DB rows do not create
+            # duplicate visual History cards.
             # ======================================================
 
-            if plant_no in (1, 2):
+            offline_source_segments = [
+                seg
+                for seg in bucket["ideal_segments"]
+                if str(
+                    seg.get("mode") or ""
+                ).upper() == "OFFLINE"
+            ]
 
-                for seg in bucket["ideal_segments"]:
 
-                    if str(
-                        seg.get("mode") or ""
-                    ).upper() != "OFFLINE":
-                        continue
+            for (
+                range_start,
+                range_end,
+            ) in merged_offline:
 
-                    clean_seg = dict(seg)
+                representative = (
+                    offline_source_segments[0]
+                    if offline_source_segments
+                    else {}
+                )
 
-                    clean_seg.pop(
-                        "_overlap_start_dt",
-                        None,
-                    )
 
-                    clean_seg.pop(
-                        "_overlap_end_dt",
-                        None,
-                    )
-
-                    normalized_segments.append(
-                        clean_seg
-                    )
-
-            else:
-
-                offline_source_segments = [
-                    seg
-                    for seg in bucket["ideal_segments"]
-                    if str(
-                        seg.get("mode") or ""
-                    ).upper() == "OFFLINE"
-                ]
-
-                for (
-                    range_start,
-                    range_end,
-                ) in merged_offline:
-
-                    representative = (
-                        offline_source_segments[0]
-                        if offline_source_segments
-                        else {}
-                    )
-
-                    duration_seconds = int(
-                        (
-                            range_end -
-                            range_start
-                        ).total_seconds()
-                    )
-
-                    if duration_seconds <= 0:
-                        continue
-
-                    normalized = dict(
-                        representative
-                    )
-
-                    normalized["mode"] = "OFFLINE"
-
-                    normalized["start_time"] = (
-                        range_start.strftime(
-                            "%I:%M:%S %p"
-                        )
-                    )
-
-                    normalized["end_time"] = (
-                        range_end.strftime(
-                            "%I:%M:%S %p"
-                        )
-                    )
-
-                    normalized[
-                        "start_system_time"
-                    ] = system_time(
-                        range_start
-                    )
-
-                    normalized[
-                        "end_system_time"
-                    ] = system_time(
+                duration_seconds = int(
+                    (
                         range_end
+                        - range_start
+                    ).total_seconds()
+                )
+
+
+                if duration_seconds <= 0:
+                    continue
+                
+                
+                normalized = dict(
+                    representative
+                )
+
+
+                normalized["mode"] = "OFFLINE"
+
+
+                normalized["start_time"] = (
+                    range_start.strftime(
+                        "%I:%M:%S %p"
                     )
+                )
 
-                    normalized[
-                        "duration_seconds"
-                    ] = duration_seconds
 
-                    normalized[
-                        "duration_display"
-                    ] = _seconds_to_display(
-                        duration_seconds
+                normalized["end_time"] = (
+                    range_end.strftime(
+                        "%I:%M:%S %p"
                     )
-
-                    normalized.pop(
-                        "_overlap_start_dt",
-                        None,
-                    )
-
-                    normalized.pop(
-                        "_overlap_end_dt",
-                        None,
-                    )
-
-                    normalized_segments.append(
-                        normalized
-                    )
+                )
 
 
+                normalized[
+                    "start_system_time"
+                ] = system_time(
+                    range_start
+                )
+
+
+                normalized[
+                    "end_system_time"
+                ] = system_time(
+                    range_end
+                )
+
+
+                normalized[
+                    "duration_seconds"
+                ] = duration_seconds
+
+
+                normalized[
+                    "duration_display"
+                ] = _seconds_to_display(
+                    duration_seconds
+                )
+
+
+                normalized[
+                    "bucket_overlap_seconds"
+                ] = duration_seconds
+
+
+                normalized[
+                    "bucket_overlap_display"
+                ] = _seconds_to_display(
+                    duration_seconds
+                )
+
+
+                normalized.pop(
+                    "_overlap_start_dt",
+                    None,
+                )
+
+
+                normalized.pop(
+                    "_overlap_end_dt",
+                    None,
+                )
+
+
+                normalized_segments.append(
+                    normalized
+                )
             
             normalized_segments.sort(
                 key=lambda seg: (
