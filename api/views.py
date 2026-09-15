@@ -7995,67 +7995,171 @@ def get_plant_location_name(plant_code):
     return "Plant 1" if plant_code == "plant1" else "Plant 2"
 
 
-# UPDATED: Added shift parameter to handle specific shift timings
-def get_time_boundaries(year, month, period, target_date_str=None, shift="fullday"):
-    now = datetime.now()
+IST_TZ = pytz.timezone("Asia/Kolkata")
 
-    # Agar frontend se koi date aayi hai to use base_date manein, warna aaj ki date lein
+
+def to_ist_aware(dt):
+    """
+    Convert our IST wall-clock boundary to an aware datetime.
+
+    plant1_data / plant2_data timestamps are handled as naive IST.
+    ideal_time_segments_reason timestamps are timestamptz,
+    so those queries MUST use aware IST boundaries.
+    """
+    if dt is None:
+        return None
+
+    if dt.tzinfo is None:
+        return IST_TZ.localize(dt)
+
+    return dt.astimezone(IST_TZ)
+
+# UPDATED: Added shift parameter to handle specific shift timings
+def get_time_boundaries(
+    year,
+    month,
+    period,
+    target_date_str=None,
+    shift="fullday",
+):
+    # Keep production-table boundaries as naive IST wall-clock values.
+    now_ist_naive = datetime.now(IST_TZ).replace(tzinfo=None)
+
     if target_date_str:
         try:
-            base_date = datetime.strptime(target_date_str, "%Y-%m-%d")
-            # FIX: Override year and month with the target date's year/month
+            base_date = datetime.strptime(
+                target_date_str,
+                "%Y-%m-%d",
+            )
+
             year = base_date.year
             month = base_date.month
+
         except ValueError:
-            base_date = now
+            base_date = now_ist_naive
+
     else:
-        base_date = now
+        base_date = now_ist_naive
 
     if period == "today":
-        group_by = "EXTRACT(HOUR FROM timestamp)"
-        ideal_group_by = "EXTRACT(HOUR FROM ideal_start_at)"
 
-        # SHIFT WISE TIMING LOGIC
-        if shift == "shiftA":
-            # Shift A: 08:30 AM to 08:00 PM (20:00)
-            start_date = base_date.replace(hour=8, minute=30, second=0, microsecond=0)
-            end_date = base_date.replace(hour=20, minute=0, second=0, microsecond=0)
-        elif shift == "shiftB":
-            # Shift B: 08:30 PM (20:30) to 08:00 AM Next Day
-            start_date = base_date.replace(hour=20, minute=30, second=0, microsecond=0)
-            end_date = (base_date + timedelta(days=1)).replace(
-                hour=8, minute=0, second=0, microsecond=0
+        # plant1_data / plant2_data:
+        # timestamp WITHOUT TIME ZONE
+        group_by = "EXTRACT(HOUR FROM timestamp)"
+
+        # ideal_time_segments_reason:
+        # timestamp WITH TIME ZONE
+        # Convert to IST BEFORE extracting hour.
+        ideal_group_by = """
+            EXTRACT(
+                HOUR FROM
+                (ideal_start_at AT TIME ZONE 'Asia/Kolkata')
             )
+        """
+
+        if shift == "shiftA":
+
+            start_date = base_date.replace(
+                hour=8,
+                minute=30,
+                second=0,
+                microsecond=0,
+            )
+
+            end_date = base_date.replace(
+                hour=20,
+                minute=0,
+                second=0,
+                microsecond=0,
+            )
+
+        elif shift == "shiftB":
+
+            start_date = base_date.replace(
+                hour=20,
+                minute=30,
+                second=0,
+                microsecond=0,
+            )
+
+            end_date = (
+                base_date + timedelta(days=1)
+            ).replace(
+                hour=8,
+                minute=0,
+                second=0,
+                microsecond=0,
+            )
+
         else:
-            # Full Day: 00:00 to 24:00
-            start_date = base_date.replace(hour=0, minute=0, second=0, microsecond=0)
+
+            start_date = base_date.replace(
+                hour=0,
+                minute=0,
+                second=0,
+                microsecond=0,
+            )
+
             end_date = start_date + timedelta(days=1)
 
     elif period == "weekly":
-        # Specific Date ko hafte ka aakhri din maan kar pichle 7 din ka data
+
         end_date = base_date.replace(
-            hour=0, minute=0, second=0, microsecond=0
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0,
         ) + timedelta(days=1)
+
         start_date = end_date - timedelta(days=7)
+
         group_by = "EXTRACT(DAY FROM timestamp)"
-        ideal_group_by = "EXTRACT(DAY FROM ideal_start_at)"
+
+        ideal_group_by = """
+            EXTRACT(
+                DAY FROM
+                (ideal_start_at AT TIME ZONE 'Asia/Kolkata')
+            )
+        """
+
     elif period == "yearly":
-        # Pure saal ka data - Monthly grouping
+
         start_date = datetime(year, 1, 1)
         end_date = datetime(year + 1, 1, 1)
+
         group_by = "EXTRACT(MONTH FROM timestamp)"
-        ideal_group_by = "EXTRACT(MONTH FROM ideal_start_at)"
-    else:  # default 'monthly'
-        # Current month ka data - Daily grouping
+
+        ideal_group_by = """
+            EXTRACT(
+                MONTH FROM
+                (ideal_start_at AT TIME ZONE 'Asia/Kolkata')
+            )
+        """
+
+    else:
+
         start_date = datetime(year, month, 1)
+
         if month == 12:
             end_date = datetime(year + 1, 1, 1)
         else:
             end_date = datetime(year, month + 1, 1)
-        group_by = "EXTRACT(DAY FROM timestamp)"
-        ideal_group_by = "EXTRACT(DAY FROM ideal_start_at)"
 
-    return start_date, end_date, group_by, ideal_group_by
+        group_by = "EXTRACT(DAY FROM timestamp)"
+
+        ideal_group_by = """
+            EXTRACT(
+                DAY FROM
+                (ideal_start_at AT TIME ZONE 'Asia/Kolkata')
+            )
+        """
+
+    return (
+        start_date,
+        end_date,
+        group_by,
+        ideal_group_by,
+    )
 
 
 # UPDATED: Added shift parameter to return only required hours
@@ -8164,222 +8268,612 @@ def realtime_dashboard(request):
 @never_cache
 @api_view(["GET"])
 def monthly_summary(request):
-    plant = request.GET.get("plant", "plant1")
-    month = int(request.GET.get("month", datetime.now().month))
-    year = int(request.GET.get("year", datetime.now().year))
-    period = request.GET.get("period", "monthly")
-    target_date_str = request.GET.get("date")  # GET THE SPECIFIC DATE
-    shift = request.GET.get("shift", "fullday")  # GET SHIFT PARAMETER
-
-    table_name, _ = get_plant_table(plant)
-    plant_location = get_plant_location_name(plant)
-
-    # Date Parameter Passed here along with shift
-    start_date, end_date, group_by, ideal_group_by = get_time_boundaries(
-        year, month, period, target_date_str, shift
-    )
-
-    # Update year/month for expected keys in case target_date_str changed them
-    if target_date_str:
-        try:
-            base = datetime.strptime(target_date_str, "%Y-%m-%d")
-            year, month = base.year, base.month
-        except ValueError:
-            pass
-
-    expected_keys = generate_expected_keys(
-        period, start_date, end_date, year, month, shift
-    )
 
     try:
+        plant = request.GET.get("plant", "plant1")
+
+        month = int(
+            request.GET.get(
+                "month",
+                datetime.now().month,
+            )
+        )
+
+        year = int(
+            request.GET.get(
+                "year",
+                datetime.now().year,
+            )
+        )
+
+        period = request.GET.get(
+            "period",
+            "monthly",
+        )
+
+        target_date_str = request.GET.get("date")
+
+        shift = request.GET.get(
+            "shift",
+            "fullday",
+        )
+
+        table_name, _ = get_plant_table(plant)
+
+        plant_location = get_plant_location_name(
+            plant
+        )
+
+        (
+            start_date,
+            end_date,
+            group_by,
+            ideal_group_by,
+        ) = get_time_boundaries(
+            year,
+            month,
+            period,
+            target_date_str,
+            shift,
+        )
+
+        # -----------------------------------------------------
+        # IMPORTANT
+        #
+        # Production table:
+        #     timestamp WITHOUT TIME ZONE
+        #     => use naive IST boundary
+        #
+        # Ideal table:
+        #     timestamp WITH TIME ZONE
+        #     => use aware IST boundary
+        # -----------------------------------------------------
+
+        ideal_start_date = to_ist_aware(start_date)
+        ideal_end_date = to_ist_aware(end_date)
+
+        if target_date_str:
+            try:
+                base = datetime.strptime(
+                    target_date_str,
+                    "%Y-%m-%d",
+                )
+
+                year = base.year
+                month = base.month
+
+            except ValueError:
+                pass
+
+        expected_keys = generate_expected_keys(
+            period,
+            start_date,
+            end_date,
+            year,
+            month,
+            shift,
+        )
+
         with connection.cursor() as cursor:
-            # 1. Main table se Production Count
+
+            # =================================================
+            # 1. PRODUCTION
+            # =================================================
+
             cursor.execute(
                 f"""
-                SELECT {group_by} as time_key, SUM(count) as total_prod
+                SELECT
+                    {group_by} AS time_key,
+                    COALESCE(SUM(count), 0) AS total_prod
+
                 FROM {table_name}
-                WHERE timestamp >= %s AND timestamp < %s
+
+                WHERE
+                    timestamp >= %s::timestamp WITHOUT TIME ZONE
+                    AND timestamp < %s::timestamp WITHOUT TIME ZONE
+
                 GROUP BY {group_by}
+
+                ORDER BY {group_by}
                 """,
-                [start_date, end_date],
+                [
+                    start_date,
+                    end_date,
+                ],
             )
+
             prod_results = cursor.fetchall()
 
-            # 2. Ideal time table se ONLINE / OFFLINE data
+            # =================================================
+            # 2. ONLINE + OFFLINE IDEAL
+            # =================================================
+
             cursor.execute(
                 f"""
-                SELECT 
-                    {ideal_group_by} as time_key,
-                    SUM(CASE WHEN ideal_mode = 'ONLINE' THEN ideal_time ELSE 0 END) / 60.0 as online_idle_mins,
-                    SUM(CASE WHEN ideal_mode = 'OFFLINE' THEN ideal_time ELSE 0 END) / 60.0 as offline_shutdown_mins
+                SELECT
+
+                    {ideal_group_by} AS time_key,
+
+                    COALESCE(
+                        SUM(
+                            CASE
+                                WHEN UPPER(TRIM(ideal_mode)) = 'ONLINE'
+                                THEN ideal_time
+                                ELSE 0
+                            END
+                        ),
+                        0
+                    ) / 60.0 AS online_idle_mins,
+
+                    COALESCE(
+                        SUM(
+                            CASE
+                                WHEN UPPER(TRIM(ideal_mode)) = 'OFFLINE'
+                                THEN ideal_time
+                                ELSE 0
+                            END
+                        ),
+                        0
+                    ) / 60.0 AS offline_shutdown_mins
+
                 FROM live_data.ideal_time_segments_reason
-                WHERE plant_location = %s AND ideal_start_at >= %s AND ideal_start_at < %s
+
+                WHERE
+                    TRIM(plant_location) = %s
+
+                    AND ideal_start_at >=
+                        %s::timestamp WITH TIME ZONE
+
+                    AND ideal_start_at <
+                        %s::timestamp WITH TIME ZONE
+
+                    -- History = completed/stored durations
+                    AND ideal_end_at IS NOT NULL
+                    AND ideal_time IS NOT NULL
+
+                    AND UPPER(TRIM(ideal_mode))
+                        IN ('ONLINE', 'OFFLINE')
+
                 GROUP BY {ideal_group_by}
+
+                ORDER BY {ideal_group_by}
                 """,
-                [plant_location, start_date, end_date],
+                [
+                    plant_location,
+                    ideal_start_date,
+                    ideal_end_date,
+                ],
             )
+
             idle_results = cursor.fetchall()
 
-        # Data merging dynamically
-        db_data = {key: {"prod": 0, "idle": 0, "shutdown": 0} for key in expected_keys}
+        # =====================================================
+        # 3. MERGE PRODUCTION + IDEAL DATA
+        # =====================================================
+
+        db_data = {
+            key: {
+                "prod": 0,
+                "idle": 0,
+                "shutdown": 0,
+            }
+            for key in expected_keys
+        }
 
         for row in prod_results:
-            key = int(row[0]) if row[0] is not None else -1
+
+            key = (
+                int(row[0])
+                if row[0] is not None
+                else -1
+            )
+
             if key in db_data:
-                db_data[key]["prod"] += row[1] or 0
+                db_data[key]["prod"] += (
+                    row[1] or 0
+                )
 
         for row in idle_results:
-            key = int(row[0]) if row[0] is not None else -1
+
+            key = (
+                int(row[0])
+                if row[0] is not None
+                else -1
+            )
+
             if key in db_data:
-                db_data[key]["idle"] += round(float(row[1] or 0), 2)
-                db_data[key]["shutdown"] += round(float(row[2] or 0), 2)
+
+                db_data[key]["idle"] += round(
+                    float(row[1] or 0),
+                    2,
+                )
+
+                db_data[key]["shutdown"] += round(
+                    float(row[2] or 0),
+                    2,
+                )
 
         daily_breakdown = []
+
         total_prod = 0
-        total_idle_and_shutdown_mins = 0
+        total_online_idle_mins = 0
+        total_offline_mins = 0
         days_with_data = 0
 
         for key in expected_keys:
+
             prod = db_data[key]["prod"]
+
             idle = db_data[key]["idle"]
+
             shutdown = db_data[key]["shutdown"]
 
-            has_data = prod > 0 or idle > 0 or shutdown > 0
+            has_data = (
+                prod > 0
+                or idle > 0
+                or shutdown > 0
+            )
+
             if has_data:
                 days_with_data += 1
 
             total_prod += prod
-            total_idle_and_shutdown_mins += idle + shutdown
 
-            # Name Formatting
-            name_label = str(key)
-            if period == "today":
-                name_label = f"{key}:00"
-            elif period == "yearly":
-                name_label = calendar.month_abbr[key]
-            else:
-                name_label = f"Day {key}"
+            total_online_idle_mins += idle
+
+            total_offline_mins += shutdown
 
             daily_breakdown.append(
                 {
                     "day": key,
-                    "name": name_label,
                     "production": prod,
+
+                    # ONLINE Ideal
                     "idle_minutes": idle,
+
+                    # OFFLINE Ideal
                     "shutdown_minutes": shutdown,
+
                     "has_data": has_data,
                 }
             )
 
+        total_combined_mins = (
+            total_online_idle_mins
+            + total_offline_mins
+        )
+
         return Response(
             {
                 "success": True,
-                "month_name": (
-                    calendar.month_name[month]
-                    if period == "monthly"
-                    else period.capitalize()
-                ),
+
+                "plant": plant,
+                "plant_location": plant_location,
+
                 "summary": {
                     "total_production": total_prod,
-                    "total_idle_hours": round(total_idle_and_shutdown_mins / 60, 1),
+
+                    # Keep old field so current FE remains compatible.
+                    "total_idle_hours": round(
+                        total_combined_mins / 60,
+                        2,
+                    ),
+
+                    # New exact separate values.
+                    "online_idle_hours": round(
+                        total_online_idle_mins / 60,
+                        2,
+                    ),
+
+                    "offline_shutdown_hours": round(
+                        total_offline_mins / 60,
+                        2,
+                    ),
+
                     "days_with_data": days_with_data,
-                    "days_in_month": len(expected_keys),
+
+                    "days_in_month": len(
+                        expected_keys
+                    ),
+
                     "coverage": round(
-                        (days_with_data / max(len(expected_keys), 1)) * 100, 1
+                        (
+                            days_with_data
+                            / max(
+                                len(expected_keys),
+                                1,
+                            )
+                        )
+                        * 100,
+                        1,
                     ),
                 },
-                "daily_breakdown": daily_breakdown,
+
+                "daily_breakdown":
+                    daily_breakdown,
             }
         )
+
     except Exception as e:
-        return Response({"success": False, "error": str(e)}, status=500)
+
+        traceback.print_exc()
+
+        return Response(
+            {
+                "success": False,
+                "error": str(e),
+            },
+            status=500,
+        )
 
 
 @never_cache
 @api_view(["GET"])
 def machine_analysis(request):
-    plant = request.GET.get("plant", "plant1")
-    machine_no = request.GET.get("machine_no")
-    month = int(request.GET.get("month", datetime.now().month))
-    year = int(request.GET.get("year", datetime.now().year))
-    period = request.GET.get("period", "monthly")
-    target_date_str = request.GET.get("date")  # GET THE SPECIFIC DATE
-    shift = request.GET.get("shift", "fullday")  # GET SHIFT PARAMETER
-
-    table_name, _ = get_plant_table(plant)
-    plant_location = get_plant_location_name(plant)
-
-    # Date Parameter Passed here along with shift
-    start_date, end_date, group_by, ideal_group_by = get_time_boundaries(
-        year, month, period, target_date_str, shift
-    )
-
-    # Update year/month for expected keys in case target_date_str changed them
-    if target_date_str:
-        try:
-            base = datetime.strptime(target_date_str, "%Y-%m-%d")
-            year, month = base.year, base.month
-        except ValueError:
-            pass
-
-    expected_keys = generate_expected_keys(
-        period, start_date, end_date, year, month, shift
-    )
 
     try:
+        plant = request.GET.get(
+            "plant",
+            "plant1",
+        )
+
+        machine_no = str(
+            request.GET.get(
+                "machine_no",
+                "",
+            )
+        ).strip()
+
+        if not machine_no:
+            return Response(
+                {
+                    "success": False,
+                    "error": "machine_no is required",
+                },
+                status=400,
+            )
+
+        month = int(
+            request.GET.get(
+                "month",
+                datetime.now().month,
+            )
+        )
+
+        year = int(
+            request.GET.get(
+                "year",
+                datetime.now().year,
+            )
+        )
+
+        period = request.GET.get(
+            "period",
+            "monthly",
+        )
+
+        target_date_str = request.GET.get(
+            "date"
+        )
+
+        shift = request.GET.get(
+            "shift",
+            "fullday",
+        )
+
+        table_name, _ = get_plant_table(
+            plant
+        )
+
+        plant_location = (
+            get_plant_location_name(plant)
+        )
+
+        (
+            start_date,
+            end_date,
+            group_by,
+            ideal_group_by,
+        ) = get_time_boundaries(
+            year,
+            month,
+            period,
+            target_date_str,
+            shift,
+        )
+
+        ideal_start_date = to_ist_aware(
+            start_date
+        )
+
+        ideal_end_date = to_ist_aware(
+            end_date
+        )
+
+        if target_date_str:
+            try:
+                base = datetime.strptime(
+                    target_date_str,
+                    "%Y-%m-%d",
+                )
+
+                year = base.year
+                month = base.month
+
+            except ValueError:
+                pass
+
+        expected_keys = generate_expected_keys(
+            period,
+            start_date,
+            end_date,
+            year,
+            month,
+            shift,
+        )
+
         with connection.cursor() as cursor:
-            # Main table for production
+
+            # =================================================
+            # MACHINE PRODUCTION
+            # =================================================
+
             cursor.execute(
                 f"""
-                SELECT {group_by} as time_key, SUM(count) as total_prod
+                SELECT
+                    {group_by} AS time_key,
+                    COALESCE(SUM(count), 0)
+
                 FROM {table_name}
-                WHERE machine_no = %s AND timestamp >= %s AND timestamp < %s
+
+                WHERE
+                    TRIM(machine_no::text) = %s
+
+                    AND timestamp >=
+                        %s::timestamp WITHOUT TIME ZONE
+
+                    AND timestamp <
+                        %s::timestamp WITHOUT TIME ZONE
+
                 GROUP BY {group_by}
+
+                ORDER BY {group_by}
                 """,
-                [machine_no, start_date, end_date],
+                [
+                    machine_no,
+                    start_date,
+                    end_date,
+                ],
             )
+
             prod_results = cursor.fetchall()
 
-            # Ideal time table for this specific machine
+            # =================================================
+            # MACHINE ONLINE / OFFLINE IDEAL
+            # =================================================
+
             cursor.execute(
                 f"""
-                SELECT 
-                    {ideal_group_by} as time_key,
-                    SUM(CASE WHEN ideal_mode = 'ONLINE' THEN ideal_time ELSE 0 END) / 60.0 as online_idle_mins,
-                    SUM(CASE WHEN ideal_mode = 'OFFLINE' THEN ideal_time ELSE 0 END) / 60.0 as offline_shutdown_mins
+                SELECT
+
+                    {ideal_group_by} AS time_key,
+
+                    COALESCE(
+                        SUM(
+                            CASE
+                                WHEN UPPER(TRIM(ideal_mode)) = 'ONLINE'
+                                THEN ideal_time
+                                ELSE 0
+                            END
+                        ),
+                        0
+                    ) / 60.0 AS online_idle_mins,
+
+                    COALESCE(
+                        SUM(
+                            CASE
+                                WHEN UPPER(TRIM(ideal_mode)) = 'OFFLINE'
+                                THEN ideal_time
+                                ELSE 0
+                            END
+                        ),
+                        0
+                    ) / 60.0 AS offline_shutdown_mins
+
                 FROM live_data.ideal_time_segments_reason
-                WHERE machine_no = %s AND plant_location = %s AND ideal_start_at >= %s AND ideal_start_at < %s
+
+                WHERE
+                    TRIM(machine_no::text) = %s
+
+                    AND TRIM(plant_location) = %s
+
+                    AND ideal_start_at >=
+                        %s::timestamp WITH TIME ZONE
+
+                    AND ideal_start_at <
+                        %s::timestamp WITH TIME ZONE
+
+                    AND ideal_end_at IS NOT NULL
+                    AND ideal_time IS NOT NULL
+
+                    AND UPPER(TRIM(ideal_mode))
+                        IN ('ONLINE', 'OFFLINE')
+
                 GROUP BY {ideal_group_by}
+
+                ORDER BY {ideal_group_by}
                 """,
-                [machine_no, plant_location, start_date, end_date],
+                [
+                    machine_no,
+                    plant_location,
+                    ideal_start_date,
+                    ideal_end_date,
+                ],
             )
+
             idle_results = cursor.fetchall()
 
-        db_data = {key: {"prod": 0, "idle": 0, "shutdown": 0} for key in expected_keys}
+        db_data = {
+            key: {
+                "prod": 0,
+                "idle": 0,
+                "shutdown": 0,
+            }
+            for key in expected_keys
+        }
 
         for row in prod_results:
-            key = int(row[0]) if row[0] is not None else -1
+
+            key = (
+                int(row[0])
+                if row[0] is not None
+                else -1
+            )
+
             if key in db_data:
-                db_data[key]["prod"] += row[1] or 0
+                db_data[key]["prod"] += (
+                    row[1] or 0
+                )
 
         for row in idle_results:
-            key = int(row[0]) if row[0] is not None else -1
+
+            key = (
+                int(row[0])
+                if row[0] is not None
+                else -1
+            )
+
             if key in db_data:
-                db_data[key]["idle"] += round(float(row[1] or 0), 2)
-                db_data[key]["shutdown"] += round(float(row[2] or 0), 2)
+
+                db_data[key]["idle"] += round(
+                    float(row[1] or 0),
+                    2,
+                )
+
+                db_data[key]["shutdown"] += round(
+                    float(row[2] or 0),
+                    2,
+                )
 
         daily_breakdown = []
+
         total_prod = 0
         total_idle_mins = 0
         total_shutdown_mins = 0
         active_days = 0
 
         for key in expected_keys:
+
             prod = db_data[key]["prod"]
             idle = db_data[key]["idle"]
             shutdown = db_data[key]["shutdown"]
 
-            has_data = prod > 0 or idle > 0 or shutdown > 0
+            has_data = (
+                prod > 0
+                or idle > 0
+                or shutdown > 0
+            )
+
             if has_data:
                 active_days += 1
 
@@ -8387,64 +8881,107 @@ def machine_analysis(request):
             total_idle_mins += idle
             total_shutdown_mins += shutdown
 
-            # Formatting labels
-            name_label = str(key)
-            if period == "today":
-                name_label = f"{key}:00"
-            elif period == "yearly":
-                name_label = calendar.month_abbr[key]
-            else:
-                name_label = f"Day {key}"
-
             daily_breakdown.append(
                 {
                     "day": key,
-                    "name": name_label,
                     "production": prod,
                     "idle_minutes": idle,
                     "shutdown_minutes": shutdown,
                     "has_data": has_data,
-                    "status": "Active" if has_data else "Offline",
+                    "status": (
+                        "Active"
+                        if has_data
+                        else "No Data"
+                    ),
                 }
             )
 
-        total_days = max(len(expected_keys), 1)
+        total_periods = max(
+            len(expected_keys),
+            1,
+        )
 
         return Response(
             {
                 "success": True,
+
                 "machine_info": {
                     "machine_no": machine_no,
-                    "machine_id": f"M-{str(machine_no).zfill(2)}",
-                    "month_name": (
-                        calendar.month_name[month]
-                        if period == "monthly"
-                        else period.capitalize()
-                    ),
-                    "days_in_month": total_days,
+                    "machine_id":
+                        f"M-{machine_no.zfill(2)}",
                     "period_type": period,
                 },
+
                 "production_summary": {
-                    "total_production": total_prod,
-                    "average_daily": (
-                        round(total_prod / active_days, 1) if active_days > 0 else 0
+                    "total_production":
+                        total_prod,
+
+                    "average_daily": round(
+                        (
+                            total_prod
+                            / active_days
+                        )
+                        if active_days > 0
+                        else 0,
+                        1,
                     ),
                 },
+
                 "idle_summary": {
-                    "total_idle_hours": round(total_idle_mins / 60, 1),
-                    "total_shutdown_hours": round(total_shutdown_mins / 60, 1),
+                    "total_idle_hours": round(
+                        total_idle_mins / 60,
+                        2,
+                    ),
+
+                    "total_shutdown_hours":
+                        round(
+                            total_shutdown_mins
+                            / 60,
+                            2,
+                        ),
                 },
+
                 "machine_status": {
-                    "active_days": active_days,
-                    "inactive_days": total_days - active_days,
-                    "active_percentage": round((active_days / total_days) * 100, 1),
-                    "status": "Operational" if active_days > 0 else "Offline",
+                    "active_days":
+                        active_days,
+
+                    "inactive_days":
+                        total_periods
+                        - active_days,
+
+                    "active_percentage":
+                        round(
+                            (
+                                active_days
+                                / total_periods
+                            )
+                            * 100,
+                            1,
+                        ),
+
+                    "status": (
+                        "Operational"
+                        if active_days > 0
+                        else "No Data"
+                    ),
                 },
-                "daily_breakdown": daily_breakdown,
+
+                "daily_breakdown":
+                    daily_breakdown,
             }
         )
+
     except Exception as e:
-        return Response({"success": False, "error": str(e)}, status=500)
+
+        traceback.print_exc()
+
+        return Response(
+            {
+                "success": False,
+                "error": str(e),
+            },
+            status=500,
+        )
 
 
 @never_cache
@@ -8517,6 +9054,131 @@ def machine_wise(request):
         return Response({"success": True, "data": machine_data})
     except Exception as e:
         return Response({"success": False, "error": str(e)}, status=500)
+    
+@never_cache
+@api_view(["GET"])
+def production_history_machine_list(request):
+    """
+    Return actual machine numbers available for the selected plant.
+
+    Used only by Production History machine selector.
+
+    Example:
+        /api/production-history-machines/?plant=plant1
+        /api/production-history-machines/?plant=plant2
+    """
+
+    try:
+        # -----------------------------------------------
+        # 1. Get selected plant from frontend
+        # -----------------------------------------------
+        plant = str(
+            request.GET.get("plant", "plant1")
+        ).strip().lower()
+
+        # -----------------------------------------------
+        # 2. Validate plant
+        # -----------------------------------------------
+        if plant not in ["plant1", "plant2"]:
+            return Response(
+                {
+                    "success": False,
+                    "error": "plant must be plant1 or plant2",
+                },
+                status=400,
+            )
+
+        # -----------------------------------------------
+        # 3. Get correct production table
+        # -----------------------------------------------
+        table_name, _ = get_plant_table(plant)
+
+        # Converts:
+        #
+        # plant1 -> Plant 1
+        # plant2 -> Plant 2
+        #
+        plant_location = get_plant_location_name(plant)
+
+        # -----------------------------------------------
+        # 4. Read actual machine numbers from DB
+        # -----------------------------------------------
+        with connection.cursor() as cursor:
+
+            cursor.execute(
+                f"""
+                SELECT DISTINCT machine_no
+                FROM
+                (
+                    -- Machines existing in production table
+                    SELECT
+                        TRIM(machine_no::text)::integer AS machine_no
+
+                    FROM {table_name}
+
+                    WHERE
+                        machine_no IS NOT NULL
+
+                        AND TRIM(machine_no::text)
+                            ~ '^[0-9]+$'
+
+
+                    UNION
+
+
+                    -- Machines existing in Ideal history table
+                    SELECT
+                        machine_no::integer AS machine_no
+
+                    FROM live_data.ideal_time_segments_reason
+
+                    WHERE
+                        TRIM(plant_location) = %s
+
+                        AND machine_no IS NOT NULL
+
+                ) AS machine_list
+
+                ORDER BY machine_no ASC
+                """,
+                [plant_location],
+            )
+
+            rows = cursor.fetchall()
+
+        # -----------------------------------------------
+        # 5. Convert DB rows into simple number list
+        # -----------------------------------------------
+        machines = [
+            int(row[0])
+            for row in rows
+            if row[0] is not None
+        ]
+
+        # -----------------------------------------------
+        # 6. Send list to React
+        # -----------------------------------------------
+        return Response(
+            {
+                "success": True,
+                "plant": plant,
+                "plant_location": plant_location,
+                "count": len(machines),
+                "machines": machines,
+            }
+        )
+
+    except Exception as e:
+
+        traceback.print_exc()
+
+        return Response(
+            {
+                "success": False,
+                "error": str(e),
+            },
+            status=500,
+        )    
 
 
 @api_view(["POST"])

@@ -116,6 +116,11 @@ urlpatterns = [
     path("plant-wise-total/", plant_wise_total, name="plant_wise_total"),
     path("monthly-summary/", monthly_summary, name="monthly_summary"),
     path("machine-wise/", machine_wise, name="machine_wise"),
+    path(
+        "production-history-machines/",
+        views.production_history_machine_list,
+        name="production_history_machine_list",
+    ),
     path("date-range/", date_range, name="date_range"),
     path("realtime-dashboard/", realtime_dashboard, name="realtime_dashboard"),
     path("machine-analysis/", machine_analysis, name="machine_analysis"),
@@ -157,8 +162,20 @@ urlpatterns = [
     ),
     path("log-report/", views.SaveReportLogView.as_view(), name="api_log_report"),
     path("profile/me/", CurrentUserProfileView.as_view(), name="current-user-profile"),
-    path('attendance/', views.attendance_dashboard, name='attendance_dashboard'),
-    path('attendance/employees-master/', views.attendance_employee_master, name='attendance_employee_master'),
-    path('attendance/employees/<str:paycode>/', views.attendance_employee_profile, name='attendance_employee_profile'),
-    path('attendance/employees/<str:paycode>/calendar/', views.attendance_employee_calendar, name='attendance_employee_calendar'),
+    path("attendance/", views.attendance_dashboard, name="attendance_dashboard"),
+    path(
+        "attendance/employees-master/",
+        views.attendance_employee_master,
+        name="attendance_employee_master",
+    ),
+    path(
+        "attendance/employees/<str:paycode>/",
+        views.attendance_employee_profile,
+        name="attendance_employee_profile",
+    ),
+    path(
+        "attendance/employees/<str:paycode>/calendar/",
+        views.attendance_employee_calendar,
+        name="attendance_employee_calendar",
+    ),
 ]
