@@ -1147,6 +1147,127 @@ class Plant1ExactRequirementState:
         start_at = self._as_ist(start_at)
 
         active = self.active_ideal_segments.get(machine_no)
+        
+        
+       
+
+        if active is None:
+
+            # ==========================================================
+    
+            # not the requested new event start_at.
+            # ==========================================================
+
+            now_ist = datetime.now(IST)
+
+            recovery_start = self._open_ideal_lookup_start(
+                now_ist
+            )
+
+            db_open_event = (
+                IdealTimeSegmentReason.objects
+                .filter(
+                    plant_location="Plant 1",
+                    machine_no=int(machine_no),
+                    ideal_end_at__isnull=True,
+                    ideal_start_at__gte=recovery_start,
+                    ideal_start_at__lte=now_ist,
+                )
+                .order_by(
+                    "-ideal_start_at",
+                    "-id",
+                )
+                .first()
+            )
+
+            if db_open_event is not None:
+
+                db_mode = str(
+                    db_open_event.ideal_mode or ""
+                ).strip().upper()
+
+                # ----------------------------------------------
+                # Resolve first row of same HOUR_CHANGE chain
+                # so notification identity remains correct.
+                # ----------------------------------------------
+
+                canonical_event = db_open_event
+
+                for _ in range(24):
+
+                    previous_segment = (
+                        IdealTimeSegmentReason.objects
+                        .filter(
+                            plant_location="Plant 1",
+                            machine_no=int(machine_no),
+                            ideal_mode=db_mode,
+                            ideal_end_at=canonical_event.ideal_start_at,
+                            closed_by="HOUR_CHANGE",
+                        )
+                        .exclude(pk=canonical_event.pk)
+                        .order_by(
+                            "-ideal_start_at",
+                            "-id",
+                        )
+                        .first()
+                    )
+
+                    if previous_segment is None:
+                        break
+
+                    canonical_event = previous_segment
+
+                db_start = self._as_ist(
+                    db_open_event.ideal_start_at
+                )
+                
+                
+                # ==========================================================
+                # RECOVERY MODE CONFLICT
+                
+                
+                if (
+                    db_mode != ideal_mode
+                    and start_at <= db_start
+                ):
+                    print(
+                        f"♻️ RECOVERY MODE TRANSITION TIME FIX | "
+                        f"Plant 1 | "
+                        f"M{machine_no} | "
+                        f"DB={db_mode} | "
+                        f"NEW={ideal_mode} | "
+                        f"RequestedStart={start_at.strftime('%H:%M:%S')} | "
+                        f"DBStart={db_start.strftime('%H:%M:%S')} | "
+                        f"UsingNow={now_ist.strftime('%H:%M:%S')}",
+                        flush=True,
+                    )
+                
+                    start_at = now_ist
+
+                canonical_start = self._as_ist(
+                    canonical_event.ideal_start_at
+                )
+
+                active = {
+                    "mode": db_mode,
+                    "start_at": db_start,
+                    "ideal_event_id": db_open_event.id,
+                    "canonical_event_id": canonical_event.id,
+                    "event_started_at": canonical_start,
+                }
+
+                self.active_ideal_segments[machine_no] = active
+
+                print(
+                    f"♻️ OPEN IDEAL RESTORED FROM DB | "
+                    f"Plant 1 | "
+                    f"M{machine_no} | "
+                    f"{db_mode} | "
+                    f"IdealID={db_open_event.id} | "
+                    f"CanonicalID={canonical_event.id} | "
+                    f"Start={db_start.strftime('%H:%M:%S')}",
+                    flush=True,
+                )
 
         if active and active.get("mode") == ideal_mode:
 

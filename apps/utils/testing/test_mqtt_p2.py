@@ -1,4 +1,4 @@
-<<<<<<<< HEAD:apps/utils/testing/test_mqtt_p2.py
+
 # import paho.mqtt.client as mqtt
 # import json
 # from datetime import datetime
@@ -724,7 +724,7 @@ except KeyboardInterrupt:
     print("\n🛑 Tester stopped by user.")
 except Exception as e:
     print(f"\n❌ Connection error: {e}")
-========
+
 # import paho.mqtt.client as mqtt
 # import json
 # from datetime import datetime
@@ -1327,4 +1327,4 @@ except KeyboardInterrupt:
     print("\n🛑 Tester stopped by user.")
 except Exception as e:
     print(f"\n❌ Connection error: {e}")
->>>>>>>> main:apps/utils/testing/test_mqtt.py
+

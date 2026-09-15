@@ -5562,6 +5562,104 @@ class Plant2ExactRequirementState:
         start_at = self._as_ist(start_at)
 
         active = self.active_ideal_segments.get(machine_no)
+        
+                # ==========================================================
+        # DB -> RAM OPEN IDEAL RECOVERY
+        #
+        # Backend restart/reconnect ke baad RAM empty ho sakta hai
+        # while DB still has the real current OPEN Ideal row.
+        #
+        # Recover that row BEFORE trying to create another one.
+        # ==========================================================
+
+        if active is None:
+
+            recovery_start = (
+                self.get_shift_start_datetime(start_at)
+                - timedelta(hours=1)
+            )
+
+            db_open_event = (
+                IdealTimeSegmentReason.objects
+                .filter(
+                    plant_location="Plant 2",
+                    machine_no=int(machine_no),
+                    ideal_end_at__isnull=True,
+                    ideal_start_at__gte=recovery_start,
+                    ideal_start_at__lte=start_at,
+                )
+                .order_by(
+                    "-ideal_start_at",
+                    "-id",
+                )
+                .first()
+            )
+
+            if db_open_event is not None:
+
+                db_mode = str(
+                    db_open_event.ideal_mode or ""
+                ).strip().upper()
+
+                # ----------------------------------------------
+                # Resolve first row of same HOUR_CHANGE chain
+                # so notification identity remains correct.
+                # ----------------------------------------------
+
+                canonical_event = db_open_event
+
+                for _ in range(24):
+
+                    previous_segment = (
+                        IdealTimeSegmentReason.objects
+                        .filter(
+                            plant_location="Plant 2",
+                            machine_no=int(machine_no),
+                            ideal_mode=db_mode,
+                            ideal_end_at=canonical_event.ideal_start_at,
+                            closed_by="HOUR_CHANGE",
+                        )
+                        .exclude(pk=canonical_event.pk)
+                        .order_by(
+                            "-ideal_start_at",
+                            "-id",
+                        )
+                        .first()
+                    )
+
+                    if previous_segment is None:
+                        break
+
+                    canonical_event = previous_segment
+
+                db_start = self._as_ist(
+                    db_open_event.ideal_start_at
+                )
+
+                canonical_start = self._as_ist(
+                    canonical_event.ideal_start_at
+                )
+
+                active = {
+                    "mode": db_mode,
+                    "start_at": db_start,
+                    "ideal_event_id": db_open_event.id,
+                    "canonical_event_id": canonical_event.id,
+                    "event_started_at": canonical_start,
+                }
+
+                self.active_ideal_segments[machine_no] = active
+
+                print(
+                    f"♻️ OPEN IDEAL RESTORED FROM DB | "
+                    f"Plant 2 | "
+                    f"M{machine_no} | "
+                    f"{db_mode} | "
+                    f"IdealID={db_open_event.id} | "
+                    f"CanonicalID={canonical_event.id} | "
+                    f"Start={db_start.strftime('%H:%M:%S')}",
+                    flush=True,
+                )
 
         if active and active.get("mode") == ideal_mode:
                 
