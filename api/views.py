@@ -2627,6 +2627,11 @@ def _plant_live_common(
                 last_signal_time = None
                 last_count_time_map = getattr(state_obj, "last_count_time", {})
                 machine_json_status = getattr(state_obj, "machine_json_status", {})
+                machine_on_since = getattr(
+                    state_obj,
+                    "machine_on_since",
+                    {},
+                )
                 if (
                     machine_no in last_count_time_map
                     and machine_no in machine_json_status

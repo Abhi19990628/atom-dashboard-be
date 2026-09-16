@@ -9814,9 +9814,14 @@ def start_machine_event_monitor():
         while True:
             try:
                 time_module.sleep(5)
+        
+                # ✅ IMPORTANT:
+                # Background monitor thread ke liye fresh DB connection
+                refresh_db_connection()
+        
                 ist_tz = pytz.timezone("Asia/Kolkata")
                 now_ist = datetime.now(ist_tz)
-
+        
                 for machine_no in all_mapped_machines:
                     try:
                         status = EXACT_REQUIREMENT_STATE.get_machine_status(machine_no)
@@ -9972,13 +9977,30 @@ def start_machine_event_monitor():
                             f"{machine_error}",
                             flush=True,
                         )
-                    
+
                         traceback.print_exc()
-                    
+
+                        # ✅ Broken/stale DB connection reset
+                        try:
+                            refresh_db_connection()
+                        except Exception as db_error:
+                            print(
+                                f"❌ DB RECONNECT FAILED | "
+                                f"Plant 2 | M{machine_no} | {db_error}",
+                                flush=True,
+                            )
+
                         continue
 
             except Exception as e:
                 print(f"❌ Event Monitor Error: {e}")
+                traceback.print_exc()
+            
+                try:
+                    refresh_db_connection()
+                except Exception as db_error:
+                    print(f"❌ Monitor DB reconnect failed: {db_error}")
+            
                 time_module.sleep(5)
 
     thread = threading.Thread(target=monitor_worker, daemon=True)
