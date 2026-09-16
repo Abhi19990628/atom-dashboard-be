@@ -1,953 +1,3 @@
-# import paho.mqtt.client as mqtt
-# from datetime import datetime, timedelta
-# import threading
-# from apps.machines.machine_state import MACHINE_STATE
-# from apps.data_storage.hourly_idle_tracker import HOURLY_IDLE_TRACKER
-# import traceback
-# import pytz
-# from django.db import connection
-# import time as time_module
-# from threading import RLock
-# from collections import defaultdict
-# import json
-
-
-# IST = pytz.timezone("Asia/Kolkata")
-
-
-# class IdleType:
-#     ON_BUT_NOT_PRODUCING = "ON_BUT_NOT_PRODUCING"
-#     NO_SIGNAL_AS_IDLE = "NO_SIGNAL_AS_IDLE"
-#     NONE = "NONE"
-
-
-# class DataSource:
-#     COUNT = "COUNT"
-#     JSON = "JSON"
-#     NONE = "NONE"
-
-
-# class StrictIdlePolicy:
-#     """Same idle tracker as Plant 2"""
-
-#     def __init__(self, grace_seconds=180, enable_no_signal_as_idle=True):
-#         self.lock = RLock()
-#         self.grace_seconds = grace_seconds
-#         self.enable_no_signal_as_idle = enable_no_signal_as_idle
-
-#         self.on_since = {}
-#         self.last_count_time = {}
-#         self.last_json_time = {}
-#         self.current_hour_start = {}
-#         self.completed_segments_minutes = {}
-#         self.data_source = {}
-#         self.hour_had_activity = {}
-
-#     @staticmethod
-#     def _ist(dt: datetime) -> datetime:
-#         if dt is None:
-#             return None
-#         if dt.tzinfo is None:
-#             return IST.localize(dt)
-#         return dt.astimezone(IST)
-
-#     @staticmethod
-#     def _hour_start(dt: datetime) -> datetime:
-#         dt = StrictIdlePolicy._ist(dt)
-#         return dt.replace(minute=0, second=0, microsecond=0)
-
-#     def _ensure_current_hour(self, m: int, now: datetime):
-#         hour = self._hour_start(now)
-#         prev = self.current_hour_start.get(m)
-
-#         if prev is None or prev != hour:
-#             self.current_hour_start[m] = hour
-#             self.completed_segments_minutes[m] = 0
-#             self.hour_had_activity[m] = False
-
-#     def mark_json(self, m: int, t: datetime):
-#         with self.lock:
-#             now = self._ist(t)
-#             self.last_json_time[m] = now
-#             self.data_source[m] = DataSource.JSON
-
-#             if m not in self.on_since:
-#                 self.on_since[m] = now
-
-#             self._ensure_current_hour(m, now)
-#             self.hour_had_activity[m] = True
-
-#     def mark_count(self, m: int, t: datetime):
-#         with self.lock:
-#             now = self._ist(t)
-#             prev_count = self.last_count_time.get(m)
-
-#             if prev_count is not None:
-#                 live, acc, total = self._compute_live_and_accumulated(m, now)
-#                 if live > 0:
-#                     self.completed_segments_minutes[m] = self.completed_segments_minutes.get(m, 0) + live
-
-#             self.last_count_time[m] = now
-#             self.data_source[m] = DataSource.COUNT
-
-#             if m not in self.on_since:
-#                 self.on_since[m] = now
-
-#             self._ensure_current_hour(m, now)
-#             self.hour_had_activity[m] = True
-
-#     def mark_off(self, m: int):
-#         with self.lock:
-#             if m in self.on_since:
-#                 del self.on_since[m]
-#             self.data_source[m] = DataSource.NONE
-
-#     def _compute_base_time(self, m: int, now: datetime) -> datetime:
-#         hour_start = self.current_hour_start.get(m, self._hour_start(now))
-#         candidates = [hour_start]
-
-#         if m in self.on_since:
-#             candidates.append(self.on_since[m])
-#         if m in self.last_count_time:
-#             candidates.append(self.last_count_time[m])
-
-#         return max(candidates)
-
-#     def _compute_live_and_accumulated(self, m: int, now: datetime):
-#         if m not in self.on_since:
-#             return (0, 0, 0)
-
-#         base_time = self._compute_base_time(m, now)
-#         gap_seconds = (now - base_time).total_seconds()
-
-#         if gap_seconds < self.grace_seconds:
-#             live_idle = 0
-#             accumulated_idle = 0
-#         else:
-#             visible_minutes = int(gap_seconds / 60)
-#             live_idle = visible_minutes
-#             accumulated_idle = visible_minutes
-
-#         completed = self.completed_segments_minutes.get(m, 0)
-#         hourly_total = completed + live_idle
-
-#         return (live_idle, accumulated_idle, hourly_total)
-
-#     def get_idle_status(self, m: int, now: datetime = None):
-#         with self.lock:
-#             if now is None:
-#                 now = datetime.now(IST)
-#             now = self._ist(now)
-
-#             self._ensure_current_hour(m, now)
-
-#             if self.enable_no_signal_as_idle:
-#                 is_never_active = m not in self.on_since and m not in self.last_count_time and m not in self.last_json_time
-
-#                 if is_never_active:
-#                     return {
-#                         'live_idle_time': '0m',
-#                         'accumulated_idle_time': '0m',
-#                         'hourly_idle_total': 60,
-#                         'is_idle': False,
-#                         'idle_type': IdleType.NO_SIGNAL_AS_IDLE,
-#                         'status': 'No Signal (Offline)',
-#                         'data_source': DataSource.NONE,
-#                         'on_since': None,
-#                         'last_count_time': None,
-#                         'count_seconds_ago': None,
-#                         'json_seconds_ago': None
-#                     }
-
-#             live, acc, total = self._compute_live_and_accumulated(m, now)
-
-#             has_count = m in self.last_count_time
-#             has_json = m in self.last_json_time
-
-#             count_seconds_ago = None
-#             json_seconds_ago = None
-
-#             if has_count:
-#                 count_seconds_ago = int((now - self.last_count_time[m]).total_seconds())
-#             if has_json:
-#                 json_seconds_ago = int((now - self.last_json_time[m]).total_seconds())
-
-#             is_on = m in self.on_since
-#             is_producing = has_count and count_seconds_ago <= 180
-
-#             if not is_on:
-#                 status = "OFF"
-#                 idle_type = IdleType.NONE
-#             elif is_producing:
-#                 status = "Producing" if live == 0 else "Producing (Idle)"
-#                 idle_type = IdleType.NONE if live == 0 else IdleType.ON_BUT_NOT_PRODUCING
-#             else:
-#                 status = "ON (Grace Period)" if live == 0 else "ON (No Count)"
-#                 idle_type = IdleType.ON_BUT_NOT_PRODUCING if live > 0 else IdleType.NONE
-
-#             return {
-#                 'live_idle_time': f'{live}m' if live > 0 else '0m',
-#                 'accumulated_idle_time': f'{acc}m',
-#                 'hourly_idle_total': min(60, total),
-#                 'is_idle': live > 0,
-#                 'idle_type': idle_type,
-#                 'status': status,
-#                 'data_source': self.data_source.get(m, DataSource.NONE),
-#                 'on_since': self.on_since.get(m),
-#                 'last_count_time': self.last_count_time.get(m),
-#                 'count_seconds_ago': count_seconds_ago,
-#                 'json_seconds_ago': json_seconds_ago
-#             }
-
-#     def reset_hour(self, m: int = None):
-#         with self.lock:
-#             if m is None:
-#                 self.completed_segments_minutes.clear()
-#                 self.current_hour_start.clear()
-#                 self.hour_had_activity.clear()
-#             else:
-#                 self.completed_segments_minutes[m] = 0
-#                 self.hour_had_activity[m] = False
-#                 if m in self.current_hour_start:
-#                     del self.current_hour_start[m]
-
-
-# class Plant1ExactRequirementState:
-#     def __init__(self):
-#         self.lock = RLock()
-#         self.current_hour_counts = defaultdict(int)
-#         self.last_hour_counts = defaultdict(int)
-#         self.shift_cumulative = defaultdict(int)
-#         self.current_hours = {}
-#         self.current_shifts = {}
-
-#         self.last_count_time = {}
-#         self.hour_first_count_time = {}
-
-#         self.machine_json_status = {}
-#         self.machine_count_status = {}
-
-#         self.machine_on_since = {}
-#         self.first_count_time = {}
-
-#         self.off_threshold_seconds = 180
-
-#         self.idle_tracker = StrictIdlePolicy(grace_seconds=180, enable_no_signal_as_idle=True)
-
-#     def get_shift_from_time(self, dt):
-#         ist_dt = dt.astimezone(pytz.timezone('Asia/Kolkata')) if dt.tzinfo else pytz.timezone('Asia/Kolkata').localize(dt)
-#         time_only = ist_dt.time()
-#         shift_A_start = datetime.strptime("08:30", "%H:%M").time()
-#         shift_A_end = datetime.strptime("20:00", "%H:%M").time()
-#         return 'A' if shift_A_start <= time_only < shift_A_end else 'B'
-
-#     def get_shift_start_datetime(self, timestamp):
-#         date = timestamp.date()
-#         shift = self.get_shift_from_time(timestamp)
-#         shift_a_start_time = datetime.strptime("08:30", "%H:%M").time()
-#         shift_b_start_time = datetime.strptime("20:30", "%H:%M").time()
-#         if shift == 'A':
-#             return IST.localize(datetime.combine(date, shift_a_start_time))
-#         else:
-#             if timestamp.time() < shift_a_start_time:
-#                 prev_day = date - timedelta(days=1)
-#                 return IST.localize(datetime.combine(prev_day, shift_b_start_time))
-#             else:
-#                 return IST.localize(datetime.combine(date, shift_b_start_time))
-
-#     def update_json_status(self, machine_no, card=None, die_height=0.0):
-#         with self.lock:
-#             ist_tz = pytz.timezone('Asia/Kolkata')
-#             now_ist = datetime.now(ist_tz)
-
-#             if machine_no not in self.machine_on_since:
-#                 self.machine_on_since[machine_no] = now_ist
-
-#             self.machine_json_status[machine_no] = {
-#                 'last_json_time': now_ist,
-#                 'card': card or 'UNKNOWN',
-#                 'die_height': die_height
-#             }
-
-#             self.idle_tracker.mark_json(machine_no, now_ist)
-
-#     def add_count(self, machine_no, count_increment=1, tool_id=None, shut_height=None):
-#         with self.lock:
-#             ist_tz = pytz.timezone('Asia/Kolkata')
-#             now_ist = datetime.now(ist_tz)
-#             current_hour = now_ist.replace(minute=0, second=0, microsecond=0)
-#             current_shift = self.get_shift_from_time(now_ist)
-
-#             if machine_no not in self.machine_on_since:
-#                 self.machine_on_since[machine_no] = now_ist
-
-#             if machine_no not in self.first_count_time:
-#                 self.first_count_time[machine_no] = now_ist
-
-#             if machine_no not in self.hour_first_count_time or \
-#                self.hour_first_count_time[machine_no].replace(minute=0, second=0, microsecond=0) != current_hour:
-#                 self.hour_first_count_time[machine_no] = now_ist
-
-#             self.last_count_time[machine_no] = now_ist
-
-#             self.machine_count_status[machine_no] = {
-#                 'last_count_time': now_ist,
-#                 'tool_id': tool_id if tool_id else 'UNKNOWN',
-#                 'shut_height': shut_height if shut_height else "No data"
-#             }
-
-#             if machine_no not in self.current_hours:
-#                 self.current_hours[machine_no] = current_hour
-
-#             if machine_no in self.current_shifts:
-#                 old_shift = self.current_shifts[machine_no]
-#                 if old_shift != current_shift:
-#                     new_shift_key = (machine_no, current_shift)
-#                     self.shift_cumulative[new_shift_key] = 0
-
-#             self.current_shifts[machine_no] = current_shift
-
-#             self.current_hour_counts[machine_no] += count_increment
-
-#             self.idle_tracker.mark_count(machine_no, now_ist)
-
-#     def get_machine_status(self, machine_no):
-#         with self.lock:
-#             ist_tz = pytz.timezone('Asia/Kolkata')
-#             now_ist = datetime.now(ist_tz)
-
-#             has_count = False
-#             count_seconds_ago = None
-#             count_tool_id = None
-#             count_shut_height = None
-
-#             if machine_no in self.machine_count_status:
-#                 last_count = self.machine_count_status[machine_no]['last_count_time']
-#                 count_seconds_ago = (now_ist - last_count).total_seconds()
-#                 count_tool_id = self.machine_count_status[machine_no]['tool_id']
-#                 count_shut_height = self.machine_count_status[machine_no]['shut_height']
-
-#                 if count_seconds_ago <= self.off_threshold_seconds:
-#                     has_count = True
-
-#             has_json = False
-#             json_seconds_ago = None
-#             json_card = None
-#             json_die_height = None
-
-#             if machine_no in self.machine_json_status:
-#                 last_json = self.machine_json_status[machine_no]['last_json_time']
-#                 json_seconds_ago = (now_ist - last_json).total_seconds()
-#                 json_card = self.machine_json_status[machine_no]['card']
-#                 json_die_height = self.machine_json_status[machine_no]['die_height']
-
-#                 if json_seconds_ago <= self.off_threshold_seconds:
-#                     has_json = True
-
-#             machine_on = has_count or has_json
-#             is_producing = has_count
-
-#             if not machine_on:
-#                 if machine_no in self.machine_on_since:
-#                     del self.machine_on_since[machine_no]
-#                 if machine_no in self.first_count_time:
-#                     del self.first_count_time[machine_no]
-
-#             if count_tool_id:
-#                 tool_id = count_tool_id
-#                 shut_height = count_shut_height
-#             elif json_card:
-#                 tool_id = json_card
-#                 shut_height = json_die_height if json_die_height != 0.0 else "No data"
-#             else:
-#                 tool_id = 'N/A'
-#                 shut_height = "No data"
-
-#             return {
-#                 'machine_on': machine_on,
-#                 'is_producing': is_producing,
-#                 'has_count_data': has_count,
-#                 'has_json_data': has_json,
-#                 'count_seconds_ago': int(count_seconds_ago) if count_seconds_ago else None,
-#                 'json_seconds_ago': int(json_seconds_ago) if json_seconds_ago else None,
-#                 'tool_id': tool_id,
-#                 'shut_height': shut_height,
-#                 'data_source': 'COUNT' if has_count else ('JSON' if has_json else 'NONE')
-#             }
-
-#     def get_machine_data(self, machine_no):
-#         with self.lock:
-#             ist_tz = pytz.timezone('Asia/Kolkata')
-#             now_ist = datetime.now(ist_tz)
-#             current_shift = self.get_shift_from_time(now_ist)
-#             current_hour = now_ist.replace(minute=0, second=0, microsecond=0)
-#             shift_start = self.get_shift_start_datetime(now_ist)
-
-#         # ✅ 1. FETCH LAST HOUR COUNT FROM DATABASE (Previous completed hour)
-#         last_hour_count_db = 0
-#         try:
-#             previous_hour_start = current_hour - timedelta(hours=1)
-#             previous_hour_end = current_hour
-#             previous_hour_start_naive = previous_hour_start.replace(tzinfo=None)
-#             previous_hour_end_naive = previous_hour_end.replace(tzinfo=None)
-
-#             with connection.cursor() as cursor:
-#                 cursor.execute("""
-#                     SELECT count FROM Plant1_data
-#                     WHERE machine_no = %s
-#                     AND timestamp >= %s
-#                     AND timestamp < %s
-#                     ORDER BY timestamp DESC
-#                     LIMIT 1
-#                 """, (str(machine_no), previous_hour_start_naive, previous_hour_end_naive))
-#                 result = cursor.fetchone()
-#                 if result:
-#                    last_hour_count_db = int(result[0])
-#         except Exception as e:
-#             print(f"❌ M{machine_no}: ERROR - {e}")
-
-#         # ✅ 2. FETCH CUMULATIVE COUNT FROM DATABASE (shift-based)
-#         cumulative_from_db = 0
-#         try:
-#             with connection.cursor() as cursor:
-#                 cursor.execute("""
-#                     SELECT cumulative_count FROM Plant1_data
-#                     WHERE machine_no = %s AND shift = %s AND timestamp >= %s
-#                     ORDER BY timestamp DESC LIMIT 1
-#                 """, (str(machine_no), current_shift, shift_start))
-#                 result = cursor.fetchone()
-#                 if result and result[0] is not None:
-#                     cumulative_from_db = int(result[0])
-#         except Exception as e:
-#             print(f"⚠️ Error fetching cumulative M{machine_no}: {e}")
-
-#         # Add current hour live count
-#         live_cumulative = cumulative_from_db + self.current_hour_counts.get(machine_no, 0)
-
-#         # ✅ 3. FETCH TOTAL SHIFT IDLE TIME FROM DATABASE
-#         total_shift_idle_time = 0
-#         try:
-#             with connection.cursor() as cursor:
-#                 cursor.execute("""
-#                     SELECT COALESCE(SUM(idle_time), 0) FROM Plant1_data
-#                     WHERE machine_no = %s AND shift = %s AND timestamp >= %s
-#                 """, (str(machine_no), current_shift, shift_start))
-#                 result = cursor.fetchone()
-#                 if result and result[0] is not None:
-#                     total_shift_idle_time = int(result[0])
-#         except Exception as e:
-#             print(f"⚠️ Error fetching total shift idle M{machine_no}: {e}")
-
-#         # Get current hour idle (live)
-#         idle_status = self.idle_tracker.get_idle_status(machine_no)
-#         current_hour_idle = idle_status['hourly_idle_total']
-
-#         # Total shift idle = DB sum + current hour live
-#         total_shift_idle = total_shift_idle_time + current_hour_idle
-
-#         status_info = self.get_machine_status(machine_no)
-
-#         on_since_str = None
-#         first_count_str = None
-#         time_to_first_count = None
-
-#         if machine_no in self.machine_on_since and status_info['machine_on']:
-#             on_since = self.machine_on_since[machine_no]
-#             on_since_str = on_since.strftime('%H:%M:%S')
-
-#             if machine_no in self.first_count_time:
-#                 first_count = self.first_count_time[machine_no]
-#                 first_count_str = first_count.strftime('%H:%M:%S')
-#                 delay = (first_count - on_since).total_seconds()
-#                 time_to_first_count = int(delay / 60)
-
-#         return {
-#             'machine_no': machine_no,
-#             'current_hour_count': self.current_hour_counts.get(machine_no, 0),
-#             'last_hour_count': last_hour_count_db,
-#             'cumulative_count': live_cumulative,
-#             'idle_time': current_hour_idle,
-#             'total_shift_idle_time': total_shift_idle,
-#             'shift': current_shift,
-#             'machine_on': status_info['machine_on'],
-#             'is_producing': status_info['is_producing'],
-#             'has_count_data': status_info['has_count_data'],
-#             'has_json_data': status_info['has_json_data'],
-#             'count_seconds_ago': status_info['count_seconds_ago'],
-#             'json_seconds_ago': status_info['json_seconds_ago'],
-#             'current_tool_id': status_info['tool_id'],
-#             'current_shut_height': status_info['shut_height'],
-#             'data_source': status_info['data_source'],
-#             'on_since': on_since_str,
-#             'first_count_at': first_count_str,
-#             'time_to_first_count': time_to_first_count
-#         }
-
-#     def force_hour_reset_all_machines(self):
-#         with self.lock:
-#             ist_tz = pytz.timezone('Asia/Kolkata')
-#             now_ist = datetime.now(ist_tz)
-#             current_shift = self.get_shift_from_time(now_ist)
-
-#             all_machines = list(range(1, 58))
-
-#             for machine_no in all_machines:
-#                 current_count = self.current_hour_counts.get(machine_no, 0)
-#                 self.last_hour_counts[machine_no] = current_count
-
-#                 if machine_no in self.current_shifts:
-#                     old_shift = self.current_shifts[machine_no]
-#                     if old_shift != current_shift:
-#                         new_shift_key = (machine_no, current_shift)
-#                         self.shift_cumulative[new_shift_key] = 0
-
-#                 self.current_shifts[machine_no] = current_shift
-
-#             self.current_hour_counts.clear()
-#             self.idle_tracker.reset_hour()
-
-
-# PLANT1_EXACT_REQUIREMENT_STATE = Plant1ExactRequirementState()
-# EXACT_REQUIREMENT_STATE = PLANT1_EXACT_REQUIREMENT_STATE
-
-# _messages_lock = threading.Lock()
-
-# BROKER_HOST = "192.168.0.35"
-# BROKER_PORT = 1883
-# USERNAME = "npdAtom"
-# PASSWORD = "npd@Atom"
-
-# # ✅ Plant 1 Topics: JJ = JSON (ON/OFF), COUNT = Production count
-# PLANT1_TOPICS = [
-#     ("JJ5", 1), ("JJ6", 1), ("JJ7", 1), ("JJ8", 1), ("JJ9", 1),
-#     ("JJ10", 1), ("JJ11", 1), ("JJ12", 1), ("JJ13", 1), ("JJ14", 1), ("JJ15", 1),
-#     ("COUNT5", 1), ("COUNT6", 1), ("COUNT7", 1), ("COUNT8", 1), ("COUNT9", 1),
-#     ("COUNT10", 1), ("COUNT11", 1), ("COUNT12", 1), ("COUNT13", 1), ("COUNT14", 1), ("COUNT15", 1)
-# ]
-
-# # ✅ J Topic Mapping (JSON - Machine ON/OFF signals)
-# J_TOPIC_MACHINE_MAPPING = {
-#     'JJ5': [31, 32, 33, 34, 35],
-#     'JJ6': [26, 27, 28, 29, 30],
-#     'JJ7': [40, 41, 42, 43, 44, 45],
-#     'JJ8': [46, 47, 48, 49, 50, 51, 52],
-#     'JJ9': [54, 55, 56, 57],
-#     'JJ10': [36, 37, 38, 39],
-#     'JJ11': [5, 6, 21, 22, 23, 53],
-#     'JJ12': [4, 7, 13, 14, 16],
-#     'JJ13': [3, 8, 12, 15, 17],
-#     'JJ14': [2, 9, 11, 18, 25],
-#     'JJ15': [1, 10, 20, 19, 24]
-# }
-
-# # ✅ COUNT Topic Mapping (Production count messages)
-# COUNT_TOPIC_MACHINE_MAPPING = {
-#     'COUNT5': [31, 32, 33, 34, 35],
-#     'COUNT6': [26, 27, 28, 29, 30],
-#     'COUNT7': [40, 41, 42, 43, 44, 45],
-#     'COUNT8': [46, 47, 48, 49, 50, 51, 52],
-#     'COUNT9': [54, 55, 56, 57],
-#     'COUNT10': [36, 37, 38, 39],
-#     'COUNT11': [5, 6, 21, 22, 23, 53],
-#     'COUNT12': [4, 7, 13, 14, 16],
-#     'COUNT13': [3, 8, 12, 15, 17],
-#     'COUNT14': [2, 9, 11, 18, 25],
-#     'COUNT15': [1, 10, 20, 19, 24]
-# }
-
-# # Combined for easy access
-# TOPIC_MACHINE_MAPPING = {**J_TOPIC_MACHINE_MAPPING, **COUNT_TOPIC_MACHINE_MAPPING}
-
-# ACTIVE_MACHINES_THIS_HOUR = set()
-# MACHINE_DATA_CACHE = {}
-
-# def get_machines_for_topic(topic):
-#     return TOPIC_MACHINE_MAPPING.get(topic, [])
-
-# def parse_json_payload(raw_payload):
-#     try:
-#         data = json.loads(raw_payload)
-
-#         if 'client_id' not in data:
-#             return None
-
-#         client_id = str(data.get('client_id', ''))
-
-#         if len(client_id) >= 2:
-#             plant_no = int(client_id[0]) if client_id[0].isdigit() else None
-#             machine_no = int(client_id[1:]) if client_id[1:].isdigit() else None
-#         else:
-#             return None
-
-#         card = data.get('card', 'UNKNOWN')
-
-#         die_height_str = str(data.get('die_height', '0'))
-#         try:
-#             die_height = float(die_height_str)
-#         except:
-#             die_height = 0.0
-
-#         return {
-#             'type': 'json',
-#             'plant_no': plant_no,
-#             'machine_no': machine_no,
-#             'card': card,
-#             'die_height': die_height
-#         }
-#     except:
-#         return None
-
-# def parse_count_payload(raw_payload):
-#     try:
-#         parts = raw_payload.strip().split()
-#         if len(parts) < 2:
-#             return None
-
-#         tool_id = parts[0][:24] if len(parts[0]) >= 24 else parts[0]
-#         val_str = parts[1]
-
-#         plant_no = int(val_str[0]) if len(val_str) > 0 and val_str[0].isdigit() else None
-
-#         machine_no = None
-#         if len(val_str) > 3:
-#             if val_str[1].isdigit() and val_str[2].isdigit():
-#                 machine_no = int(val_str[1:3])
-#                 shut_height_str = val_str[4:]
-#             else:
-#                 machine_no = int(val_str[1]) if val_str[1].isdigit() else None
-#                 shut_height_str = val_str[3:]
-#         elif len(val_str) > 2:
-#             machine_no = int(val_str[1]) if val_str[1].isdigit() else None
-#             shut_height_str = val_str[3:]
-
-#         if 'Failed' in shut_height_str:
-#             shut_height = "Failed"
-#         elif shut_height_str:
-#             try:
-#                 shut_height = float(shut_height_str)
-#             except:
-#                 shut_height = "No data"
-#         else:
-#             shut_height = "No data"
-
-#         return {
-#             'type': 'count',
-#             'plant_no': plant_no,
-#             'machine_no': machine_no,
-#             'tool_id': tool_id,
-#             'shut_height': shut_height
-#         }
-#     except:
-#         return None
-
-# def save_all_machines_on_hour_boundary():
-#     def save_worker():
-#         print("\n" + "🚀" * 50)
-#         print("🚀 PLANT 1 WORKER THREAD STARTED!")
-#         print(f"🚀 Started at: {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%Y-%m-%d %H:%M:%S')}")
-#         print("🚀" * 50 + "\n")
-
-#         all_mapped_machines = list(range(1, 58))
-#         print(f"✅ Total machines: {len(all_mapped_machines)}")
-#         print(f"✅ Machines: {sorted(all_mapped_machines)}\n")
-
-#         last_saved_hour = None
-
-#         while True:
-#             try:
-#                 ist_tz = pytz.timezone('Asia/Kolkata')
-#                 now_ist = datetime.now(ist_tz)
-
-#                 current_minute = now_ist.minute
-#                 current_second = now_ist.second
-#                 current_hour = now_ist.hour
-
-#                 is_snapshot_time = (current_minute == 59 and current_second >= 40)
-
-#                 if is_snapshot_time and last_saved_hour != current_hour:
-#                     print("\n" + "=" * 50)
-#                     print(f"📸 SNAPSHOT TRIGGER! {now_ist.strftime('%H:%M:%S')}")
-#                     print("=" * 50)
-
-#                     if current_second < 50:
-#                         wait = 50 - current_second
-#                         print(f"⏳ Waiting {wait}s till 59:50...")
-#                         time_module.sleep(wait)
-#                         now_ist = datetime.now(ist_tz)
-
-#                     print("=" * 40)
-#                     print(f"📸 PLANT 1 SNAPSHOT - {now_ist.strftime('%H:%M:%S')}")
-#                     print("=" * 40)
-
-#                     captured_data = {}
-#                     with PLANT1_EXACT_REQUIREMENT_STATE.lock:
-#                         for machine_no in all_mapped_machines:
-#                             hour_count = PLANT1_EXACT_REQUIREMENT_STATE.current_hour_counts.get(machine_no, 0)
-#                             first_count_time = PLANT1_EXACT_REQUIREMENT_STATE.hour_first_count_time.get(machine_no)
-
-#                             tool_id = 'NULL'
-#                             shut_height = "No data"
-#                             if machine_no in PLANT1_EXACT_REQUIREMENT_STATE.machine_count_status:
-#                                 tool_id = PLANT1_EXACT_REQUIREMENT_STATE.machine_count_status[machine_no].get('tool_id', 'NULL')
-#                                 shut_height = PLANT1_EXACT_REQUIREMENT_STATE.machine_count_status[machine_no].get('shut_height', "No data")
-
-#                             idle_status = PLANT1_EXACT_REQUIREMENT_STATE.idle_tracker.get_idle_status(machine_no, now_ist)
-#                             idle_time = idle_status['hourly_idle_total']
-
-#                             captured_data[machine_no] = {
-#                                 'hour_count': hour_count,
-#                                 'first_count_time': first_count_time,
-#                                 'tool_id': tool_id,
-#                                 'shut_height': shut_height,
-#                                 'idle_time': idle_time
-#                             }
-
-#                     machine_data_snapshot = {}
-#                     current_hour_start = now_ist.replace(minute=0, second=0, microsecond=0)
-#                     next_hour_start = current_hour_start + timedelta(hours=1)
-
-#                     for machine_no in all_mapped_machines:
-#                         try:
-#                             data = captured_data[machine_no]
-#                             first_count_time = data['first_count_time']
-#                             total_idle = data['idle_time']
-
-#                             if machine_no in PLANT1_EXACT_REQUIREMENT_STATE.machine_on_since:
-#                                 on_time = PLANT1_EXACT_REQUIREMENT_STATE.machine_on_since[machine_no]
-
-#                                 if on_time >= current_hour_start and on_time < next_hour_start:
-#                                     if first_count_time and first_count_time >= current_hour_start:
-#                                         save_timestamp = first_count_time
-#                                     else:
-#                                         save_timestamp = on_time
-#                                 elif on_time < current_hour_start:
-#                                     if first_count_time and first_count_time >= current_hour_start and first_count_time < next_hour_start:
-#                                         save_timestamp = first_count_time
-#                                     else:
-#                                         save_timestamp = current_hour_start
-#                                 else:
-#                                     save_timestamp = current_hour_start
-#                             else:
-#                                 save_timestamp = current_hour_start
-
-#                             machine_data_snapshot[machine_no] = {
-#                                 'timestamp': save_timestamp,
-#                                 'count': data['hour_count'],
-#                                 'tool_id': data['tool_id'],
-#                                 'shut_height': data['shut_height'],
-#                                 'idle_time': total_idle
-#                             }
-
-#                         except Exception as e:
-#                             machine_data_snapshot[machine_no] = {
-#                                 'timestamp': current_hour_start,
-#                                 'count': 0,
-#                                 'tool_id': 'NULL',
-#                                 'shut_height': 0.0,
-#                                 'idle_time': 60
-#                             }
-
-#                     now_ist = datetime.now(ist_tz)
-#                     seconds_to_next_hour = 60 - now_ist.second + (60 - now_ist.minute - 1) * 60
-
-#                     if seconds_to_next_hour > 0 and seconds_to_next_hour < 12:
-#                         print(f"\n⏰ Waiting {seconds_to_next_hour}s for 00:00...")
-#                         time_module.sleep(seconds_to_next_hour)
-
-#                     PLANT1_EXACT_REQUIREMENT_STATE.force_hour_reset_all_machines()
-#                     with PLANT1_EXACT_REQUIREMENT_STATE.lock:
-#                         PLANT1_EXACT_REQUIREMENT_STATE.hour_first_count_time.clear()
-
-#                     saved_count = 0
-#                     error_count = 0
-#                     for machine_no in sorted(all_mapped_machines):
-#                         try:
-#                             data = machine_data_snapshot[machine_no]
-#                             save_machine_to_database(
-#                                 machine_no,
-#                                 data['timestamp'],
-#                                 data['count'],
-#                                 data['tool_id'],
-#                                 data['shut_height'],
-#                                 data['idle_time']
-#                             )
-#                             saved_count += 1
-#                         except Exception as e:
-#                             error_count += 1
-
-#                     print("=" * 80)
-#                     print(f"✅ PLANT 1: SAVED {saved_count}, ERRORS: {error_count}")
-#                     print("=" * 80)
-
-#                     with _messages_lock:
-#                         ACTIVE_MACHINES_THIS_HOUR.clear()
-#                         MACHINE_DATA_CACHE.clear()
-
-#                     last_saved_hour = current_hour
-#                     time_module.sleep(5)
-
-#                 else:
-#                     time_module.sleep(5)
-
-#             except Exception as e:
-#                 print(f"❌ PLANT 1 ERROR: {e}")
-#                 traceback.print_exc()
-#                 time_module.sleep(30)
-
-#     thread = threading.Thread(target=save_worker, daemon=True, name="Plant1-Hourly")
-#     thread.start()
-
-# def save_machine_to_database(machine_no, timestamp, count, tool_id, shut_height, idle_time):
-#     try:
-#         ist_tz = pytz.timezone('Asia/Kolkata')
-
-#         if timestamp.tzinfo is None:
-#             timestamp = ist_tz.localize(timestamp)
-#         elif timestamp.tzinfo != ist_tz:
-#             timestamp = timestamp.astimezone(ist_tz)
-
-#         time_only = timestamp.time()
-#         shift_A_start = datetime.strptime("08:30", "%H:%M").time()
-#         shift_A_end = datetime.strptime("20:00", "%H:%M").time()
-#         shift = 'A' if shift_A_start <= time_only < shift_A_end else 'B'
-
-#         shift_start = PLANT1_EXACT_REQUIREMENT_STATE.get_shift_start_datetime(timestamp)
-
-#         last_cumulative = 0
-#         try:
-#             with connection.cursor() as cursor:
-#                 cursor.execute("""
-#                     SELECT cumulative_count FROM Plant1_data
-#                     WHERE machine_no = %s AND shift = %s AND timestamp >= %s
-#                     ORDER BY timestamp DESC LIMIT 1
-#                 """, [str(machine_no), shift, shift_start])
-#                 result = cursor.fetchone()
-#                 if result:
-#                     last_cumulative = result[0]
-#         except:
-#             pass
-
-#         new_cumulative = last_cumulative + count
-
-#         clean_tool_id = str(tool_id)[:50] if tool_id != 'NULL' else 'NULL'
-
-#         if isinstance(shut_height, str):
-#             clean_shut_height = 0.0
-#         else:
-#             clean_shut_height = float(shut_height) if isinstance(shut_height, (int, float)) else 0.0
-
-#         clean_idle_time = int(idle_time) if isinstance(idle_time, (int, float)) else 60
-#         naive_timestamp = timestamp.replace(tzinfo=None, microsecond=0)
-
-#         with connection.cursor() as cursor:
-#             cursor.execute("""
-#                 INSERT INTO Plant1_data
-#                 (timestamp, tool_id, machine_no, count, cumulative_count, tpm, idle_time, shut_height, shift)
-#                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-#             """, [naive_timestamp, clean_tool_id, str(machine_no), count, new_cumulative, 0, clean_idle_time, clean_shut_height, shift])
-
-#         print(f"💾 M{machine_no}: count={count}, cumul={new_cumulative}")
-
-#     except Exception as e:
-#         print(f"❌ DB M{machine_no}: {e}")
-
-# def on_connect(client, userdata, flags, rc):
-#     print(f"🔗 Plant 1 MQTT Connected (rc={rc})")
-#     if rc == 0:
-#         client.subscribe(PLANT1_TOPICS)
-#         print("✅ Plant 1 Subscribed!")
-
-# def on_message(client, userdata, msg):
-#     raw_payload = msg.payload.decode(errors="ignore")
-#     topic = msg.topic
-
-#     if topic.startswith('JJ'):
-#         json_parsed = parse_json_payload(raw_payload)
-#         if json_parsed and json_parsed['plant_no'] == 1 and json_parsed['machine_no']:
-#             machine_no = json_parsed['machine_no']
-#             card = json_parsed['card']
-#             die_height = json_parsed['die_height']
-
-#             PLANT1_EXACT_REQUIREMENT_STATE.update_json_status(machine_no, card=card, die_height=die_height)
-#         return
-
-#     count_parsed = parse_count_payload(raw_payload)
-#     if not count_parsed or count_parsed['plant_no'] != 1:
-#         return
-
-#     if count_parsed['machine_no']:
-#         machine_no = count_parsed['machine_no']
-#         tool_id = count_parsed['tool_id']
-#         shut_height = count_parsed['shut_height']
-
-#         MACHINE_STATE.upsert(1, machine_no, tool_id, 1, shut_height)
-#         PLANT1_EXACT_REQUIREMENT_STATE.add_count(machine_no, count_increment=1, tool_id=tool_id, shut_height=shut_height)
-#         HOURLY_IDLE_TRACKER.record_activity(machine_no)
-
-#         with _messages_lock:
-#             ACTIVE_MACHINES_THIS_HOUR.add(machine_no)
-#             MACHINE_DATA_CACHE[machine_no] = {
-#                 'tool_id': tool_id,
-#                 'shut_height': shut_height,
-#                 'last_updated': datetime.now()
-#             }
-#     else:
-#         machines_for_topic = get_machines_for_topic(topic)
-#         if machines_for_topic:
-#             tool_id = count_parsed['tool_id']
-#             shut_height = count_parsed['shut_height']
-
-#             with _messages_lock:
-#                 for machine_no in machines_for_topic:
-#                     MACHINE_STATE.upsert(1, machine_no, tool_id, 1, shut_height)
-#                     PLANT1_EXACT_REQUIREMENT_STATE.add_count(machine_no, count_increment=1, tool_id=tool_id, shut_height=shut_height)
-#                     HOURLY_IDLE_TRACKER.record_activity(machine_no)
-
-#                     ACTIVE_MACHINES_THIS_HOUR.add(machine_no)
-#                     MACHINE_DATA_CACHE[machine_no] = {
-#                         'tool_id': tool_id,
-#                         'shut_height': shut_height,
-#                         'last_updated': datetime.now()
-#                     }
-
-# def start_plant1_mqtt():
-#     print("\n" + "=" * 70)
-#     print("🚀 PLANT 1 MQTT CLIENT")
-#     print("=" * 70 + "\n")
-
-#     save_all_machines_on_hour_boundary()
-
-#     client = mqtt.Client(client_id="plant1_mqtt_client", protocol=mqtt.MQTTv311)
-#     client.username_pw_set(USERNAME, PASSWORD)
-#     client.on_connect = on_connect
-#     client.on_message = on_message
-#     client.connect(BROKER_HOST, BROKER_PORT, 60)
-#     client.loop_start()
-#     return client
-
-# if __name__ == "__main__":
-#     print("\n" + "🚀" * 40)
-#     print("🚀 PLANT 1 MQTT - STARTING")
-#     print("🚀" * 40 + "\n")
-
-#     client = start_plant1_mqtt()
-#     print("\n✅ MQTT client started!\n")
-#     time_module.sleep(2)
-
-#     print("=" * 60)
-#     print("🔄 Service running...")
-#     print("=" * 60 + "\n")
-
-#     try:
-#         while True:
-#             time_module.sleep(1)
-#     except KeyboardInterrupt:
-#         print("\n⛔ Stopping...")
-#         client.disconnect()
-#         print("✅ Stopped!\n")
-
-
-# backend/apps/mqtt/simple_plant1.py - FINAL VERSION: DBFIX V2 + IDEAL SEGMENTS + NAIVE IST TIME
 
 import paho.mqtt.client as mqtt
 from django.utils import timezone
@@ -1202,7 +252,7 @@ class StrictIdlePolicy:
     def mark_off(self, m: int):
         with self.lock:
             self.data_source[m] = DataSource.NONE
-            
+
     def start_new_on_session(self, m: int, t: datetime):
         """
         Machine OFFLINE se wapas ON aaye to old idle/count session
@@ -1230,7 +280,7 @@ class StrictIdlePolicy:
                 f"🔄 IDLE TRACKER NEW ON SESSION | "
                 f"M{m} | {now.strftime('%H:%M:%S')}",
                 flush=True,
-            )        
+            )
 
     def _compute_base_time(self, m: int, now: datetime) -> datetime:
         hour_start = self.current_hour_start.get(m, self._hour_start(now))
@@ -1409,9 +459,21 @@ class Plant1ExactRequirementState:
             }
         )
 
-        self.off_threshold_seconds = 180
+        # ONLINE IDLE:
+        # Machine is ON but no count for 3 minutes.
+        self.online_idle_threshold_seconds = 180
+
+        # POWER / J-SIGNAL:
+        # Do NOT wait 3 minutes to declare OFFLINE.
+        #
+        # J status is throttled to around 3 seconds and the status monitor
+        # runs every 5 seconds, therefore 10 seconds is a safe production
+        # heartbeat timeout while still making OFFLINE effectively immediate.
+        self.power_signal_timeout_seconds = 10
+
         self.idle_tracker = StrictIdlePolicy(
-            grace_seconds=180, enable_no_signal_as_idle=True
+            grace_seconds=self.online_idle_threshold_seconds,
+            enable_no_signal_as_idle=True,
         )
 
         # ✅ NEW: Ideal time segment tracker for single table
@@ -1431,7 +493,7 @@ class Plant1ExactRequirementState:
         reason,
         remarks,
         submitted_by=None,
-        submitted_at=None
+        submitted_at=None,
     ):
         with self.reason_lock:
 
@@ -1463,6 +525,28 @@ class Plant1ExactRequirementState:
         # Table: live_data.ideal_time_segments_reason
         # This logic does NOT touch Redis count queue or WebSocket count flow.
         # ==============================================================
+    
+    def _open_ideal_lookup_start(self, reference_time):
+        """
+        OPEN Ideal recovery can look one physical hour
+        before the selected/current shift boundary.
+
+        Example:
+            Shift A starts 08:30
+            valid OFFLINE tail started 08:00
+
+        08:00 row must be recoverable.
+        """
+        reference_time = self._as_ist(
+            reference_time
+        )
+
+        shift_start = self.get_shift_start_datetime(
+            reference_time
+        )
+
+        return shift_start - timedelta(hours=1)
+     
     def _get_ideal_reason_data(
         self,
         machine_no,
@@ -1483,34 +567,19 @@ class Plant1ExactRequirementState:
         """
 
         with self.reason_lock:
-            data = dict(
-                self.pending_reasons.get(machine_no) or {}
-            )
+            data = dict(self.pending_reasons.get(machine_no) or {})
 
         if data:
 
-            reason = (
-                data.get("category")
-                or "Uncategorized"
-            )
+            reason = data.get("category") or "Uncategorized"
 
-            specific_reason = (
-                data.get("reason")
-                or "Reason Not Provided"
-            )
+            specific_reason = data.get("reason") or "Reason Not Provided"
 
-            remark = (
-                data.get("remarks")
-                or ""
-            )
+            remark = data.get("remarks") or ""
 
-            submitted_by = data.get(
-                "submitted_by"
-            )
+            submitted_by = data.get("submitted_by")
 
-            submitted_at = data.get(
-                "submitted_at"
-            )
+            submitted_at = data.get("submitted_at")
 
             if submitted_by and submitted_at:
 
@@ -1535,16 +604,12 @@ class Plant1ExactRequirementState:
         if ideal_mode == "OFFLINE":
 
             reason = "Machine Off"
-            specific_reason = (
-                "Machine offline / no signal"
-            )
+            specific_reason = "Machine offline / no signal"
 
         else:
 
             reason = "Uncategorized"
-            specific_reason = (
-                "Reason Not Provided"
-            )
+            specific_reason = "Reason Not Provided"
 
         return (
             reason,
@@ -1577,6 +642,58 @@ class Plant1ExactRequirementState:
         if start_at < shift_start <= reference_time:
             return shift_start
         return start_at
+    
+    def _next_ideal_storage_boundary(self, start_at):
+        """
+        DB storage boundary.
+
+        Important:
+        - Storage must continue 24x7.
+        - Normal hourly split remains.
+        - Also split when the stored shift tag changes,
+          so Shift A/B history continues working exactly as before.
+        - Midnight is automatically handled by next_hour.
+        """
+
+        start_at = self._as_ist(start_at)
+
+        # Normal hourly boundary
+        next_hour = (
+            start_at.replace(
+                minute=0,
+                second=0,
+                microsecond=0,
+            )
+            + timedelta(hours=1)
+        )
+
+        # Current existing get_shift_from_time():
+        # A = 08:30 -> 20:00
+        # B = everything else
+        shift_a_start = start_at.replace(
+            hour=8,
+            minute=30,
+            second=0,
+            microsecond=0,
+        )
+
+        shift_a_end = start_at.replace(
+            hour=20,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+
+        boundaries = [next_hour]
+
+        if start_at < shift_a_start:
+            boundaries.append(shift_a_start)
+
+        if start_at < shift_a_end:
+            boundaries.append(shift_a_end)
+
+        return min(boundaries)
+    
 
     def _safe_online_start_time(self, machine_no, candidate_start, now_ist):
         """
@@ -1596,9 +713,6 @@ class Plant1ExactRequirementState:
             start_candidates.append(
                 self._as_ist(self.last_ideal_transition_time[machine_no])
             )
-
-        shift_start = self._current_shift_start_for(now_ist)
-        start_candidates.append(shift_start)
 
         if not start_candidates:
             return now_ist
@@ -1623,7 +737,10 @@ class Plant1ExactRequirementState:
                     WHERE plant_location = %s
                       AND machine_no = %s
                       AND ideal_start_at < %s
-                      AND ideal_end_at > %s
+                      AND (
+                          ideal_end_at IS NULL
+                          OR ideal_end_at > %s
+                      )
                     ORDER BY ideal_start_at
                     LIMIT 1
                 """,
@@ -1636,7 +753,13 @@ class Plant1ExactRequirementState:
             return None
 
     def _save_ideal_piece_to_db(
-        self, machine_no, ideal_mode, start_at, end_at, closed_by
+    self,
+    machine_no,
+    ideal_mode,
+    start_at,
+    end_at,
+    closed_by,
+    logical_event_qualified=False,
     ):
         """One already-split ideal piece DB me save karta hai."""
         try:
@@ -1646,20 +769,105 @@ class Plant1ExactRequirementState:
             # ✅ Shift boundary protection:
             # Agar start current shift start se pehle aa gaya, to reference/end time ke current shift se clamp karo.
             # Isse 08:25 wali fake OFFLINE entry 08:30 se save hogi.
-            start_at = self._clamp_start_to_reference_shift(start_at, end_at)
+            # start_at = self._clamp_start_to_reference_shift(start_at, end_at)
 
             ideal_seconds = int((end_at - start_at).total_seconds())
 
             # ✅ FINAL RULE:
             # 3 minute se kam koi bhi ideal row DB me save nahi hogi.
             # Isse 4 sec / 11 sec / 28 sec wali HOUR_CHANGE/COUNT_RESUME pieces bhi stop hongi.
-            if ideal_seconds < self.off_threshold_seconds:
-                print(
-                    f"⏭️ IDEAL PIECE IGNORED | M{machine_no} | {ideal_mode} | "
-                    f"{start_at.strftime('%H:%M:%S')}→{end_at.strftime('%H:%M:%S')} | "
-                    f"{ideal_seconds}s < {self.off_threshold_seconds}s | {closed_by}"
-                )
+            # ==========================================================
+            # DURATION RULE
+            #
+            # ONLINE:
+            #   Must first qualify as >= 180 sec.
+            #
+            # OFFLINE:
+            #   No 3-minute threshold.
+            #   Any real positive duration is valid.
+            # ==========================================================
+
+            if ideal_seconds <= 0:
                 return False
+
+            # ==========================================================
+            # ONLINE < 180 SEC RULE
+            #
+            # A short ONLINE physical row is valid ONLY when:
+            #
+            # 1. complete logical event already qualified >= 180 sec
+            # AND
+            # 2. this is either:
+            #       a) HOUR_CHANGE piece
+            #       OR
+            #       b) final piece immediately following HOUR_CHANGE
+            #
+            # Standalone 10s / 50s / 120s COUNT_RESUME must NOT save.
+            # ==========================================================
+
+            # ==========================================================
+            # FINAL < 3 MINUTE RULE - ONLINE + OFFLINE
+            #
+            # Standalone piece <180 sec:
+            #     DO NOT SAVE
+            #
+            # Exception:
+            #     Short piece is allowed only when it belongs to an
+            #     already-qualified logical event split by HOUR_CHANGE.
+            # ==========================================================
+
+            if ideal_seconds < self.online_idle_threshold_seconds:
+            
+                closed_by_value = str(
+                    closed_by or ""
+                ).strip().upper()
+
+                is_hour_change_piece = (
+                    closed_by_value == "HOUR_CHANGE"
+                )
+
+                previous_hour_change_exists = False
+
+                if (
+                    logical_event_qualified
+                    and not is_hour_change_piece
+                ):
+
+                    previous_hour_change_exists = (
+                        IdealTimeSegmentReason.objects
+                        .filter(
+                            plant_location="Plant 1",
+                            machine_no=int(machine_no),
+                            ideal_mode=ideal_mode,
+                            ideal_end_at=start_at,
+                            closed_by="HOUR_CHANGE",
+                        )
+                        .exists()
+                    )
+
+                valid_short_split_piece = (
+                    logical_event_qualified
+                    and (
+                        is_hour_change_piece
+                        or previous_hour_change_exists
+                    )
+                )
+
+                if not valid_short_split_piece:
+                
+                    print(
+                        f"⏭️ SHORT IDEAL REJECTED | "
+                        f"Plant 1 | "
+                        f"M{machine_no} | "
+                        f"{ideal_mode} | "
+                        f"{start_at.strftime('%H:%M:%S')}"
+                        f"→{end_at.strftime('%H:%M:%S')} | "
+                        f"{ideal_seconds}s | "
+                        f"ClosedBy={closed_by_value or '-'}",
+                        flush=True,
+                    )
+
+                    return False
 
             shift = self.get_shift_from_time(start_at)
             (
@@ -1706,11 +914,7 @@ class Plant1ExactRequirementState:
 
             clean_submitted_by = str(submitted_by)[:150] if submitted_by else None
 
-            submitted_at_db = (
-                self._as_ist(submitted_at)
-                if submitted_at
-                else None
-            )
+            submitted_at_db = self._as_ist(submitted_at) if submitted_at else None
 
             # ==========================================================
             # SAVE FINAL IDEAL PIECE TO DB
@@ -1796,75 +1000,146 @@ class Plant1ExactRequirementState:
         min_total_seconds=180,
     ):
         """
-        OPTIMIZED IDEAL STORAGE
+        FINAL COMMON RULE:
 
-        ONE physical Ideal event = ONE database row.
+        ONLINE:
+            - Complete logical event must qualify >= 180 sec.
+            - After qualification, physically split by hour.
+            - Individual hourly pieces may be < 180 sec.
 
-        Function name same rakha gaya hai
-        taaki existing callers break na ho.
+        OFFLINE:
+            - No 180-sec qualification.
+            - Physically split by hour.
+
+        Example ONLINE:
+            09:43 -> 10:00 HOUR_CHANGE
+            10:00 -> 10:45 COUNT_RESUME
+
+        Example OFFLINE:
+            08:33 -> 09:00 HOUR_CHANGE
+            09:00 -> 10:00 HOUR_CHANGE
+            10:00 -> 10:17 MACHINE_ON
         """
 
         try:
+
             start_at = self._as_ist(start_at)
             end_at = self._as_ist(end_at)
 
-            # Shift boundary safety
-            start_at = self._clamp_start_to_reference_shift(
-                start_at,
-                end_at,
-            )
+            ideal_mode = str(
+                ideal_mode or ""
+            ).strip().upper()
 
             total_seconds = int(
                 (end_at - start_at).total_seconds()
             )
 
-            # 3 minute se kam event save nahi hoga
+            if total_seconds <= 0:
+                return 0
+
+            # ======================================================
+            # ONLINE qualification is for COMPLETE logical event,
+            # not each hourly piece.
+            # ======================================================
+
+            # ======================================================
+            # COMPLETE LOGICAL EVENT THRESHOLD
+            #
+            # BOTH ONLINE + OFFLINE must complete >= 180 sec.
+            #
+            # Only after complete event qualifies can its hourly
+            # pieces be physically stored.
+            # ======================================================
+
             if total_seconds < min_total_seconds:
+            
                 print(
-                    f"⏭️ IDEAL IGNORED | "
+                    f"⏭️ IDEAL EVENT IGNORED | "
                     f"M{machine_no} | "
                     f"{ideal_mode} | "
                     f"{total_seconds}s < "
                     f"{min_total_seconds}s",
                     flush=True,
                 )
+
                 return 0
 
-            # ==================================================
-            # ONE PHYSICAL IDEAL EVENT = ONE DB ROW
-            # ==================================================
 
-            saved = self._save_ideal_piece_to_db(
-                machine_no=machine_no,
-                ideal_mode=ideal_mode,
-                start_at=start_at,
-                end_at=end_at,
-                closed_by=closed_by,
-            )
+            logical_event_qualified = True
 
-            if saved:
-                print(
-                    f"✅ IDEAL EVENT SAVED AS ONE ROW | "
-                    f"Plant 1 | "
-                    f"M{machine_no} | "
-                    f"{ideal_mode} | "
-                    f"{start_at.strftime('%H:%M:%S')}"
-                    f"→{end_at.strftime('%H:%M:%S')} | "
-                    f"{total_seconds}s | "
-                    f"{closed_by}",
-                    flush=True,
+            saved_count = 0
+            cursor_start = start_at
+
+            # Plant file specific value
+            plant_location = "Plant 1"
+
+            while cursor_start < end_at:
+
+                next_hour = self._next_ideal_storage_boundary(
+                    cursor_start
                 )
-                return 1
 
-            return 0
+                piece_end = min(
+                    next_hour,
+                    end_at,
+                )
+
+                if piece_end <= cursor_start:
+                    break
+
+                if piece_end < end_at:
+                    piece_closed_by = "HOUR_CHANGE"
+                else:
+                    piece_closed_by = closed_by
+
+                saved = self._save_ideal_piece_to_db(
+                    machine_no=machine_no,
+                    ideal_mode=ideal_mode,
+                    start_at=cursor_start,
+                    end_at=piece_end,
+                    closed_by=piece_closed_by,
+                    logical_event_qualified=logical_event_qualified,
+                )
+
+                if saved:
+
+                    saved_count += 1
+
+                else:
+
+                    # Restart/recovery:
+                    # exact hourly piece may already exist.
+                    existing_piece = (
+                        IdealTimeSegmentReason.objects
+                        .filter(
+                            plant_location=plant_location,
+                            machine_no=int(machine_no),
+                            ideal_mode=ideal_mode,
+                            ideal_start_at=cursor_start,
+                            ideal_end_at=piece_end,
+                        )
+                        .exists()
+                    )
+
+                    if existing_piece:
+                        saved_count += 1
+
+                cursor_start = piece_end
+
+            return saved_count
 
         except Exception as e:
+
             print(
-                f"❌ Ideal event save error "
-                f"Plant 1 | M{machine_no}: {e}",
+                f"❌ Ideal range split error | "
+                f"{plant_location} | "
+                f"M{machine_no} | "
+                f"{ideal_mode} | {e}",
                 flush=True,
             )
+
             traceback.print_exc()
+
             return 0
 
     def _start_ideal_segment(self, machine_no, ideal_mode, start_at):
@@ -1872,36 +1147,510 @@ class Plant1ExactRequirementState:
         start_at = self._as_ist(start_at)
 
         active = self.active_ideal_segments.get(machine_no)
+        
+        
+       
+
+        if active is None:
+
+            # ==========================================================
+    
+            # not the requested new event start_at.
+            # ==========================================================
+
+            now_ist = datetime.now(IST)
+
+            recovery_start = self._open_ideal_lookup_start(
+                now_ist
+            )
+
+            db_open_event = (
+                IdealTimeSegmentReason.objects
+                .filter(
+                    plant_location="Plant 1",
+                    machine_no=int(machine_no),
+                    ideal_end_at__isnull=True,
+                    ideal_start_at__gte=recovery_start,
+                    ideal_start_at__lte=now_ist,
+                )
+                .order_by(
+                    "-ideal_start_at",
+                    "-id",
+                )
+                .first()
+            )
+
+            if db_open_event is not None:
+
+                db_mode = str(
+                    db_open_event.ideal_mode or ""
+                ).strip().upper()
+
+                # ----------------------------------------------
+                # Resolve first row of same HOUR_CHANGE chain
+                # so notification identity remains correct.
+                # ----------------------------------------------
+
+                canonical_event = db_open_event
+
+                for _ in range(24):
+
+                    previous_segment = (
+                        IdealTimeSegmentReason.objects
+                        .filter(
+                            plant_location="Plant 1",
+                            machine_no=int(machine_no),
+                            ideal_mode=db_mode,
+                            ideal_end_at=canonical_event.ideal_start_at,
+                            closed_by="HOUR_CHANGE",
+                        )
+                        .exclude(pk=canonical_event.pk)
+                        .order_by(
+                            "-ideal_start_at",
+                            "-id",
+                        )
+                        .first()
+                    )
+
+                    if previous_segment is None:
+                        break
+
+                    canonical_event = previous_segment
+
+                db_start = self._as_ist(
+                    db_open_event.ideal_start_at
+                )
+                
+                
+                # ==========================================================
+                # RECOVERY MODE CONFLICT
+                
+                
+                if (
+                    db_mode != ideal_mode
+                    and start_at <= db_start
+                ):
+                    print(
+                        f"♻️ RECOVERY MODE TRANSITION TIME FIX | "
+                        f"Plant 1 | "
+                        f"M{machine_no} | "
+                        f"DB={db_mode} | "
+                        f"NEW={ideal_mode} | "
+                        f"RequestedStart={start_at.strftime('%H:%M:%S')} | "
+                        f"DBStart={db_start.strftime('%H:%M:%S')} | "
+                        f"UsingNow={now_ist.strftime('%H:%M:%S')}",
+                        flush=True,
+                    )
+                
+                    start_at = now_ist
+
+                canonical_start = self._as_ist(
+                    canonical_event.ideal_start_at
+                )
+
+                active = {
+                    "mode": db_mode,
+                    "start_at": db_start,
+                    "ideal_event_id": db_open_event.id,
+                    "canonical_event_id": canonical_event.id,
+                    "event_started_at": canonical_start,
+                }
+
+                self.active_ideal_segments[machine_no] = active
+
+                print(
+                    f"♻️ OPEN IDEAL RESTORED FROM DB | "
+                    f"Plant 1 | "
+                    f"M{machine_no} | "
+                    f"{db_mode} | "
+                    f"IdealID={db_open_event.id} | "
+                    f"CanonicalID={canonical_event.id} | "
+                    f"Start={db_start.strftime('%H:%M:%S')}",
+                    flush=True,
+                )
 
         if active and active.get("mode") == ideal_mode:
-            # ✅ Agar same mode already active hai aur new start shift-start ke karib earlier hai,
-            # to start time ko safely earlier adjust kar do. Old offline/online overlap se pehle nahi le jayenge.
+
             current_start = active["start_at"]
-            boundary = self.last_ideal_transition_time.get(machine_no)
-            shift_start = self._current_shift_start_for(current_start)
-            safe_min = max([x for x in [shift_start, boundary] if x is not None])
-            if safe_min <= start_at < current_start:
+
+            boundary = self.last_ideal_transition_time.get(
+                machine_no
+            )
+
+            can_move_start_back = (
+                boundary is None
+                or boundary <= start_at
+            )
+
+            if (
+                can_move_start_back
+                and start_at < current_start
+            ):
                 active["start_at"] = start_at
+
                 print(
-                    f"↩️ IDEAL START ADJUSTED | M{machine_no} | {ideal_mode} | {start_at.strftime('%H:%M:%S')}"
+                    f"↩️ IDEAL START ADJUSTED | "
+                    f"M{machine_no} | "
+                    f"{ideal_mode} | "
+                    f"{start_at.strftime('%H:%M:%S')}",
+                    flush=True,
                 )
-            return
+
+            # ==========================================================
+            # OFFLINE RAM <-> DB SELF HEAL
+            # ==========================================================
+
+            if ideal_mode == "OFFLINE":
+            
+                existing_open_event = None
+
+                existing_event_id = active.get(
+                    "ideal_event_id"
+                )
+
+                # First verify RAM ID.
+                if existing_event_id:
+                
+                    existing_open_event = (
+                        IdealTimeSegmentReason.objects
+                        .filter(
+                            pk=existing_event_id,
+                            plant_location="Plant 1",
+                            machine_no=int(machine_no),
+                            ideal_mode="OFFLINE",
+                            ideal_end_at__isnull=True,
+                        )
+                        .first()
+                    )
+
+                # RAM ID missing/stale -> recover valid DB row.
+                if existing_open_event is None:
+                
+                    open_lookup_start = (
+                        self._open_ideal_lookup_start(
+                            start_at
+                        )
+                    )
+
+                    existing_open_event = (
+                        IdealTimeSegmentReason.objects
+                        .filter(
+                            plant_location="Plant 1",
+                            machine_no=int(machine_no),
+                            ideal_mode="OFFLINE",
+                            ideal_end_at__isnull=True,
+                            ideal_start_at__gte=(
+                                open_lookup_start
+                            ),
+                            ideal_start_at__lte=start_at,
+                        )
+                        .order_by(
+                            "-ideal_start_at",
+                            "-id",
+                        )
+                        .first()
+                    )
+
+                if existing_open_event is not None:
+                
+                    active["ideal_event_id"] = (
+                        existing_open_event.id
+                    )
+
+                    active["start_at"] = self._as_ist(
+                        existing_open_event.ideal_start_at
+                    )
+
+                    active.setdefault(
+                        "canonical_event_id",
+                        existing_open_event.id,
+                    )
+
+                    active.setdefault(
+                        "event_started_at",
+                        active["start_at"],
+                    )
+
+                    return
+
+                # RAM says OFFLINE but DB does not contain
+                # the actual current OFFLINE row.
+                self.active_ideal_segments.pop(
+                    machine_no,
+                    None,
+                )
+
+                active = None
+
+                print(
+                    f"♻️ OFFLINE RAM WITHOUT DB ROW | "
+                    f"Plant 1 | "
+                    f"M{machine_no} | "
+                    f"Recreating OPEN OFFLINE row",
+                    flush=True,
+                )
+
+                # IMPORTANT:
+                # no return here.
+                # Normal OFFLINE creation continues below.
+
+            else:
+            
+                # Keep ONLINE behavior unchanged.
+                return
 
         # ✅ Safety: different active mode ko overwrite nahi karna.
         # Pehle purana mode close hoga, phir naya start hoga.
         if active and active.get("mode") != ideal_mode:
-            close_at = max(start_at, active["start_at"])
+
+            close_at = max(
+                start_at,
+                active["start_at"],
+            )
+
             close_reason = "MACHINE_ON" if ideal_mode == "ONLINE" else "MACHINE_OFF"
-            self._close_ideal_segment(machine_no, close_at, close_reason)
+
+            self._close_ideal_segment(
+                machine_no,
+                close_at,
+                close_reason,
+            )
+
+            # ======================================================
+            # If old DB event failed to close, _close_ideal_segment
+            # keeps it in RAM.
+            #
+            # DO NOT overwrite it with a new event.
+            # ======================================================
+
+            remaining_active = self.active_ideal_segments.get(machine_no)
+
+            if remaining_active is not None:
+
+                print(
+                    f"⚠️ NEW IDEAL START BLOCKED | "
+                    f"M{machine_no} | "
+                    f"Old {remaining_active.get('mode')} "
+                    f"event is still open",
+                    flush=True,
+                )
+
+                return
 
         self.active_ideal_segments[machine_no] = {
             "mode": ideal_mode,
             "start_at": start_at,
         }
+        # ==========================================================
+        # OFFLINE = SAVE OPEN ROW IMMEDIATELY
+        #
+        # No 3-minute threshold for physical power OFF.
+        # ==========================================================
+
+        if ideal_mode == "OFFLINE":
+
+            try:
+
+                plant_location = "Plant 1"
+
+                shift = self.get_shift_from_time(start_at)
+
+                # Avoid duplicate open rows.
+                # Only recover an OPEN row from the CURRENT SHIFT.
+                # Old July/August stale OPEN rows must never be attached
+                # to the current machine state.
+                shift_start = self.get_shift_start_datetime(
+                    start_at
+                )
+
+                open_lookup_start = (
+                    self._open_ideal_lookup_start(
+                        start_at
+                    )
+                )
+
+                # ==========================================================
+                # STALE OPEN ROW CLEANUP
+                #
+                # M13 example:
+                #
+                # Old:
+                # 09-Sep 11:29 ONLINE -> NULL
+                #
+                # Current:
+                # 10-Sep OFFLINE
+                #
+                # That old OPEN row cannot represent today's current
+                # physical Ideal state and can block today's tail.
+                # ==========================================================
+
+                blocking_open = (
+                    IdealTimeSegmentReason.objects
+                    .filter(
+                        plant_location=plant_location,
+                        machine_no=int(machine_no),
+                        ideal_end_at__isnull=True,
+                    )
+                    .order_by(
+                        "-ideal_start_at",
+                        "-id",
+                    )
+                    .first()
+                )
+
+                if blocking_open is not None:
+                
+                    blocking_start = self._as_ist(
+                        blocking_open.ideal_start_at
+                    )
+
+                    if blocking_start < open_lookup_start:
+                    
+                        already_submitted = (
+                            str(
+                                blocking_open.report_status or ""
+                            ).strip().upper()
+                            == "SUBMITTED"
+                            or blocking_open.submitted_at is not None
+                        )
+
+                        if already_submitted:
+                        
+                            print(
+                                f"❌ STALE SUBMITTED OPEN IDEAL BLOCKING | "
+                                f"Plant 1 | "
+                                f"M{machine_no} | "
+                                f"IdealID={blocking_open.id}",
+                                flush=True,
+                            )
+
+                            self.active_ideal_segments.pop(
+                                machine_no,
+                                None,
+                            )
+
+                            return
+
+                        stale_id = blocking_open.id
+                        stale_mode = str(
+                            blocking_open.ideal_mode or ""
+                        ).strip().upper()
+
+                        blocking_open.delete()
+
+                        print(
+                            f"🧹 STALE OPEN IDEAL REMOVED | "
+                            f"Plant 1 | "
+                            f"M{machine_no} | "
+                            f"IdealID={stale_id} | "
+                            f"Mode={stale_mode} | "
+                            f"Start="
+                            f"{blocking_start.strftime('%Y-%m-%d %H:%M:%S')}",
+                            flush=True,
+                        )
+
+
+                # Recover a legitimate current/cross-boundary OFFLINE.
+                ideal_event = (
+                    IdealTimeSegmentReason.objects
+                    .filter(
+                        plant_location=plant_location,
+                        machine_no=int(machine_no),
+                        ideal_mode="OFFLINE",
+                        ideal_end_at__isnull=True,
+                        ideal_start_at__gte=open_lookup_start,
+                        ideal_start_at__lte=start_at,
+                    )
+                    .order_by(
+                        "-ideal_start_at",
+                        "-id",
+                    )
+                    .first()
+                )
+
+                if ideal_event is None:
+
+                    (
+                        reason,
+                        specific_reason,
+                        remark,
+                        report_status,
+                        submitted_by,
+                        submitted_at,
+                    ) = self._get_ideal_reason_data(
+                        machine_no,
+                        "OFFLINE",
+                    )
+
+                    ideal_event = IdealTimeSegmentReason.objects.create(
+                        plant_location=plant_location,
+                        machine_no=int(machine_no),
+                        ideal_mode="OFFLINE",
+                        ideal_start_at=start_at,
+                        ideal_end_at=None,
+                        ideal_time=None,
+                        closed_by=None,
+                        reason=reason,
+                        specific_reason=specific_reason,
+                        remark=remark,
+                        shift=shift,
+                        report_status=report_status,
+                        submitted_by=submitted_by,
+                        submitted_at=submitted_at,
+                    )
+
+                    print(
+                        f"🔴 OPEN OFFLINE SAVED | "
+                        f"Plant 1 | "
+                        f"M{machine_no} | "
+                        f"IdealID={ideal_event.id} | "
+                        f"Start={start_at.strftime('%H:%M:%S')}",
+                        flush=True,
+                    )
+
+                active = self.active_ideal_segments[machine_no]
+
+                active["ideal_event_id"] = ideal_event.id
+
+
+                # IMPORTANT:
+                # RAM current-tail start must match the actual OPEN DB row.
+                active["start_at"] = self._as_ist(
+                    ideal_event.ideal_start_at
+                )
+
+
+                active.setdefault(
+                    "canonical_event_id",
+                    ideal_event.id,
+                )
+
+                active.setdefault(
+                    "event_started_at",
+                    start_at,
+                )
+
+            except Exception as e:
+
+                print(
+                    f"❌ OPEN OFFLINE SAVE ERROR | "
+                    f"Plant 1 | "
+                    f"M{machine_no} | {e}",
+                    flush=True,
+                )
+
+                traceback.print_exc()
+
+                # Database does not contain the OPEN row,
+                # so RAM must not pretend that it does.
+                self.active_ideal_segments.pop(
+                    machine_no,
+                    None,
+                )
         print(
             f"▶️ IDEAL START | M{machine_no} | {ideal_mode} | {start_at.strftime('%H:%M:%S')}"
-        )   
-        
+        )
+
     def _mark_idle_notification_ended(
         self,
         machine_no,
@@ -1940,44 +1689,31 @@ class Plant1ExactRequirementState:
             # ------------------------------------------------------
             # Fresh closed Ideal row
             # ------------------------------------------------------
-            ideal_event = (
-                IdealTimeSegmentReason.objects
-                .filter(pk=ideal_event_id)
-                .first()
-            )
+            ideal_event = IdealTimeSegmentReason.objects.filter(
+                pk=ideal_event_id
+            ).first()
 
             if ideal_event is None:
                 print(
-                    f"⚠️ Ideal event not found | "
-                    f"IdealID={ideal_event_id}",
+                    f"⚠️ Ideal event not found | " f"IdealID={ideal_event_id}",
                     flush=True,
                 )
                 return 0
-            
-            
+
             # ------------------------------------------------------
             # Notification row check
             # ------------------------------------------------------
 
-            notification = (
-                Notification.objects
-                .filter(
-                    pk=ideal_event_id
-                )
-                .first()
-            )
-
+            notification = Notification.objects.filter(pk=ideal_event_id).first()
 
             if notification is None:
 
                 print(
-                    f"⚠️ Notification not found | "
-                    f"IdealID={ideal_event_id}",
+                    f"⚠️ Notification not found | " f"IdealID={ideal_event_id}",
                     flush=True,
                 )
 
                 return 0
-
 
             # ======================================================
             # VERY IMPORTANT
@@ -1996,11 +1732,7 @@ class Plant1ExactRequirementState:
 
             if (
                 notification.user_id is None
-                or
-                str(
-                    ideal_event.report_status
-                    or ""
-                ).upper() != "SUBMITTED"
+                or str(ideal_event.report_status or "").upper() != "SUBMITTED"
             ):
 
                 print(
@@ -2012,80 +1744,68 @@ class Plant1ExactRequirementState:
                     flush=True,
                 )
 
-                return 0 
+                return 0
             # ------------------------------------------------------
-            # Final duration
-            # ------------------------------------------------------
-            if ideal_event.ideal_time is not None:
+            # ======================================================
+            # FULL LOGICAL INCIDENT DURATION
+            #
+            # Hour-split hone ke baad canonical row ka ideal_time
+            # sirf first hour ho sakta hai.
+            #
+            # Correct duration:
+            # canonical incident start -> final machine resume time.
+            # ======================================================
 
-                total_seconds = int(
-                    ideal_event.ideal_time
+            if start_at is not None:
+
+                safe_start = self._as_ist(start_at)
+                safe_end = self._as_ist(end_at)
+
+                total_seconds = max(
+                    0,
+                    int((safe_end - safe_start).total_seconds()),
                 )
 
             elif ideal_event.ideal_start_at is not None:
 
+                safe_start = self._as_ist(ideal_event.ideal_start_at)
+
                 safe_end = self._as_ist(end_at)
-                safe_start = self._as_ist(
-                    ideal_event.ideal_start_at
-                )
 
                 total_seconds = max(
                     0,
-                    int(
-                        (
-                            safe_end -
-                            safe_start
-                        ).total_seconds()
-                    ),
+                    int((safe_end - safe_start).total_seconds()),
                 )
 
             else:
                 total_seconds = 0
 
             hours = total_seconds // 3600
-            minutes = (
-                total_seconds % 3600
-            ) // 60
+            minutes = (total_seconds % 3600) // 60
             seconds = total_seconds % 60
 
             if hours > 0:
-                duration_text = (
-                    f"{hours} hr "
-                    f"{minutes} min "
-                    f"{seconds} sec"
-                )
+                duration_text = f"{hours} hr " f"{minutes} min " f"{seconds} sec"
 
             elif minutes > 0:
-                duration_text = (
-                    f"{minutes} min "
-                    f"{seconds} sec"
-                )
+                duration_text = f"{minutes} min " f"{seconds} sec"
 
             else:
-                duration_text = (
-                    f"{seconds} sec"
-                )
+                duration_text = f"{seconds} sec"
 
             # ------------------------------------------------------
             # IDLE / OFFLINE
             # ------------------------------------------------------
             status_text = (
                 "OFFLINE"
-                if str(
-                    ideal_event.ideal_mode
-                ).upper() == "OFFLINE"
+                if str(ideal_event.ideal_mode).upper() == "OFFLINE"
                 else "IDLE"
             )
 
             # ------------------------------------------------------
             # Reason already submitted or still pending?
             # ------------------------------------------------------
-            if (
-                str(
-                    ideal_event.report_status
-                ).upper()
-                == "SUBMITTED"
-            ):
+            if str(ideal_event.report_status).upper() == "SUBMITTED":
 
                 final_message = (
                     f"{ideal_event.plant_location} "
@@ -2112,14 +1832,8 @@ class Plant1ExactRequirementState:
             # Only MESSAGE update.
             # created_at ko yahan touch nahi karna.
             # ------------------------------------------------------
-            updated = (
-                Notification.objects
-                .filter(
-                    pk=ideal_event_id
-                )
-                .update(
-                    message=final_message
-                )
+            updated = Notification.objects.filter(pk=ideal_event_id).update(
+                message=final_message
             )
 
             print(
@@ -2137,14 +1851,12 @@ class Plant1ExactRequirementState:
         except Exception as e:
 
             print(
-                f"⚠️ NOTIFICATION MESSAGE UPDATE ERROR | "
-                f"M{machine_no} | {e}",
+                f"⚠️ NOTIFICATION MESSAGE UPDATE ERROR | " f"M{machine_no} | {e}",
                 flush=True,
             )
 
             return 0
-    
-    
+
     def _close_ideal_segment(
         self,
         machine_no,
@@ -2164,14 +1876,30 @@ class Plant1ExactRequirementState:
         ONE PHYSICAL EVENT = ONE IDEAL ROW.
         """
 
-        active = self.active_ideal_segments.get(
-            machine_no
-        )
+        active = self.active_ideal_segments.get(machine_no)
 
         if not active:
             return 0
 
         end_at = self._as_ist(end_at)
+
+
+        # ==========================================================
+       
+
+        self.split_active_ideal_segment_at_hour(
+            machine_no,
+            end_at,
+        )
+
+
+        # Splitter may have moved current tail start
+        # from 09:43 -> 10:00 etc.
+        active = self.active_ideal_segments.get(machine_no)
+
+        if not active:
+            return 0
+
 
         start_at = self._as_ist(
             active["start_at"]
@@ -2179,24 +1907,33 @@ class Plant1ExactRequirementState:
 
         ideal_mode = active["mode"]
 
-        ideal_event_id = active.get(
-            "ideal_event_id"
+        # ==========================================================
+        # MODE-WISE MINIMUM DURATION
+        #
+        # ONLINE:
+        #   3 minute qualification required.
+        #
+        # OFFLINE:
+        #   No 3-minute threshold.
+        # BOTH ONLINE + OFFLINE = minimum 3 minutes
+        required_seconds = (
+            self.online_idle_threshold_seconds
         )
 
-        notification_start_at = active.get(
-            "event_started_at"
-        )
+        # Current physical hourly row ID
+        ideal_event_id = active.get("ideal_event_id")
+
+        # First row of the complete logical incident.
+        # Notification remains attached to this ID even after hour split.
+        notification_event_id = active.get("canonical_event_id") or ideal_event_id
+
+        notification_start_at = active.get("event_started_at")
 
         if notification_start_at is not None:
 
-            notification_start_at = self._as_ist(
-                notification_start_at
-            )
+            notification_start_at = self._as_ist(notification_start_at)
 
-        exact_start_at = (
-            notification_start_at
-            or start_at
-        )
+        exact_start_at = notification_start_at or start_at
 
         # ==========================================================
         # INVALID RANGE
@@ -2209,9 +1946,7 @@ class Plant1ExactRequirementState:
                 None,
             )
 
-            self.last_ideal_transition_time[
-                machine_no
-            ] = end_at
+            self.last_ideal_transition_time[machine_no] = end_at
 
             return 0
 
@@ -2227,46 +1962,44 @@ class Plant1ExactRequirementState:
 
             if ideal_event_id:
 
-                ideal_event = (
-                    IdealTimeSegmentReason.objects
-                    .filter(
-                        id=ideal_event_id,
-                        plant_location="Plant 1",
-                        machine_no=int(machine_no),
-                        ideal_mode=ideal_mode,
-                    )
-                    .first()
-                )
+                ideal_event = IdealTimeSegmentReason.objects.filter(
+                    id=ideal_event_id,
+                    plant_location="Plant 1",
+                    machine_no=int(machine_no),
+                    ideal_mode=ideal_mode,
+                    ideal_end_at__isnull=True,
+                ).first()
 
             # RAM ID missing hua to event_key fallback.
             # RAM Ideal ID missing ho to current open event
             # start time se safely recover karo.
 
             if ideal_event is None:
-            
-                start_from = (
-                    exact_start_at -
-                    timedelta(seconds=2)
-                )
 
-                start_to = (
-                    exact_start_at +
-                    timedelta(seconds=2)
-                )
+                shift_start = self.get_shift_start_datetime(end_at)
+
+                open_lookup_start = shift_start - timedelta(hours=1)
 
                 ideal_event = (
-                    IdealTimeSegmentReason.objects
-                    .filter(
+                    IdealTimeSegmentReason.objects.filter(
                         plant_location="Plant 1",
                         machine_no=int(machine_no),
                         ideal_mode=ideal_mode,
                         ideal_end_at__isnull=True,
-                        ideal_start_at__gte=start_from,
-                        ideal_start_at__lte=start_to,
+                        ideal_start_at__gte=open_lookup_start,
+                        ideal_start_at__lt=end_at,
                     )
-                    .order_by("-id")
+                    .order_by(
+                        "-ideal_start_at",
+                        "-id",
+                    )
                     .first()
                 )
+
+                if ideal_event is not None:
+
+                    # Reconnect RAM to exact DB row.
+                    active["ideal_event_id"] = ideal_event.id
 
             # ======================================================
             # 2. OPEN ROW EXISTS
@@ -2279,6 +2012,7 @@ class Plant1ExactRequirementState:
                     ideal_event.ideal_start_at
                 )
 
+                # Current hourly physical-piece duration.
                 final_seconds = int(
                     (
                         end_at -
@@ -2286,19 +2020,96 @@ class Plant1ExactRequirementState:
                     ).total_seconds()
                 )
 
-                if final_seconds >= 180:
+                # Original start of complete logical event.
+                logical_start_at = (
+                    notification_start_at
+                    or active.get(
+                        "event_started_at"
+                    )
+                    or start_at
+                )
 
-                    ideal_event.ideal_end_at = (
-                        end_at
+                logical_start_at = self._as_ist(
+                    logical_start_at
+                )
+
+                logical_total_seconds = int(
+                    (
+                        end_at -
+                        logical_start_at
+                    ).total_seconds()
+                )
+
+                # ==========================================================
+                # FINAL ONLINE TAIL VALIDATION
+                #
+                # Normal row:
+                #     final_seconds >= 180
+                #
+                # Short row:
+                #     allowed ONLY when logical event >=180
+                #     AND previous exact row ended with HOUR_CHANGE.
+                # ==========================================================
+                
+                # ==========================================================
+                # FINAL TAIL VALIDATION - ONLINE + OFFLINE
+                #
+                # Normal standalone row:
+                #     final_seconds >= 180
+                #
+                # Short final row:
+                #     allowed ONLY if:
+                #       complete logical event >= 180
+                #       AND immediately preceded by HOUR_CHANGE
+                # ==========================================================
+
+                short_tail_from_hour_split = False
+
+                if (
+                    0 < final_seconds
+                    < self.online_idle_threshold_seconds
+                    and logical_total_seconds
+                    >= self.online_idle_threshold_seconds
+                ):
+
+                    short_tail_from_hour_split = (
+                        IdealTimeSegmentReason.objects
+                        .filter(
+                            plant_location="Plant 1",   # Plant 1 in simple_plant1.py
+                            machine_no=int(machine_no),
+                            ideal_mode=ideal_mode,
+                            ideal_end_at=db_start_at,
+                            closed_by="HOUR_CHANGE",
+                        )
+                        .exists()
                     )
 
-                    ideal_event.ideal_time = (
-                        final_seconds
-                    )
 
-                    ideal_event.closed_by = (
-                        closed_by
+                event_is_qualified = (
+                
+                    final_seconds
+                    >= self.online_idle_threshold_seconds
+
+                    or (
+                    
+                        logical_total_seconds
+                        >= self.online_idle_threshold_seconds
+
+                        and short_tail_from_hour_split
                     )
+                )
+                
+                
+                if (
+                    final_seconds > 0
+                    and event_is_qualified
+                ):
+
+                    ideal_event.ideal_end_at = end_at
+
+                    ideal_event.ideal_time = final_seconds
+
+                    ideal_event.closed_by = closed_by
 
                     # IMPORTANT:
                     # reason/report_status/submitted data
@@ -2315,11 +2126,9 @@ class Plant1ExactRequirementState:
                     saved_start_at = db_start_at
                     exact_start_at = db_start_at
 
-
                     # Transitional compatibility:
                     # all matching notifications FK se
                     # exact Ideal row ko point kare.
-                
 
                     print(
                         f"✅ OPEN IDEAL CLOSED | "
@@ -2335,15 +2144,57 @@ class Plant1ExactRequirementState:
                     )
 
                 else:
+                                
+                    # ======================================================
+                    # EVENT FINISHED BEFORE 180 SEC
+                    #
+                    # OFFLINE may have created a temporary OPEN DB row.
+                    # Since complete event did NOT qualify, remove that
+                    # temporary row completely.
+                    #
+                    # Valid HOUR_CHANGE chain never reaches this branch.
+                    # ======================================================
 
-                    print(
-                        f"⚠️ OPEN IDEAL CLOSE SKIPPED | "
-                        f"Plant 1 | "
-                        f"M{machine_no} | "
-                        f"IdealID={ideal_event.id} | "
-                        f"{final_seconds}s < 180s",
-                        flush=True,
-                    )
+                    rejected_event_id = ideal_event.id
+
+                    if (
+                        ideal_event.report_status != "SUBMITTED"
+                        and ideal_event.submitted_at is None
+                    ):
+
+                        ideal_event.delete()
+
+                        if (
+                            active.get("ideal_event_id")
+                            == rejected_event_id
+                        ):
+                            active["ideal_event_id"] = None
+
+                        if (
+                            active.get("canonical_event_id")
+                            == rejected_event_id
+                        ):
+                            active["canonical_event_id"] = None
+
+                        print(
+                            f"🗑️ SHORT IDEAL REMOVED | "
+                            f"M{machine_no} | "
+                            f"{ideal_mode} | "
+                            f"{final_seconds}s < "
+                            f"{required_seconds}s | "
+                            f"IdealID={rejected_event_id}",
+                            flush=True,
+                        )
+
+                    else:
+                    
+                        print(
+                            f"⚠️ SHORT IDEAL NOT DELETED | "
+                            f"M{machine_no} | "
+                            f"IdealID={rejected_event_id} | "
+                            f"Already submitted",
+                            flush=True,
+                        )
 
             # ======================================================
             # 3. NO OPEN ROW
@@ -2354,15 +2205,13 @@ class Plant1ExactRequirementState:
 
             else:
 
-                saved = (
-                    self._save_ideal_range_split_by_hour(
-                        machine_no=machine_no,
-                        ideal_mode=ideal_mode,
-                        start_at=start_at,
-                        end_at=end_at,
-                        closed_by=closed_by,
-                        min_total_seconds=180,
-                    )
+                saved = self._save_ideal_range_split_by_hour(
+                    machine_no=machine_no,
+                    ideal_mode=ideal_mode,
+                    start_at=start_at,
+                    end_at=end_at,
+                    closed_by=closed_by,
+                    min_total_seconds=required_seconds,
                 )
 
                 saved_start_at = start_at
@@ -2374,10 +2223,8 @@ class Plant1ExactRequirementState:
                 if (
                     saved == 0
                     and notification_start_at is not None
-                    and (
-                        end_at -
-                        notification_start_at
-                    ).total_seconds() >= 180
+                    and (end_at - notification_start_at).total_seconds()
+                    >= required_seconds
                 ):
 
                     print(
@@ -2391,20 +2238,16 @@ class Plant1ExactRequirementState:
                         flush=True,
                     )
 
-                    saved = (
-                        self._save_ideal_range_split_by_hour(
-                            machine_no=machine_no,
-                            ideal_mode=ideal_mode,
-                            start_at=notification_start_at,
-                            end_at=end_at,
-                            closed_by=closed_by,
-                            min_total_seconds=180,
-                        )
+                    saved = self._save_ideal_range_split_by_hour(
+                        machine_no=machine_no,
+                        ideal_mode=ideal_mode,
+                        start_at=notification_start_at,
+                        end_at=end_at,
+                        closed_by=closed_by,
+                        min_total_seconds=required_seconds,
                     )
 
-                    saved_start_at = (
-                        notification_start_at
-                    )
+                    saved_start_at = notification_start_at
 
                 # ==============================================
                 # FALLBACK ROW KO EVENT KEY / FK SE CONNECT
@@ -2413,8 +2256,7 @@ class Plant1ExactRequirementState:
                 if saved > 0:
 
                     ideal_event = (
-                        IdealTimeSegmentReason.objects
-                        .filter(
+                        IdealTimeSegmentReason.objects.filter(
                             plant_location="Plant 1",
                             machine_no=int(machine_no),
                             ideal_mode=ideal_mode,
@@ -2427,18 +2269,12 @@ class Plant1ExactRequirementState:
 
                     if ideal_event is not None:
 
-                        exact_start_at = self._as_ist(
-                            ideal_event.ideal_start_at
-                        )
-
+                        exact_start_at = self._as_ist(ideal_event.ideal_start_at)
 
         except Exception as e:
 
             print(
-                f"❌ IDEAL CLOSE ERROR | "
-                f"Plant 1 | "
-                f"M{machine_no} | "
-                f"{e}",
+                f"❌ IDEAL CLOSE ERROR | " f"Plant 1 | " f"M{machine_no} | " f"{e}",
                 flush=True,
             )
 
@@ -2455,16 +2291,18 @@ class Plant1ExactRequirementState:
 
         if saved > 0:
 
+            notification_event_start_at = notification_start_at or start_at
+
+            # Extra fallback if canonical ID somehow missing.
+            if notification_event_id is None and ideal_event is not None:
+                notification_event_id = ideal_event.id
+
             self._mark_idle_notification_ended(
                 machine_no=machine_no,
                 ideal_mode=ideal_mode,
                 end_at=end_at,
-                start_at=exact_start_at,
-                ideal_event_id=(
-                    ideal_event.id
-                    if ideal_event is not None
-                    else None
-                ),
+                start_at=notification_event_start_at,
+                ideal_event_id=notification_event_id,
             )
 
         else:
@@ -2485,25 +2323,277 @@ class Plant1ExactRequirementState:
         # 5. CLEAR ACTIVE RAM EVENT
         # ==========================================================
 
+        # ==========================================================
+        # CLEAR ACTIVE RAM ONLY AFTER DB EVENT REALLY CLOSED
+        # ==========================================================
+
+        if saved > 0:
+
+            self.active_ideal_segments.pop(
+                machine_no,
+                None,
+            )
+
+            self.last_ideal_transition_time[machine_no] = end_at
+
+            return saved
+
+        # ==========================================================
+        # DB OPEN EVENT STILL EXISTS
+        #
+        # Important:
+        # Do NOT forget it from RAM.
+        #
+        # Otherwise:
+        # DB row remains OPEN
+        # RAM becomes empty
+        # next cycle creates another row.
+        # ==========================================================
+
+        # ==========================================================
+        # FINAL RAM / DB CONSISTENCY CHECK
+        #
+        # Never retain RAM only because Python still has an
+        # ideal_event object.
+        #
+        # The row must REALLY still exist as OPEN in DB.
+        # ==========================================================
+
+        still_open_id = None
+
+        if (
+            ideal_event is not None
+            and getattr(ideal_event, "pk", None)
+        ):
+
+            still_open_exists = (
+                IdealTimeSegmentReason.objects
+                .filter(
+                    pk=ideal_event.pk,
+                    plant_location="Plant 1",
+                    machine_no=int(machine_no),
+                    ideal_mode=ideal_mode,
+                    ideal_end_at__isnull=True,
+                )
+                .exists()
+            )
+
+            if still_open_exists:
+                still_open_id = ideal_event.pk
+
+
+        if still_open_id is not None:
+        
+            active["ideal_event_id"] = still_open_id
+
+            print(
+                f"⚠️ IDEAL STILL OPEN - RAM RETAINED | "
+                f"Plant 1 | "
+                f"M{machine_no} | "
+                f"{ideal_mode} | "
+                f"IdealID={still_open_id}",
+                flush=True,
+            )
+
+            return 0
+
+
+        # ==========================================================
+        # DB DOES NOT CONTAIN AN OPEN EVENT
+        #
+        # Therefore old RAM event MUST be removed.
+        # Otherwise next ONLINE/OFFLINE mode gets blocked.
+        # ==========================================================
+
         self.active_ideal_segments.pop(
             machine_no,
             None,
         )
 
-        self.last_ideal_transition_time[
-            machine_no
-        ] = end_at
+        self.last_ideal_transition_time[machine_no] = end_at
 
-        return saved
+        print(
+            f"🧹 IDEAL RAM CLEARED | "
+            f"Plant 1 | "
+            f"M{machine_no} | "
+            f"{ideal_mode} | "
+            f"No OPEN DB row remains",
+            flush=True,
+        )
 
-    def _infer_offline_start_for_new_signal(self, now_ist):
+        return 0
+
+    def _infer_offline_start_for_new_signal(
+        self,
+        now_ist,
+        machine_no=None,
+    ):
         """
-        FINAL REQUIREMENT:
-        Shift A 08:30 start hai, to offline/ideal calculation 08:30:00 se hi hoga.
-        Backend 08:31:24 par start hua to bhi 08:31:24 se start nahi karenge.
+        Restart-safe OFFLINE start recovery.
+
+        RULE:
+        - Existing OPEN OFFLINE -> continue exact DB row.
+        - Existing HOUR_CHANGE OFFLINE tail -> continue from its end.
+        - Machine already had activity this shift -> do NOT recreate
+          OFFLINE again from 08:30 after backend restart.
+        - Truly no activity in current shift -> shift start is valid.
         """
-        shift_start = self.get_shift_start_datetime(now_ist)
-        return shift_start
+
+        now_ist = self._as_ist(now_ist)
+
+        shift_start = self.get_shift_start_datetime(
+            now_ist
+        )
+        
+        open_lookup_start = (
+            shift_start - timedelta(hours=1)
+        )
+
+        if machine_no is None:
+            return shift_start
+
+        try:
+
+            # ======================================================
+            # 1. EXACT OPEN OFFLINE EVENT EXISTS
+            # ======================================================
+
+            open_offline = (
+                IdealTimeSegmentReason.objects
+                .filter(
+                    plant_location="Plant 1",
+                    machine_no=int(machine_no),
+                    ideal_mode="OFFLINE",
+                    ideal_end_at__isnull=True,
+                    ideal_start_at__gte=open_lookup_start,
+                )
+                .order_by(
+                    "-ideal_start_at",
+                    "-id",
+                )
+                .first()
+            )
+
+            if open_offline is not None:
+
+                return self._as_ist(
+                    open_offline.ideal_start_at
+                )
+
+
+            # ======================================================
+            # 2. LATEST CLOSED IDEAL OF CURRENT SHIFT
+            # ======================================================
+
+            latest_ideal = (
+                IdealTimeSegmentReason.objects
+                .filter(
+                    plant_location="Plant 1",
+                    machine_no=int(machine_no),
+                    ideal_start_at__gte=open_lookup_start,
+                    ideal_end_at__isnull=False,
+                )
+                .order_by(
+                    "-ideal_end_at",
+                    "-id",
+                )
+                .first()
+            )
+
+
+            if latest_ideal is not None:
+
+                latest_end = self._as_ist(
+                    latest_ideal.ideal_end_at
+                )
+
+                # Existing continuous OFFLINE chain:
+                #
+                # 11:00 -> 12:00 HOUR_CHANGE
+                # next tail should start exactly 12:00.
+                if (
+                    str(
+                        latest_ideal.ideal_mode or ""
+                    ).strip().upper()
+                    == "OFFLINE"
+
+                    and str(
+                        latest_ideal.closed_by or ""
+                    ).strip().upper()
+                    == "HOUR_CHANGE"
+                ):
+
+                    return min(
+                        latest_end,
+                        now_ist,
+                    )
+
+
+            # ======================================================
+            
+
+            shift_start_db = convert_to_naive_ist(
+                shift_start
+            )
+
+            now_db = convert_to_naive_ist(
+                now_ist
+            )
+
+            refresh_db_connection()
+
+            with connection.cursor() as cursor:
+
+                cursor.execute(
+                    """
+                    SELECT 1
+                    FROM "live_data"."plant1_data"
+                    WHERE TRIM(machine_no::text) = %s
+                      AND timestamp >= %s
+                      AND timestamp < %s
+                    LIMIT 1
+                    """,
+                    (
+                        str(machine_no),
+                        shift_start_db,
+                        now_db,
+                    ),
+                )
+
+                had_shift_activity = (
+                    cursor.fetchone() is not None
+                )
+
+
+            if had_shift_activity:
+
+                # We know machine already worked this shift.
+                # Exact OFF instant cannot safely be invented after
+                # RAM/backend restart.
+                return now_ist
+
+
+            # ======================================================
+            # 4. NO DB ACTIVITY AT ALL IN CURRENT SHIFT
+            #
+            # Shift-start OFFLINE is legitimate.
+            # ======================================================
+
+            return shift_start
+
+
+        except Exception as e:
+
+            print(
+                f"⚠️ OFFLINE START RECOVERY ERROR | "
+                f"Plant 1 | "
+                f"M{machine_no} | {e}",
+                flush=True,
+            )
+
+            # Fail-safe:
+            # Never fabricate 08:30 -> now because recovery failed.
+            return now_ist
 
     def _start_online_ideal_if_needed(self, machine_no, now_ist):
         """Machine ON hai but recent count nahi hai, to ONLINE ideal start karta hai."""
@@ -2513,7 +2603,7 @@ class Plant1ExactRequirementState:
             last_count = self.machine_count_status[machine_no]["last_count_time"]
             recent_count = (
                 now_ist - last_count
-            ).total_seconds() <= self.off_threshold_seconds
+            ).total_seconds() <= self.online_idle_threshold_seconds
 
         if recent_count:
             return
@@ -2544,12 +2634,16 @@ class Plant1ExactRequirementState:
             if machine_no in self.machine_count_status:
                 last_count = self.machine_count_status[machine_no]["last_count_time"]
                 start_at = self._safe_online_start_time(machine_no, last_count, now_ist)
-                if (now_ist - start_at).total_seconds() >= self.off_threshold_seconds:
+                if (
+                    now_ist - start_at
+                ).total_seconds() >= self.online_idle_threshold_seconds:
                     self._start_ideal_segment(machine_no, "ONLINE", start_at)
             elif machine_no in self.machine_on_since:
                 on_since = self.machine_on_since[machine_no]
                 start_at = self._safe_online_start_time(machine_no, on_since, now_ist)
-                if (now_ist - start_at).total_seconds() >= self.off_threshold_seconds:
+                if (
+                    now_ist - start_at
+                ).total_seconds() >= self.online_idle_threshold_seconds:
                     self._start_ideal_segment(machine_no, "ONLINE", start_at)
 
         self._close_ideal_segment(machine_no, now_ist, "COUNT_RESUME")
@@ -2560,19 +2654,645 @@ class Plant1ExactRequirementState:
         now_ist,
     ):
         """
-        OPTIMIZED ARCHITECTURE
+        ONLINE + OFFLINE hourly physical splitter.
 
-        ONE physical Ideal event = ONE database row.
+        ONLINE:
+            complete logical event must first qualify >= 180 sec.
 
-        Hour change par:
-        - DB save nahi karna
-        - active Ideal reset nahi karna
-        - start_at change nahi karna
+        OFFLINE:
+            no qualification threshold.
 
-        Original physical event continuously run karega.
+        Both modes:
+            intermediate rows -> HOUR_CHANGE
+            final row         -> COUNT_RESUME / MACHINE_ON / MACHINE_OFF
         """
 
-        return
+        try:
+
+            now_ist = self._as_ist(now_ist)
+
+            active = self.active_ideal_segments.get(
+                machine_no
+            )
+
+            if not active:
+                return
+
+            ideal_mode = str(
+                active.get("mode") or ""
+            ).strip().upper()
+
+            if ideal_mode not in {
+                "ONLINE",
+                "OFFLINE",
+            }:
+                return
+
+            plant_location = "Plant 1"
+
+            # ======================================================
+            # Preserve ORIGINAL logical event start.
+            #
+            # active["start_at"] will move:
+            # 09:43 -> 10:00 -> 11:00 ...
+            #
+            # event_started_at always remains 09:43.
+            # ======================================================
+
+            active.setdefault(
+                "event_started_at",
+                self._as_ist(
+                    active["start_at"]
+                ),
+            )
+
+            logical_start_at = self._as_ist(
+                active["event_started_at"]
+            )
+
+            logical_elapsed_seconds = int(
+                (
+                    now_ist -
+                    logical_start_at
+                ).total_seconds()
+            )
+
+            # ======================================================
+            # ONLINE:
+            # Do NOT create/split DB rows before overall
+            # physical event reaches 180 sec.
+            # ======================================================
+
+            if (
+                logical_elapsed_seconds
+                < self.online_idle_threshold_seconds
+            ):
+                return
+
+            previous_event = None
+
+            while True:
+
+                start_at = self._as_ist(
+                    active["start_at"]
+                )
+
+                next_hour = self._next_ideal_storage_boundary(
+                    start_at
+                )
+
+                # ==================================================
+                # CURRENT HOUR IS STILL RUNNING
+                # ==================================================
+
+                if now_ist < next_hour:
+
+                    current_event = None
+
+                    current_event_id = (
+                        active.get(
+                            "ideal_event_id"
+                        )
+                    )
+
+                    if current_event_id:
+
+                        current_event = (
+                            IdealTimeSegmentReason.objects
+                            .filter(
+                                id=current_event_id,
+                                plant_location=plant_location,
+                                machine_no=int(machine_no),
+                                ideal_mode=ideal_mode,
+                                ideal_start_at=start_at,
+                                ideal_end_at__isnull=True,
+                            )
+                            .first()
+                        )
+
+                    # Exact current OPEN tail recovery.
+                    if current_event is None:
+
+                        current_shift_start = (
+                            self.get_shift_start_datetime(
+                                now_ist
+                            )
+                        )
+
+                        current_event = (
+                            IdealTimeSegmentReason.objects
+                            .filter(
+                                plant_location=plant_location,
+                                machine_no=int(machine_no),
+                                ideal_mode=ideal_mode,
+                                ideal_end_at__isnull=True,
+
+                                # Must belong to current shift.
+                                # ideal_start_at__gte=current_shift_start,
+
+                                # Must have started before this hour closes.
+                                ideal_start_at__lt=next_hour,
+                            )
+                            .order_by(
+                                "-ideal_start_at",
+                                "-id",
+                            )
+                            .first()
+                        )
+
+                        if current_event is not None:
+                        
+                            # DB is source of truth for current open piece.
+                            start_at = self._as_ist(
+                                current_event.ideal_start_at
+                            )
+
+                            active["start_at"] = start_at
+                            active["ideal_event_id"] = current_event.id
+
+                            # Recalculate correct physical hour boundary
+                            # from the DB row's real start.
+                            next_hour = (
+                                self._next_ideal_storage_boundary(start_at)
+                            )
+                            
+
+                    # ==================================================
+                    # UNIQUE-CONSTRAINT SAFETY
+                    #
+                    # Before creating current tail, make sure some
+                    # OTHER OPEN row is not already blocking machine.
+                    # ==================================================
+
+                    if current_event is None:
+
+                        blocking_open = (
+                            IdealTimeSegmentReason.objects
+                            .filter(
+                                plant_location=plant_location,
+                                machine_no=int(machine_no),
+                                ideal_end_at__isnull=True,
+                            )
+                            .order_by(
+                                "-ideal_start_at",
+                                "-id",
+                            )
+                            .first()
+                        )
+
+                        if blocking_open is not None:
+
+                            blocking_start = self._as_ist(
+                                blocking_open.ideal_start_at
+                            )
+
+                            blocking_mode = str(
+                                blocking_open.ideal_mode
+                                or ""
+                            ).strip().upper()
+
+                            if (
+                                blocking_mode
+                                == ideal_mode
+                                and blocking_start
+                                == start_at
+                            ):
+
+                                current_event = (
+                                    blocking_open
+                                )
+
+                            else:
+
+                                print(
+                                    f"⚠️ OPEN ROW BLOCKING "
+                                    f"CURRENT IDEAL TAIL | "
+                                    f"{plant_location} | "
+                                    f"M{machine_no} | "
+                                    f"ExistingID="
+                                    f"{blocking_open.id} | "
+                                    f"ExistingMode="
+                                    f"{blocking_mode} | "
+                                    f"ExistingStart="
+                                    f"{blocking_start.strftime('%Y-%m-%d %H:%M:%S')} | "
+                                    f"WantedMode="
+                                    f"{ideal_mode} | "
+                                    f"WantedStart="
+                                    f"{start_at.strftime('%Y-%m-%d %H:%M:%S')}",
+                                    flush=True,
+                                )
+
+                                return
+
+                    # ==================================================
+                    # Create exactly ONE current OPEN tail.
+                    # ==================================================
+
+                    if current_event is None:
+
+                        if previous_event is not None:
+
+                            reason = (
+                                previous_event.reason
+                            )
+
+                            specific_reason = (
+                                previous_event
+                                .specific_reason
+                            )
+
+                            remark = (
+                                previous_event.remark
+                            )
+
+                            report_status = (
+                                previous_event
+                                .report_status
+                            )
+
+                            submitted_by = (
+                                previous_event
+                                .submitted_by
+                            )
+
+                            submitted_at = (
+                                previous_event
+                                .submitted_at
+                            )
+
+                        else:
+
+                            (
+                                reason,
+                                specific_reason,
+                                remark,
+                                report_status,
+                                submitted_by,
+                                submitted_at,
+                            ) = self._get_ideal_reason_data(
+                                machine_no,
+                                ideal_mode,
+                            )
+
+                        current_event = (
+                            IdealTimeSegmentReason
+                            .objects.create(
+                                plant_location=plant_location,
+                                machine_no=int(
+                                    machine_no
+                                ),
+                                ideal_mode=ideal_mode,
+                                ideal_start_at=start_at,
+                                ideal_end_at=None,
+                                ideal_time=None,
+                                closed_by=None,
+                                reason=reason,
+                                specific_reason=(
+                                    specific_reason
+                                ),
+                                remark=remark,
+                                shift=(
+                                    self
+                                    .get_shift_from_time(
+                                        start_at
+                                    )
+                                ),
+                                report_status=(
+                                    report_status
+                                ),
+                                submitted_by=(
+                                    submitted_by
+                                ),
+                                submitted_at=(
+                                    submitted_at
+                                ),
+                            )
+                        )
+
+                        print(
+                            f"🔴 OPEN IDEAL TAIL SAVED | "
+                            f"{plant_location} | "
+                            f"M{machine_no} | "
+                            f"{ideal_mode} | "
+                            f"IdealID="
+                            f"{current_event.id} | "
+                            f"Start="
+                            f"{start_at.strftime('%H:%M:%S')}",
+                            flush=True,
+                        )
+
+                    active[
+                        "ideal_event_id"
+                    ] = current_event.id
+
+                    if not active.get(
+                        "canonical_event_id"
+                    ):
+
+                        if previous_event is not None:
+
+                            active[
+                                "canonical_event_id"
+                            ] = previous_event.id
+
+                        else:
+
+                            active[
+                                "canonical_event_id"
+                            ] = current_event.id
+
+                    break
+
+                # ==================================================
+                # THIS HOUR HAS FINISHED
+                # ==================================================
+
+                existing_closed = (
+                    IdealTimeSegmentReason.objects
+                    .filter(
+                        plant_location=plant_location,
+                        machine_no=int(machine_no),
+                        ideal_mode=ideal_mode,
+                        ideal_start_at=start_at,
+                        ideal_end_at=next_hour,
+                    )
+                    .order_by("-id")
+                    .first()
+                )
+
+                if existing_closed is not None:
+
+                    previous_event = (
+                        existing_closed
+                    )
+
+                    if not active.get(
+                        "canonical_event_id"
+                    ):
+
+                        active[
+                            "canonical_event_id"
+                        ] = existing_closed.id
+
+                    print(
+                        f"♻️ IDEAL HOUR RECOVERED | "
+                        f"{plant_location} | "
+                        f"M{machine_no} | "
+                        f"{ideal_mode} | "
+                        f"IdealID="
+                        f"{existing_closed.id} | "
+                        f"{start_at.strftime('%H:%M:%S')}"
+                        f"→"
+                        f"{next_hour.strftime('%H:%M:%S')}",
+                        flush=True,
+                    )
+
+                else:
+
+                    current_event = None
+
+                    current_event_id = (
+                        active.get(
+                            "ideal_event_id"
+                        )
+                    )
+
+                    if current_event_id:
+
+                        current_event = (
+                            IdealTimeSegmentReason
+                            .objects.filter(
+                                id=current_event_id,
+                                plant_location=plant_location,
+                                machine_no=int(
+                                    machine_no
+                                ),
+                                ideal_mode=ideal_mode,
+                                ideal_start_at=start_at,
+                                ideal_end_at__isnull=True,
+                            )
+                            .first()
+                        )
+
+                    if current_event is None:
+                                            
+                        current_shift_start = (
+                            self.get_shift_start_datetime(
+                                now_ist
+                            )
+                        )
+
+                        current_event = (
+                            IdealTimeSegmentReason.objects
+                            .filter(
+                                plant_location=plant_location,
+                                machine_no=int(machine_no),
+                                ideal_mode=ideal_mode,
+                                ideal_end_at__isnull=True,
+
+                                # Must belong to current shift.
+                                # ideal_start_at__gte=current_shift_start,
+
+                                # Must have started before this hour closes.
+                                ideal_start_at__lt=next_hour,
+                            )
+                            .order_by(
+                                "-ideal_start_at",
+                                "-id",
+                            )
+                            .first()
+                        )
+
+                        if current_event is not None:
+                        
+                            # DB is source of truth for current open piece.
+                            start_at = self._as_ist(
+                                current_event.ideal_start_at
+                            )
+
+                            active["start_at"] = start_at
+                            active["ideal_event_id"] = current_event.id
+
+                            # Recalculate correct physical hour boundary
+                            # from the DB row's real start.
+                            next_hour = self._next_ideal_storage_boundary(
+                                start_at
+                            )
+
+                    if current_event is not None:
+
+                        piece_start = self._as_ist(
+                            current_event
+                            .ideal_start_at
+                        )
+
+                        piece_seconds = int(
+                            (
+                                next_hour -
+                                piece_start
+                            ).total_seconds()
+                        )
+
+                        if piece_seconds > 0:
+
+                            current_event.ideal_end_at = (
+                                next_hour
+                            )
+
+                            current_event.ideal_time = (
+                                piece_seconds
+                            )
+
+                            current_event.closed_by = (
+                                "HOUR_CHANGE"
+                            )
+
+                            current_event.save(
+                                update_fields=[
+                                    "ideal_end_at",
+                                    "ideal_time",
+                                    "closed_by",
+                                ]
+                            )
+
+                            previous_event = (
+                                current_event
+                            )
+
+                            print(
+                                f"⏰ IDEAL HOUR SAVED | "
+                                f"{plant_location} | "
+                                f"M{machine_no} | "
+                                f"{ideal_mode} | "
+                                f"IdealID="
+                                f"{current_event.id} | "
+                                f"{piece_start.strftime('%H:%M:%S')}"
+                                f"→"
+                                f"{next_hour.strftime('%H:%M:%S')} | "
+                                f"{piece_seconds}s",
+                                flush=True,
+                            )
+
+                    else:
+
+                        # Restart/race recovery.
+                        #
+                        # logical event already qualified,
+                        # therefore a short hourly ONLINE
+                        # fragment is valid.
+                        self._save_ideal_piece_to_db(
+                            machine_no=machine_no,
+                            ideal_mode=ideal_mode,
+                            start_at=start_at,
+                            end_at=next_hour,
+                            closed_by="HOUR_CHANGE",
+                            logical_event_qualified=True,
+                        )
+
+                        previous_event = (
+                            IdealTimeSegmentReason
+                            .objects.filter(
+                                plant_location=plant_location,
+                                machine_no=int(
+                                    machine_no
+                                ),
+                                ideal_mode=ideal_mode,
+                                ideal_start_at=start_at,
+                                ideal_end_at=next_hour,
+                            )
+                            .order_by("-id")
+                            .first()
+                        )
+
+                    if (
+                        previous_event is not None
+                        and not active.get(
+                            "canonical_event_id"
+                        )
+                    ):
+
+                        active[
+                            "canonical_event_id"
+                        ] = previous_event.id
+
+                # ==================================================
+                
+                # ==================================================
+                # FINAL HOUR-SPLIT CONFIRMATION
+                #
+                # Never move RAM pointer to next hour unless the
+                # completed HOUR_CHANGE row really exists in DB.
+                #
+                # Prevents:
+                #
+                #   08:48 -> 09:00 HOUR_CHANGE
+                #   08:48 -> 09:12 MACHINE_ON
+                #
+                # Desired:
+                #
+                #   08:48 -> 09:00 HOUR_CHANGE
+                #   09:00 -> 09:12 MACHINE_ON
+                # ==================================================
+
+                confirmed_hour_piece = (
+                    IdealTimeSegmentReason.objects
+                    .filter(
+                        plant_location=plant_location,
+                        machine_no=int(machine_no),
+                        ideal_mode=ideal_mode,
+                        ideal_end_at=next_hour,
+                        closed_by="HOUR_CHANGE",
+                        ideal_start_at__gte=(
+                            start_at - timedelta(seconds=2)
+                        ),
+                        ideal_start_at__lte=(
+                            start_at + timedelta(seconds=2)
+                        ),
+                    )
+                    .order_by("-id")
+                    .first()
+                )
+
+                if confirmed_hour_piece is None:
+                
+                    print(
+                        f"⚠️ IDEAL HOUR SPLIT NOT CONFIRMED | "
+                        f"{plant_location} | "
+                        f"M{machine_no} | "
+                        f"{ideal_mode} | "
+                        f"{start_at.strftime('%H:%M:%S')}"
+                        f"→{next_hour.strftime('%H:%M:%S')} | "
+                        f"RAM pointer NOT advanced",
+                        flush=True,
+                    )
+
+                    return
+
+                previous_event = confirmed_hour_piece
+                # Move only CURRENT physical-row pointer.
+                #
+                # event_started_at remains original event start.
+                # ==================================================
+
+                active["start_at"] = (
+                    next_hour
+                )
+
+                active[
+                    "ideal_event_id"
+                ] = None
+
+        except Exception as e:
+
+            print(
+                f"❌ IDEAL HOUR SPLIT ERROR | "
+                f"Plant 1 | "
+                f"M{machine_no} | "
+                f"{e}",
+                flush=True,
+            )
+
+            traceback.print_exc()
 
     def track_ideal_segment_from_status(self, machine_no, status, now_ist):
         """
@@ -2633,18 +3353,31 @@ class Plant1ExactRequirementState:
                     offline_start = None
 
             if offline_start is None:
-                offline_start = self._infer_offline_start_for_new_signal(now_ist)
+                offline_start = self._infer_offline_start_for_new_signal(now_ist, machine_no)
 
             # ✅ 08:30 shift-start clamp: 08:25 jaise old signal ko current shift me 08:30 se count karo.
-            offline_start = self._clamp_start_to_reference_shift(offline_start, now_ist)
+           
 
             active = self.active_ideal_segments.get(machine_no)
             if active and active.get("mode") == "ONLINE":
                 close_time = max(offline_start, active["start_at"])
                 self._close_ideal_segment(machine_no, close_time, "MACHINE_OFF")
 
-            if machine_no not in self.active_ideal_segments:
-                self._start_ideal_segment(machine_no, "OFFLINE", offline_start)
+            current_active = (
+                self.active_ideal_segments.get(
+                    machine_no
+                )
+            )
+            
+            if (
+                current_active is None
+                or current_active.get("mode") == "OFFLINE"
+            ):
+                self._start_ideal_segment(
+                    machine_no,
+                    "OFFLINE",
+                    offline_start,
+                )
 
         except Exception as e:
             print(f"❌ Ideal tracker error M{machine_no}: {e}")
@@ -2827,43 +3560,38 @@ class Plant1ExactRequirementState:
         with self.lock:
             ist_tz = pytz.timezone("Asia/Kolkata")
             now_ist = datetime.now(ist_tz)
-                    # ======================================================
-             # MACHINE J SIGNAL AANE SE JUST PEHLE KA STATE
-             # ======================================================
+            shift_start = self.get_shift_start_datetime(now_ist)
+            # ======================================================
+            # MACHINE J SIGNAL AANE SE JUST PEHLE KA STATE
+            # ======================================================
 
             previous_count_time = None
             previous_json_time = None
             if machine_no in self.machine_count_status:
-                previous_count_time = (
-                    self.machine_count_status[machine_no]
-                    .get("last_count_time")
+                previous_count_time = self.machine_count_status[machine_no].get(
+                    "last_count_time"
                 )
             if machine_no in self.machine_json_status:
-                previous_json_time = (
-                    self.machine_json_status[machine_no]
-                    .get("last_json_time")
+                previous_json_time = self.machine_json_status[machine_no].get(
+                    "last_json_time"
                 )
             had_recent_count_before = (
                 previous_count_time is not None
-                and
-                (
-                    now_ist - previous_count_time
-                ).total_seconds()
-                <= self.off_threshold_seconds
+                and previous_count_time >= shift_start
+                and (now_ist - previous_count_time).total_seconds()
+                <= self.online_idle_threshold_seconds
             )
+
             had_recent_json_before = (
                 previous_json_time is not None
-                and
-                (
-                    now_ist - previous_json_time
-                ).total_seconds()
-                <= self.off_threshold_seconds
+                and previous_json_time >= shift_start
+                and (now_ist - previous_json_time).total_seconds()
+                <= self.online_idle_threshold_seconds
             )
             was_offline_before_signal = not (
-                had_recent_count_before
-                or had_recent_json_before
+                had_recent_count_before or had_recent_json_before
             )
-            
+
             had_any_signal_before = (
                 machine_no in self.machine_on_since
                 or machine_no in self.machine_json_status
@@ -2871,44 +3599,81 @@ class Plant1ExactRequirementState:
             )
 
             # ✅ First J signal: agar pehle koi signal nahi tha, to SHIFT START se OFFLINE ideal close karo
-            if not had_any_signal_before:
-                offline_start = self._infer_offline_start_for_new_signal(now_ist)
-                self._save_ideal_range_split_by_hour(
-                    machine_no=machine_no,
-                    ideal_mode="OFFLINE",
-                    start_at=offline_start,
-                    end_at=now_ist,
-                    closed_by="MACHINE_ON",
-                    min_total_seconds=180,
-                )
-                # New ON session start
-                self.machine_on_since[machine_no] = now_ist
-                self.first_count_time.pop(machine_no, None)
+            # ==========================================================
+            # OFFLINE -> FIRST J / MACHINE ON
+            #
+            # IMPORTANT:
+            # If monitor already created an active OFFLINE event,
+            # ONLY close that event.
+            #
+            # Do NOT also create another shift-start -> now row,
+            # otherwise same physical OFFLINE time gets duplicated.
+            # ==========================================================
 
-            # ✅ Agar active OFFLINE ideal chal raha tha, J signal aate hi close karo
             active = self.active_ideal_segments.get(machine_no)
-            if active and active.get("mode") == "OFFLINE":
-                self._close_ideal_segment(machine_no, now_ist, "MACHINE_ON")
-                # OFFLINE -> ONLINE boundary par machine_on_since reset karo, old count time reuse nahi hoga
-                self.machine_on_since[machine_no] = now_ist
-                self.first_count_time.pop(machine_no, None)
 
-            if machine_no not in self.machine_on_since:
-                self.machine_on_since[machine_no] = now_ist
-                
-                        # ======================================================
-        # OFFLINE -> ONLINE NEW PHYSICAL SESSION
-        #
-        # Old idle_tracker count/J timing current session me
-        # carry nahi honi chahiye.
-        # ======================================================
+            # ==========================================================
+            # ONLY A REAL CONFIRMED OFFLINE -> ON TRANSITION
+            # MAY CLOSE THE OFFLINE IDEAL.
+            #
+            # Normal repeating J heartbeat must do NOTHING here.
+            # ==========================================================
 
             if was_offline_before_signal:
+
+                if active and active.get("mode") == "OFFLINE":
+
+                    # One physical OFFLINE event ends here.
+                    self._close_ideal_segment(
+                        machine_no,
+                        now_ist,
+                        "MACHINE_ON",
+                    )
+
+                elif not had_any_signal_before:
+
+                    # Backend/shift first-signal recovery only.
+                    offline_start = self._infer_offline_start_for_new_signal(now_ist, machine_no)
+
+                    offline_elapsed_seconds = int(
+                        (now_ist - offline_start).total_seconds()
+                    )
+
+                    if offline_elapsed_seconds >= self.online_idle_threshold_seconds:
+
+                        self._save_ideal_range_split_by_hour(
+                            machine_no=machine_no,
+                            ideal_mode="OFFLINE",
+                            start_at=offline_start,
+                            end_at=now_ist,
+                            closed_by="MACHINE_ON",
+                            min_total_seconds=1,
+                        )
+
+                # ======================================================
+                # TRUE NEW PHYSICAL ON SESSION
+                # Only reset session state here.
+                # ======================================================
+
+                self.machine_on_since[machine_no] = now_ist
+
+                self.first_count_time.pop(
+                    machine_no,
+                    None,
+                )
+
                 self.idle_tracker.start_new_on_session(
                     machine_no,
                     now_ist,
                 )
-                
+
+                # ======================================================
+            # OFFLINE -> ONLINE NEW PHYSICAL SESSION
+            #
+            # Old idle_tracker count/J timing current session me
+            # carry nahi honi chahiye.
+            # ======================================================
+
             self.machine_json_status[machine_no] = {
                 "last_json_time": now_ist,
                 "card": card or "UNKNOWN",
@@ -3023,14 +3788,9 @@ class Plant1ExactRequirementState:
         with self.lock:
             ist_tz = pytz.timezone("Asia/Kolkata")
             now_ist = datetime.now(ist_tz)
-            current_hour = now_ist.replace(
-                minute=0,
-                second=0,
-                microsecond=0
-            )
-            current_shift = self.get_shift_from_time(
-                now_ist
-            )
+            current_hour = now_ist.replace(minute=0, second=0, microsecond=0)
+            current_shift = self.get_shift_from_time(now_ist)
+            shift_start = self.get_shift_start_datetime(now_ist)
 
             # ======================================================
             # MACHINE COUNT AANE SE JUST PEHLE KA STATE
@@ -3040,45 +3800,35 @@ class Plant1ExactRequirementState:
             previous_json_time = None
 
             if machine_no in self.machine_count_status:
-                previous_count_time = (
-                    self.machine_count_status[machine_no]
-                    .get("last_count_time")
+                previous_count_time = self.machine_count_status[machine_no].get(
+                    "last_count_time"
                 )
 
             if machine_no in self.machine_json_status:
-                previous_json_time = (
-                    self.machine_json_status[machine_no]
-                    .get("last_json_time")
+                previous_json_time = self.machine_json_status[machine_no].get(
+                    "last_json_time"
                 )
 
             had_recent_count_before = (
                 previous_count_time is not None
-                and
-                (
-                    now_ist - previous_count_time
-                ).total_seconds()
-                <= self.off_threshold_seconds
+                and previous_count_time >= shift_start
+                and (now_ist - previous_count_time).total_seconds()
+                <= self.online_idle_threshold_seconds
             )
 
             had_recent_json_before = (
                 previous_json_time is not None
-                and
-                (
-                    now_ist - previous_json_time
-                ).total_seconds()
-                <= self.off_threshold_seconds
+                and previous_json_time >= shift_start
+                and (now_ist - previous_json_time).total_seconds()
+                <= self.online_idle_threshold_seconds
             )
 
             was_offline_before_count = not (
-                had_recent_count_before
-                or had_recent_json_before
+                had_recent_count_before or had_recent_json_before
             )
 
             # First close/save actual Ideal event
-            self.close_ideal_on_count_resume(
-                machine_no,
-                now_ist
-            )
+            self.close_ideal_on_count_resume(machine_no, now_ist)
 
             # Direct OFFLINE -> COUNT case
             if was_offline_before_count:
@@ -3570,36 +4320,126 @@ class Plant1ExactRequirementState:
             ist_tz = pytz.timezone("Asia/Kolkata")
             now_ist = datetime.now(ist_tz)
 
-            has_count = False
+            # ==========================================================
+            # TWO DIFFERENT TIMERS
+            #
+            # 1. Count timer:
+            #    180 sec = ONLINE-IDLE qualification.
+            #
+            # 2. Machine signal timer:
+            #    Used only to decide whether machine power/signal is alive.
+            #    OFFLINE must NOT wait for 180 sec.
+            # ==========================================================
+
+            # ==========================================================
+            # CURRENT SHIFT SIGNAL BASED MACHINE STATUS
+            #
+            # IMPORTANT:
+            # Previous shift's COUNT/J must NEVER make the new shift ON.
+            # There is NO fake 3-minute RUNNING grace at shift start.
+            # ==========================================================
+
+            shift_start = self.get_shift_start_datetime(now_ist)
+
+            # ==========================================================
+            # COUNT STATUS
+            # ==========================================================
+
             count_seconds_ago = None
             count_tool_id = None
             count_shut_height = None
 
+            recent_count_for_production = False
+            recent_count_signal = False
+
             if machine_no in self.machine_count_status:
+
                 last_count = self.machine_count_status[machine_no]["last_count_time"]
+
                 count_seconds_ago = (now_ist - last_count).total_seconds()
+
                 count_tool_id = self.machine_count_status[machine_no]["tool_id"]
+
                 count_shut_height = self.machine_count_status[machine_no]["shut_height"]
 
-                if count_seconds_ago <= self.off_threshold_seconds:
-                    has_count = True
+                # ------------------------------------------------------
+                # COUNT is valid for THIS SHIFT only.
+                # Previous shift COUNT cannot make machine RUNNING.
+                # ------------------------------------------------------
+
+                count_in_current_shift = last_count >= shift_start
+
+                # Existing 3-minute production grace.
+                recent_count_for_production = (
+                    count_in_current_shift
+                    and count_seconds_ago <= self.online_idle_threshold_seconds
+                )
+
+                # Raw/fresh count signal.
+                recent_count_signal = (
+                    count_in_current_shift
+                    and count_seconds_ago <= self.power_signal_timeout_seconds
+                )
+
+            # ==========================================================
+            # J SIGNAL STATUS
+            # ==========================================================
 
             has_json = False
+            recent_json_for_machine_state = False
+
             json_seconds_ago = None
             json_card = None
             json_die_height = None
 
             if machine_no in self.machine_json_status:
+
                 last_json = self.machine_json_status[machine_no]["last_json_time"]
+
                 json_seconds_ago = (now_ist - last_json).total_seconds()
+
                 json_card = self.machine_json_status[machine_no]["card"]
+
                 json_die_height = self.machine_json_status[machine_no]["die_height"]
 
-                if json_seconds_ago <= self.off_threshold_seconds:
-                    has_json = True
+                # ------------------------------------------------------
+                # J is also valid for THIS SHIFT only.
+                #
+                # J received in previous shift must NOT make new
+                # shift machine ON.
+                # ------------------------------------------------------
 
-            machine_on = has_count or has_json
-            is_producing = has_count
+                json_in_current_shift = last_json >= shift_start
+
+                # Raw/current J heartbeat.
+                has_json = (
+                    json_in_current_shift
+                    and json_seconds_ago <= self.power_signal_timeout_seconds
+                )
+
+                # Confirmed machine-state J window.
+                #
+                # Short J gaps will not create OFF/ON flapping.
+                recent_json_for_machine_state = (
+                    json_in_current_shift
+                    and json_seconds_ago <= self.online_idle_threshold_seconds
+                )
+
+            # ==========================================================
+            # FINAL MACHINE STATUS
+            # ==========================================================
+
+            # Machine is physically ON when a REAL current-shift
+            # COUNT or J has been received.
+            machine_on = recent_count_for_production or recent_json_for_machine_state
+
+            # RUNNING strictly depends on COUNT.
+            #
+            # J alone does NOT mean production.
+            is_producing = recent_count_for_production
+
+            # Existing API compatibility
+            has_count = recent_count_for_production
 
             offline_since = None
             offline_duration_minutes = None
@@ -4224,7 +5064,6 @@ def save_hourly_idle_time_to_db():
     thread.start()
 
 
-
 # ==============================================================
 # ✅ NAYA FUNCTION: AUTO IDLE NOTIFICATION SENDER
 # ==============================================================
@@ -4250,11 +5089,7 @@ def auto_generate_idle_notification(machine_no, idle_mins):
         # 1. ACTIVE PHYSICAL IDEAL EVENT
         # ==========================================================
 
-        active_segment = (
-            EXACT_REQUIREMENT_STATE
-            .active_ideal_segments
-            .get(machine_no)
-        )
+        active_segment = EXACT_REQUIREMENT_STATE.active_ideal_segments.get(machine_no)
 
         if not active_segment:
 
@@ -4268,13 +5103,9 @@ def auto_generate_idle_notification(machine_no, idle_mins):
 
             return False
 
-        ideal_mode = str(
-            active_segment.get("mode") or "ONLINE"
-        ).upper()
+        ideal_mode = str(active_segment.get("mode") or "ONLINE").upper()
 
-        idle_started_at = active_segment.get(
-            "start_at"
-        )
+        idle_started_at = active_segment.get("start_at")
 
         if idle_started_at is None:
 
@@ -4289,13 +5120,9 @@ def auto_generate_idle_notification(machine_no, idle_mins):
             return False
 
         if idle_started_at.tzinfo is None:
-            idle_started_at = IST.localize(
-                idle_started_at
-            )
+            idle_started_at = IST.localize(idle_started_at)
         else:
-            idle_started_at = (
-                idle_started_at.astimezone(IST)
-            )
+            idle_started_at = idle_started_at.astimezone(IST)
 
         # ==========================================================
         # 2. STRICT PHYSICAL 3-MINUTE CHECK
@@ -4303,33 +5130,29 @@ def auto_generate_idle_notification(machine_no, idle_mins):
 
         now_ist = datetime.now(IST)
 
-        physical_idle_seconds = int(
-            (
-                now_ist -
-                idle_started_at
-            ).total_seconds()
-        )
+        physical_idle_seconds = int((now_ist - idle_started_at).total_seconds())
 
-        if physical_idle_seconds < 180:
-
+        # ONLINE only requires 3-minute qualification.
+        # OFFLINE notification has no 3-minute threshold.
+        if (
+            ideal_mode == "ONLINE"
+            and physical_idle_seconds
+            < EXACT_REQUIREMENT_STATE.online_idle_threshold_seconds
+        ):
             print(
-                f"⏭️ IDLE ALERT SKIPPED | "
+                f"⏭️ ONLINE ALERT SKIPPED | "
                 f"Plant 1 | "
                 f"M{machine_no} | "
-                f"{ideal_mode} | "
-                f"PhysicalIdeal={physical_idle_seconds}s < 180s | "
-                f"TrackerIdle={idle_mins}m",
+                f"{physical_idle_seconds}s < "
+                f"{EXACT_REQUIREMENT_STATE.online_idle_threshold_seconds}s",
                 flush=True,
             )
-
             return False
 
         # ==========================================================
 
         # ==========================================================
-        active_segment["event_started_at"] = (
-            idle_started_at
-        )
+        active_segment["event_started_at"] = idle_started_at
 
         # ==========================================================
         # 4. CREATE / FIND MAIN OPEN IDEAL ROW
@@ -4340,12 +5163,7 @@ def auto_generate_idle_notification(machine_no, idle_mins):
         # Machine close hone par SAME ROW update hogi.
         # ==========================================================
 
-        shift = (
-            EXACT_REQUIREMENT_STATE
-            .get_shift_from_time(
-                idle_started_at
-            )
-        )
+        shift = EXACT_REQUIREMENT_STATE.get_shift_from_time(idle_started_at)
 
         # ==========================================================
         # FIND / CREATE EXACT OPEN IDEAL EVENT
@@ -4361,27 +5179,21 @@ def auto_generate_idle_notification(machine_no, idle_mins):
 
         ideal_event = None
 
-        existing_ideal_id = active_segment.get(
-            "ideal_event_id"
-        )
+        existing_ideal_id = active_segment.get("ideal_event_id")
 
         # ----------------------------------------------------------
         # 1. Best case: exact DB ID already available in RAM
         # ----------------------------------------------------------
 
         if existing_ideal_id:
-        
-            ideal_event = (
-                IdealTimeSegmentReason.objects
-                .filter(
-                    id=existing_ideal_id,
-                    plant_location=plant_location,
-                    machine_no=int(machine_no),
-                    ideal_mode=ideal_mode,
-                    ideal_end_at__isnull=True,
-                )
-                .first()
-            )
+
+            ideal_event = IdealTimeSegmentReason.objects.filter(
+                id=existing_ideal_id,
+                plant_location=plant_location,
+                machine_no=int(machine_no),
+                ideal_mode=ideal_mode,
+                ideal_end_at__isnull=True,
+            ).first()
 
         # ----------------------------------------------------------
         # 2. Recovery:
@@ -4392,15 +5204,17 @@ def auto_generate_idle_notification(machine_no, idle_mins):
         # ----------------------------------------------------------
 
         if ideal_event is None:
-        
-            start_from = (
-                idle_started_at -
-                timedelta(seconds=2)
-            )
 
-            start_to = (
-                idle_started_at +
-                timedelta(seconds=2)
+            shift_start = (
+                EXACT_REQUIREMENT_STATE
+                .get_shift_start_datetime(
+                    now_ist
+                )
+            )
+            
+            
+            open_lookup_start = (
+                shift_start - timedelta(hours=1)
             )
 
             ideal_event = (
@@ -4410,43 +5224,124 @@ def auto_generate_idle_notification(machine_no, idle_mins):
                     machine_no=int(machine_no),
                     ideal_mode=ideal_mode,
                     ideal_end_at__isnull=True,
-                    ideal_start_at__gte=start_from,
-                    ideal_start_at__lte=start_to,
+                    ideal_start_at__gte=open_lookup_start,
+                    ideal_start_at__lte=now_ist,
                 )
-                .order_by("-id")
+                .order_by(
+                    "-ideal_start_at",
+                    "-id",
+                )
                 .first()
             )
+
+            if ideal_event is not None:
+            
+                active_segment[
+                    "ideal_event_id"
+                ] = ideal_event.id
 
         # ----------------------------------------------------------
         # 3. No existing row -> create ONE new open Ideal row
         # ----------------------------------------------------------
+        
+        # ==========================================================
+        # FINAL DB SAFETY
+        #
+        # DB constraint allows ONLY ONE OPEN Ideal per machine,
+        # regardless of ONLINE/OFFLINE mode.
+        #
+        # Before creating anything, check whether ANY OPEN row
+        # already exists for this plant + machine.
+        # ==========================================================
 
         if ideal_event is None:
-
-            ideal_event = (
+        
+            existing_open_event = (
                 IdealTimeSegmentReason.objects
-                .create(
+                .filter(
                     plant_location=plant_location,
                     machine_no=int(machine_no),
-                    ideal_mode=ideal_mode,
-
-                    ideal_start_at=idle_started_at,
-                    ideal_end_at=None,
-                    ideal_time=None,
-
-                    closed_by=None,
-
-                    reason="Uncategorized",
-                    specific_reason="Reason Not Provided",
-                    remark=None,
-
-                    shift=shift,
-
-                    report_status="PENDING",
-
-                    submitted_by=None,
-                    submitted_at=None,
+                    ideal_end_at__isnull=True,
                 )
+                .order_by(
+                    "-ideal_start_at",
+                    "-id",
+                )
+                .first()
+            )
+
+            if existing_open_event is not None:
+            
+                existing_mode = str(
+                    existing_open_event.ideal_mode or ""
+                ).strip().upper()
+
+                # --------------------------------------------------
+                # SAME MODE
+                #
+                # This is already our physical event.
+                # Reuse the row instead of creating another one.
+                # --------------------------------------------------
+
+                if existing_mode == ideal_mode:
+                
+                    ideal_event = existing_open_event
+
+                    active_segment[
+                        "ideal_event_id"
+                    ] = ideal_event.id
+
+                    print(
+                        f"♻️ EXISTING OPEN IDEAL REUSED | "
+                        f"{plant_location} | "
+                        f"M{machine_no} | "
+                        f"{ideal_mode} | "
+                        f"IdealID={ideal_event.id}",
+                        flush=True,
+                    )
+
+                # --------------------------------------------------
+                # DIFFERENT MODE
+                #
+                # Example:
+                # DB still has OFFLINE OPEN,
+                # current RAM wants ONLINE.
+                #
+                # DO NOT create second OPEN row.
+                # Existing event must be closed first.
+                # --------------------------------------------------
+
+                else:
+                
+                    print(
+                        f"⚠️ OPEN IDEAL MODE CONFLICT | "
+                        f"{plant_location} | "
+                        f"M{machine_no} | "
+                        f"DB={existing_mode} | "
+                        f"RAM={ideal_mode} | "
+                        f"IdealID={existing_open_event.id}",
+                        flush=True,
+                    )
+
+                    return False
+          
+        if ideal_event is None:
+
+            ideal_event = IdealTimeSegmentReason.objects.create(
+                plant_location=plant_location,
+                machine_no=int(machine_no),
+                ideal_mode=ideal_mode,
+                ideal_start_at=idle_started_at,
+                ideal_end_at=None,
+                ideal_time=None,
+                closed_by=None,
+                reason="Uncategorized",
+                specific_reason="Reason Not Provided",
+                remark=None,
+                shift=shift,
+                report_status="PENDING",
+                submitted_by=None,
+                submitted_at=None,
             )
 
             print(
@@ -4460,9 +5355,62 @@ def auto_generate_idle_notification(machine_no, idle_mins):
             )
 
         # Exact Ideal DB ID RAM me preserve karo
-        active_segment["ideal_event_id"] = (
-            ideal_event.id
-        )
+        active_segment["ideal_event_id"] = ideal_event.id
+
+        # ==========================================================
+        # RESOLVE CANONICAL LOGICAL EVENT
+        #
+        # Current OFFLINE row may be:
+        #   13:00 -> NULL
+        #
+        # But same physical incident may have:
+        #   12:00 -> 13:00 HOUR_CHANGE
+        #   11:00 -> 12:00 HOUR_CHANGE
+        #   ...
+        #
+        # Notification belongs only to FIRST logical segment.
+        # ==========================================================
+
+        current_ideal_event = ideal_event
+        canonical_ideal_event = current_ideal_event
+
+        for _ in range(24):
+
+            previous_segment = (
+                IdealTimeSegmentReason.objects.filter(
+                    plant_location=plant_location,
+                    machine_no=int(machine_no),
+                    ideal_mode=ideal_mode,
+                    ideal_end_at=canonical_ideal_event.ideal_start_at,
+                    closed_by="HOUR_CHANGE",
+                )
+                .exclude(pk=canonical_ideal_event.pk)
+                .order_by(
+                    "-ideal_start_at",
+                    "-id",
+                )
+                .first()
+            )
+
+            if previous_segment is None:
+                break
+
+            canonical_ideal_event = previous_segment
+
+        # Current OPEN tail ID is still needed for closing/splitting.
+        active_segment["ideal_event_id"] = current_ideal_event.id
+
+        # ONE logical incident ID.
+        active_segment["canonical_event_id"] = canonical_ideal_event.id
+
+        canonical_start_at = canonical_ideal_event.ideal_start_at
+
+        if canonical_start_at.tzinfo is None:
+            canonical_start_at = IST.localize(canonical_start_at)
+        else:
+            canonical_start_at = canonical_start_at.astimezone(IST)
+
+        active_segment["event_started_at"] = canonical_start_at
 
         print(
             f"🟡 OPEN IDEAL CREATED | "
@@ -4475,11 +5423,9 @@ def auto_generate_idle_notification(machine_no, idle_mins):
         )
 
         # Exact DB row ID RAM event me preserve karo.
-        active_segment["ideal_event_id"] = (
-            ideal_event.id
-        )
+        active_segment["ideal_event_id"] = ideal_event.id
 
-               # ==========================================================
+        # ==========================================================
         # 5. MESSAGE
         # ==========================================================
 
@@ -4512,22 +5458,17 @@ def auto_generate_idle_notification(machine_no, idle_mins):
         #   user_id = request.user.id
         # ==========================================================
 
-        notification, created = (
-            Notification.objects
-            .get_or_create(
-                ideal_event=ideal_event,
-                defaults={
-                    "message": message,
-                    "is_read": False,
-        
-                    # Notification actually jab create ho
-                    # wahi timestamp save hoga.
-                    "created_at": timezone.now(),
-        
-                    # Reason submit hone tak NULL
-                    "user": None,
-                },
-            )
+        notification, created = Notification.objects.get_or_create(
+            ideal_event=canonical_ideal_event,
+            defaults={
+                "message": message,
+                "is_read": False,
+                # Notification actually jab create ho
+                # wahi timestamp save hoga.
+                "created_at": timezone.now(),
+                # Reason submit hone tak NULL
+                "user": None,
+            },
         )
 
         print(
@@ -4535,7 +5476,7 @@ def auto_generate_idle_notification(machine_no, idle_mins):
             f"M{machine_no} | "
             f"{ideal_mode} | "
             f"Idle={idle_mins}m | "
-            f"IdealID={ideal_event.id} | "
+            f"IdealID={canonical_ideal_event.id} | "
             f"NotificationID={notification.pk} | "
             f"Created={created}",
             flush=True,
@@ -4546,8 +5487,7 @@ def auto_generate_idle_notification(machine_no, idle_mins):
     except Exception as e:
 
         print(
-            f"❌ Plant 1 Auto Alert Error "
-            f"M{machine_no}: {e}",
+            f"❌ Plant 1 Auto Alert Error " f"M{machine_no}: {e}",
             flush=True,
         )
 
@@ -4576,9 +5516,11 @@ def start_machine_event_monitor():
         # ✅ NAYA: Track karta hai ki kis machine ke liye alert bhej diya gaya hai
         machine_alert_state = {}
 
-        all_mapped_machines = set()
-        for machines_list in TOPIC_MACHINE_MAPPING.values():
-            all_mapped_machines.update(machines_list)
+        all_mapped_machines = sorted({
+            machine_no
+            for machines_list in TOPIC_MACHINE_MAPPING.values()
+            for machine_no in machines_list
+        })
 
         while True:
             try:
@@ -4587,143 +5529,165 @@ def start_machine_event_monitor():
                 now_ist = datetime.now(ist_tz)
 
                 for machine_no in all_mapped_machines:
-                    status = EXACT_REQUIREMENT_STATE.get_machine_status(machine_no)
-                    is_currently_on = status["machine_on"]
+                    
+                    try:
+                        status = EXACT_REQUIREMENT_STATE.get_machine_status(machine_no)
+                        is_currently_on = status["machine_on"]
 
-                    # ✅ NEW: ONLINE/OFFLINE ideal segment tracking for ideal_time_segments_reason
-                    EXACT_REQUIREMENT_STATE.track_ideal_segment_from_status(
-                        machine_no, status, now_ist
-                    )
+                        # ✅ NEW: ONLINE/OFFLINE ideal segment tracking for ideal_time_segments_reason
+                        EXACT_REQUIREMENT_STATE.track_ideal_segment_from_status(
+                            machine_no, status, now_ist
+                        )
 
-                    # ==============================================================
-                    # ✅ NAYA LOGIC: CHECK AND SEND AUTO NOTIFICATIONS
-                    # ==============================================================
-                    idle_status = EXACT_REQUIREMENT_STATE.idle_tracker.get_idle_status(
-                        machine_no, now_ist
-                    )
-                    live_idle_str = idle_status.get("live_idle_time", "0m")
-                    live_idle_mins = int(live_idle_str.replace("m", ""))
+                        # ==============================================================
+                        # ✅ NAYA LOGIC: CHECK AND SEND AUTO NOTIFICATIONS
+                        # ==============================================================
+                        idle_status = EXACT_REQUIREMENT_STATE.idle_tracker.get_idle_status(
+                            machine_no, now_ist
+                        )
+                        live_idle_str = idle_status.get("live_idle_time", "0m")
+                        live_idle_mins = int(live_idle_str.replace("m", ""))
 
-                    if live_idle_mins >= 3:
+                        active_ideal = EXACT_REQUIREMENT_STATE.active_ideal_segments.get(
+                            machine_no
+                        )
 
-                       if not machine_alert_state.get(
-                           machine_no,
-                           False,
-                       ):
-                   
-                           alert_created = (
-                               auto_generate_idle_notification(
-                                   machine_no,
-                                   live_idle_mins,
-                               )
-                           )
-                   
-                           # False means actual physical Ideal
-                           # abhi 3 minute complete nahi hui.
-                           # Isliye next monitor cycle me retry hoga.
-                           if alert_created:
-                   
-                               machine_alert_state[
-                                   machine_no
-                               ] = True
-                   
-                   
-                    elif live_idle_mins == 0:
-                   
-                       machine_alert_state[
-                           machine_no
-                       ] = False
-                    # ==============================================================
+                        active_mode = (
+                            str(active_ideal.get("mode") or "").upper()
+                            if active_ideal
+                            else ""
+                        )
 
-                    if machine_no not in machine_last_state:
-                        machine_last_state[machine_no] = is_currently_on
+                        should_create_alert = active_mode == "OFFLINE" or (
+                            active_mode == "ONLINE" and live_idle_mins >= 3
+                        )
+
+                        if should_create_alert:
+
+                            if not machine_alert_state.get(
+                                machine_no,
+                                False,
+                            ):
+
+                                alert_created = auto_generate_idle_notification(
+                                    machine_no,
+                                    live_idle_mins,
+                                )
+
+                                # False means actual physical Ideal
+                                # abhi 3 minute complete nahi hui.
+                                # Isliye next monitor cycle me retry hoga.
+                                if alert_created:
+
+                                    machine_alert_state[machine_no] = True
+
+                        elif live_idle_mins == 0:
+
+                            machine_alert_state[machine_no] = False
+                        # ==============================================================
+
+                        if machine_no not in machine_last_state:
+                            machine_last_state[machine_no] = is_currently_on
+                            continue
+
+                        was_on_before = machine_last_state[machine_no]
+
+                        # ✅ OFFLINE TO ONLINE: Machine mein wapas signal aaya
+                        if is_currently_on and not was_on_before:
+                            shift = EXACT_REQUIREMENT_STATE.get_shift_from_time(now_ist)
+
+                            # ✅ OFFLINE to ONLINE aane par RAM se pending reason hata do (Naya idle reason mangega)
+                            EXACT_REQUIREMENT_STATE.pending_reasons.pop(machine_no, None)
+
+                            # Pehle offline wala gap DB mein save karo
+                            idle_status = (
+                                EXACT_REQUIREMENT_STATE.idle_tracker.get_idle_status(
+                                    machine_no, now_ist
+                                )
+                            )
+                            live_idle_str = idle_status.get("live_idle_time", "0m")
+                            live_idle_mins = int(live_idle_str.replace("m", ""))
+
+                            if live_idle_mins > 0:
+                                EXACT_REQUIREMENT_STATE.save_resolved_downtime_to_db(
+                                    machine_no,
+                                    now_ist,
+                                    shift,
+                                    live_idle_mins,
+                                    "OFFLINE to ONLINE",
+                                    is_hour_change=False,
+                                )
+
+                            log_machine_event(
+                                plant_no=1,
+                                machine_no=machine_no,
+                                event_type="ON",
+                                timestamp=now_ist,
+                                shift=shift,
+                                details="Machine Power/Signal Restored",
+                            )
+                            machine_last_state[machine_no] = True
+
+                        # ✅ ONLINE TO OFFLINE: Machine ka signal toote hue 3 minute se zyada ho gaya
+                        elif not is_currently_on and was_on_before:
+                            exact_off_time_str = status["offline_since"]
+
+                            if exact_off_time_str:
+                                today = now_ist.date()
+                                time_obj = datetime.strptime(
+                                    exact_off_time_str, "%H:%M:%S"
+                                ).time()
+                                exact_off_time = IST.localize(
+                                    datetime.combine(today, time_obj)
+                                )
+                            else:
+                                exact_off_time = now_ist
+
+                            shift = EXACT_REQUIREMENT_STATE.get_shift_from_time(
+                                exact_off_time
+                            )
+
+                            # Machine offline ho gayi (3 min grace ke baad), abhi tak ka gap DB mein daalo
+                            idle_status = (
+                                EXACT_REQUIREMENT_STATE.idle_tracker.get_idle_status(
+                                    machine_no, now_ist
+                                )
+                            )
+                            live_idle_str = idle_status.get("live_idle_time", "0m")
+                            live_idle_mins = int(live_idle_str.replace("m", ""))
+
+                            if live_idle_mins > 0:
+                                EXACT_REQUIREMENT_STATE.save_resolved_downtime_to_db(
+                                    machine_no,
+                                    now_ist,
+                                    shift,
+                                    live_idle_mins,
+                                    "ONLINE to OFFLINE",
+                                    is_hour_change=False,
+                                )
+
+                            log_machine_event(
+                                plant_no=1,
+                                machine_no=machine_no,
+                                event_type="OFF",
+                                timestamp=exact_off_time,
+                                shift=shift,
+                                details="Machine Offline (No signal for 3 mins)",
+                            )
+                            machine_last_state[machine_no] = False
+                        
+                    except Exception as machine_error:
+                        print(
+                            f"❌ MACHINE MONITOR ERROR | "
+                            f"Plant 1 | "
+                            f"M{machine_no} | "
+                            f"{machine_error}",
+                            flush=True,
+                        )
+                    
+                        traceback.print_exc()
+                    
                         continue
-
-                    was_on_before = machine_last_state[machine_no]
-
-                    # ✅ OFFLINE TO ONLINE: Machine mein wapas signal aaya
-                    if is_currently_on and not was_on_before:
-                        shift = EXACT_REQUIREMENT_STATE.get_shift_from_time(now_ist)
-
-                        # ✅ OFFLINE to ONLINE aane par RAM se pending reason hata do (Naya idle reason mangega)
-                        EXACT_REQUIREMENT_STATE.pending_reasons.pop(machine_no, None)
-
-                        # Pehle offline wala gap DB mein save karo
-                        idle_status = (
-                            EXACT_REQUIREMENT_STATE.idle_tracker.get_idle_status(
-                                machine_no, now_ist
-                            )
-                        )
-                        live_idle_str = idle_status.get("live_idle_time", "0m")
-                        live_idle_mins = int(live_idle_str.replace("m", ""))
-
-                        if live_idle_mins > 0:
-                            EXACT_REQUIREMENT_STATE.save_resolved_downtime_to_db(
-                                machine_no,
-                                now_ist,
-                                shift,
-                                live_idle_mins,
-                                "OFFLINE to ONLINE",
-                                is_hour_change=False,
-                            )
-
-                        log_machine_event(
-                            plant_no=1,
-                            machine_no=machine_no,
-                            event_type="ON",
-                            timestamp=now_ist,
-                            shift=shift,
-                            details="Machine Power/Signal Restored",
-                        )
-                        machine_last_state[machine_no] = True
-
-                    # ✅ ONLINE TO OFFLINE: Machine ka signal toote hue 3 minute se zyada ho gaya
-                    elif not is_currently_on and was_on_before:
-                        exact_off_time_str = status["offline_since"]
-
-                        if exact_off_time_str:
-                            today = now_ist.date()
-                            time_obj = datetime.strptime(
-                                exact_off_time_str, "%H:%M:%S"
-                            ).time()
-                            exact_off_time = IST.localize(
-                                datetime.combine(today, time_obj)
-                            )
-                        else:
-                            exact_off_time = now_ist
-
-                        shift = EXACT_REQUIREMENT_STATE.get_shift_from_time(
-                            exact_off_time
-                        )
-
-                        # Machine offline ho gayi (3 min grace ke baad), abhi tak ka gap DB mein daalo
-                        idle_status = (
-                            EXACT_REQUIREMENT_STATE.idle_tracker.get_idle_status(
-                                machine_no, now_ist
-                            )
-                        )
-                        live_idle_str = idle_status.get("live_idle_time", "0m")
-                        live_idle_mins = int(live_idle_str.replace("m", ""))
-
-                        if live_idle_mins > 0:
-                            EXACT_REQUIREMENT_STATE.save_resolved_downtime_to_db(
-                                machine_no,
-                                now_ist,
-                                shift,
-                                live_idle_mins,
-                                "ONLINE to OFFLINE",
-                                is_hour_change=False,
-                            )
-
-                        log_machine_event(
-                            plant_no=1,
-                            machine_no=machine_no,
-                            event_type="OFF",
-                            timestamp=exact_off_time,
-                            shift=shift,
-                            details="Machine Offline (No signal for 3 mins)",
-                        )
-                        machine_last_state[machine_no] = False
 
             except Exception as e:
                 print(f"❌ Event Monitor Error: {e}")
