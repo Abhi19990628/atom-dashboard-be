@@ -691,6 +691,7 @@ def get_pending_ideal_reports(request):
         )
 
 
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def submit_ideal_report(request, event_id):
