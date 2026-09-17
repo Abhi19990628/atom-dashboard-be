@@ -4059,8 +4059,10 @@ def _plant_history_common(
                         AND s.ideal_start_at
                             < %s::timestamp WITH TIME ZONE
             
-                        AND s.ideal_start_at
-                            >= %s::timestamp WITH TIME ZONE
+                        AND (
+                            UPPER(TRIM(s.ideal_mode)) = 'OFFLINE'
+                            OR s.ideal_start_at >= %s::timestamp WITH TIME ZONE
+                        )
             
                         {open_ideal_shift_sql}
             
@@ -4106,7 +4108,7 @@ def _plant_history_common(
 
                     history_open_start = open_ideal_start
 
-                    if plant_no == 2:
+                    if plant_no in (1, 2):
                         history_open_start = max(
                             open_ideal_start,
                             shift_start,

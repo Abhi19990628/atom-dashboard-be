@@ -5666,18 +5666,17 @@ class Plant2ExactRequirementState:
 
         if active is None:
 
-            recovery_start = (
-                self.get_shift_start_datetime(start_at)
-                - timedelta(hours=1)
-            )
+            # ==========================================================
+            # POWER / BACKEND RESTART RECOVERY
+            # ==========================================================
 
             db_open_event = (
                 IdealTimeSegmentReason.objects
                 .filter(
                     plant_location="Plant 2",
                     machine_no=int(machine_no),
+                    ideal_mode="OFFLINE",
                     ideal_end_at__isnull=True,
-                    ideal_start_at__gte=recovery_start,
                     ideal_start_at__lte=start_at,
                 )
                 .order_by(
@@ -5686,6 +5685,30 @@ class Plant2ExactRequirementState:
                 )
                 .first()
             )
+
+            # No old OFFLINE -> preserve existing recent recovery for ONLINE.
+            if db_open_event is None:
+            
+                recovery_start = (
+                    self.get_shift_start_datetime(start_at)
+                    - timedelta(hours=1)
+                )
+
+                db_open_event = (
+                    IdealTimeSegmentReason.objects
+                    .filter(
+                        plant_location="Plant 2",
+                        machine_no=int(machine_no),
+                        ideal_end_at__isnull=True,
+                        ideal_start_at__gte=recovery_start,
+                        ideal_start_at__lte=start_at,
+                    )
+                    .order_by(
+                        "-ideal_start_at",
+                        "-id",
+                    )
+                    .first()
+                )
 
             if db_open_event is not None:
 
@@ -6012,6 +6035,35 @@ class Plant2ExactRequirementState:
                     )
 
                     if blocking_start < open_lookup_start:
+                        
+                        blocking_mode = str(
+                            blocking_open.ideal_mode or ""
+                        ).strip().upper()
+
+                        if blocking_mode == "OFFLINE":
+                        
+                            self.active_ideal_segments[machine_no] = {
+                                "mode": "OFFLINE",
+                                "start_at": self._as_ist(
+                                    blocking_open.ideal_start_at
+                                ),
+                                "ideal_event_id": blocking_open.id,
+                                "canonical_event_id": blocking_open.id,
+                                "event_started_at": self._as_ist(
+                                    blocking_open.ideal_start_at
+                                ),
+                            }
+
+                            print(
+                                f"♻️ OLD OPEN OFFLINE RECOVERED | "
+                                f"Plant 2 | "
+                                f"M{machine_no} | "
+                                f"IdealID={blocking_open.id} | "
+                                f"Start={blocking_start.strftime('%Y-%m-%d %H:%M:%S')}",
+                                flush=True,
+                            )
+
+                            return
                     
                         # Never silently remove a submitted event.
                         blocking_submitted = (
@@ -6068,7 +6120,6 @@ class Plant2ExactRequirementState:
                         machine_no=int(machine_no),
                         ideal_mode="OFFLINE",
                         ideal_end_at__isnull=True,
-                        ideal_start_at__gte=open_lookup_start,
                         ideal_start_at__lte=start_at,
                     )
                     .order_by(
@@ -6481,24 +6532,27 @@ class Plant2ExactRequirementState:
 
             # RAM ID missing hua to event_key fallback.
             # RAM Ideal ID missing ho to current open event
-            # start time se safely recover karo.
-
             if ideal_event is None:
 
                 shift_start = self.get_shift_start_datetime(end_at)
 
-                # ======================================================
                 open_lookup_start = shift_start - timedelta(hours=1)
 
-                ideal_event = (
-                    IdealTimeSegmentReason.objects.filter(
-                        plant_location="Plant 2",
-                        machine_no=int(machine_no),
-                        ideal_mode=ideal_mode,
-                        ideal_end_at__isnull=True,
-                        ideal_start_at__gte=open_lookup_start,
-                        ideal_start_at__lt=end_at,
+                open_query = IdealTimeSegmentReason.objects.filter(
+                    plant_location="Plant 2",
+                    machine_no=int(machine_no),
+                    ideal_mode=ideal_mode,
+                    ideal_end_at__isnull=True,
+                    ideal_start_at__lt=end_at,
+                )
+
+                if str(ideal_mode or "").strip().upper() != "OFFLINE":
+                    open_query = open_query.filter(
+                        ideal_start_at__gte=open_lookup_start
                     )
+
+                ideal_event = (
+                    open_query
                     .order_by(
                         "-ideal_start_at",
                         "-id",
@@ -6507,8 +6561,6 @@ class Plant2ExactRequirementState:
                 )
 
                 if ideal_event is not None:
-
-                    # Reconnect RAM to exact DB row.
                     active["ideal_event_id"] = ideal_event.id
 
             # ======================================================
@@ -6951,7 +7003,7 @@ class Plant2ExactRequirementState:
                     machine_no=int(machine_no),
                     ideal_mode="OFFLINE",
                     ideal_end_at__isnull=True,
-                    ideal_start_at__gte=open_lookup_start,
+                    ideal_start_at__lte=now_ist,
                 )
                 .order_by(
                     "-ideal_start_at",
@@ -9578,12 +9630,6 @@ def auto_generate_idle_notification(machine_no, idle_mins):
 
         # ----------------------------------------------------------
         # 2. Recovery:
-        # Find same currently-open physical event.
-        #
-        # ±2 seconds because DB timestamps are now stored
-        # with second precision.
-        # ----------------------------------------------------------
-
         if ideal_event is None:
 
             shift_start = (
@@ -9592,21 +9638,26 @@ def auto_generate_idle_notification(machine_no, idle_mins):
                     now_ist
                 )
             )
-            
+
             open_lookup_start = (
                 shift_start - timedelta(hours=1)
             )
 
-            ideal_event = (
-                IdealTimeSegmentReason.objects
-                .filter(
-                    plant_location=plant_location,
-                    machine_no=int(machine_no),
-                    ideal_mode=ideal_mode,
-                    ideal_end_at__isnull=True,
-                    ideal_start_at__gte=open_lookup_start,
-                    ideal_start_at__lte=now_ist,
+            open_query = IdealTimeSegmentReason.objects.filter(
+                plant_location=plant_location,
+                machine_no=int(machine_no),
+                ideal_mode=ideal_mode,
+                ideal_end_at__isnull=True,
+                ideal_start_at__lte=now_ist,
+            )
+
+            if str(ideal_mode or "").strip().upper() != "OFFLINE":
+                open_query = open_query.filter(
+                    ideal_start_at__gte=open_lookup_start
                 )
+
+            ideal_event = (
+                open_query
                 .order_by(
                     "-ideal_start_at",
                     "-id",
@@ -9615,10 +9666,7 @@ def auto_generate_idle_notification(machine_no, idle_mins):
             )
 
             if ideal_event is not None:
-            
-                active_segment[
-                    "ideal_event_id"
-                ] = ideal_event.id
+                active_segment["ideal_event_id"] = ideal_event.id
 
         # ----------------------------------------------------------
         # 3. No existing row -> create ONE new open Ideal row
@@ -9893,6 +9941,7 @@ def start_machine_event_monitor():
 
         print("🔍 Plant 2 - Machine ON/OFF Event Monitor Started!")
         machine_last_state = {}
+        machine_history_last_state = {}
 
         # ✅ NAYA: Track karta hai ki kis machine ke liye alert bhej diya gaya hai
         machine_alert_state = {}
@@ -9909,16 +9958,17 @@ def start_machine_event_monitor():
         for machine_no in all_mapped_machines:
         
             db_state = get_last_saved_power_state(
-                plant_no=1,
+                plant_no=2,
                 machine_no=machine_no,
             )
 
             if db_state is not None:
                 machine_last_state[machine_no] = db_state
+                machine_history_last_state[machine_no] = db_state
 
                 print(
                     f"♻️ POWER STATE RESTORED | "
-                    f"P1-M{machine_no} | "
+                    f"P2-M{machine_no} | "
                     f"{'ON' if db_state else 'OFF'}",
                     flush=True,
                 )
@@ -10022,17 +10072,9 @@ def start_machine_event_monitor():
                                     is_hour_change=False,
                                 )
 
-                            saved = log_machine_event(
-                                plant_no=2,        # 1 in simple_plant1.py
-                                machine_no=machine_no,
-                                event_type="ON",
-                                timestamp=now_ist,
-                                shift=shift,
-                                details="Machine Power/Signal Restored",
-                            )
-
-                            if saved:
-                                machine_last_state[machine_no] = True
+                            # Raw physical state only.
+                            # Qualified Machine History is handled separately below.
+                            machine_last_state[machine_no] = True
 
                         # ✅ ONLINE TO OFFLINE: Machine ka signal toote hue 3 minute se zyada ho gaya
                         elif not is_currently_on and was_on_before:
@@ -10072,18 +10114,173 @@ def start_machine_event_monitor():
                                     is_hour_change=False,
                                 )
 
-                            saved = log_machine_event(
-                                plant_no=2,        # 1 in simple_plant1.py
-                                machine_no=machine_no,
-                                event_type="OFF",
-                                timestamp=exact_off_time,
-                                shift=shift,
-                                details="Machine Offline (Power/Signal Lost)",
+                            machine_last_state[machine_no] = False
+                        
+                        # ==============================================================
+                        # FINAL MACHINE ON/OFF HISTORY - PLANT 2
+                    
+                        # ==============================================================
+                        
+                        history_last_state = machine_history_last_state.get(
+                            machine_no
+                        )
+                        
+                        # ==============================================================
+                        # CASE 1: MACHINE CURRENTLY OFF
+                        # ==============================================================
+                        if not is_currently_on:
+                        
+                            history_active_ideal = (
+                                EXACT_REQUIREMENT_STATE
+                                .active_ideal_segments
+                                .get(machine_no)
                             )
-
-                            if saved:
-                                machine_last_state[machine_no] = False
-
+                        
+                            history_active_mode = (
+                                str(
+                                    history_active_ideal.get("mode") or ""
+                                ).strip().upper()
+                                if history_active_ideal
+                                else ""
+                            )
+                        
+                            # Only a real OFFLINE Ideal is considered
+                            if (
+                                history_active_ideal
+                                and history_active_mode == "OFFLINE"
+                            ):
+                        
+                                history_off_start = (
+                                    history_active_ideal.get(
+                                        "event_started_at"
+                                    )
+                                    or history_active_ideal.get(
+                                        "start_at"
+                                    )
+                                )
+                        
+                                if history_off_start is not None:
+                                
+                                    history_off_start = (
+                                        EXACT_REQUIREMENT_STATE
+                                        ._as_ist(history_off_start)
+                                    )
+                        
+                                    offline_elapsed_seconds = int(
+                                        (
+                                            now_ist
+                                            - history_off_start
+                                        ).total_seconds()
+                                    )
+                        
+                                    # SAME 3-minute qualification used by Ideal logic
+                                    if (
+                                        offline_elapsed_seconds
+                                        >= EXACT_REQUIREMENT_STATE
+                                        .online_idle_threshold_seconds
+                                        and history_last_state is not False
+                                    ):
+                        
+                                        history_shift = (
+                                            EXACT_REQUIREMENT_STATE
+                                            .get_shift_from_time(
+                                                history_off_start
+                                            )
+                                        )
+                        
+                                        saved = log_machine_event(
+                                            plant_no=2,
+                                            machine_no=machine_no,
+                                            event_type="OFF",
+                                            timestamp=history_off_start,
+                                            shift=history_shift,
+                                            details=(
+                                                "Machine Offline "
+                                                "(Qualified Power/Signal Lost)"
+                                            ),
+                                        )
+                        
+                                        if saved:
+                                        
+                                            machine_history_last_state[
+                                                machine_no
+                                            ] = False
+                        
+                                            print(
+                                                f"🔴 QUALIFIED OFF HISTORY | "
+                                                f"P2-M{machine_no} | "
+                                                f"Start="
+                                                f"{history_off_start.strftime('%H:%M:%S')} | "
+                                                f"Duration="
+                                                f"{offline_elapsed_seconds}s",
+                                                flush=True,
+                                            )
+                        
+                        
+                        # ==============================================================
+                        # CASE 2: MACHINE CURRENTLY ON
+                        # ==============================================================
+                        else:
+                        
+                            history_last_state = (
+                                machine_history_last_state.get(
+                                    machine_no
+                                )
+                            )
+                        
+                            # Previously had one qualified OFF event.
+                            if history_last_state is False:
+                            
+                                history_shift = (
+                                    EXACT_REQUIREMENT_STATE
+                                    .get_shift_from_time(now_ist)
+                                )
+                        
+                                saved = log_machine_event(
+                                    plant_no=2,
+                                    machine_no=machine_no,
+                                    event_type="ON",
+                                    timestamp=now_ist,
+                                    shift=history_shift,
+                                    details="Machine Power/Signal Restored",
+                                )
+                        
+                                if saved:
+                                
+                                    machine_history_last_state[
+                                        machine_no
+                                    ] = True
+                        
+                                    print(
+                                        f"🟢 QUALIFIED ON HISTORY | "
+                                        f"P2-M{machine_no} | "
+                                        f"{now_ist.strftime('%H:%M:%S')}",
+                                        flush=True,
+                                    )
+                        
+                            # Machine has no old ON/OFF history at all.
+                            elif history_last_state is None:
+                            
+                                history_shift = (
+                                    EXACT_REQUIREMENT_STATE
+                                    .get_shift_from_time(now_ist)
+                                )
+                        
+                                saved = log_machine_event(
+                                    plant_no=2,
+                                    machine_no=machine_no,
+                                    event_type="ON",
+                                    timestamp=now_ist,
+                                    shift=history_shift,
+                                    details="Machine Power/Signal Restored",
+                                )
+                        
+                                if saved:
+                                
+                                    machine_history_last_state[
+                                        machine_no
+                                    ] = True
+                        
                     except Exception as machine_error:
                         print(
                             f"❌ MACHINE MONITOR ERROR | "
