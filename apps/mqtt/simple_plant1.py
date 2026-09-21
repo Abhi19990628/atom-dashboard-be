@@ -558,9 +558,9 @@ class Plant1ExactRequirementState:
         # Do NOT wait 3 minutes to declare OFFLINE.
         #
         # J status is throttled to around 3 seconds and the status monitor
-        # runs every 5 seconds, therefore 10 seconds is a safe production
-        # heartbeat timeout while still making OFFLINE effectively immediate.
-        self.power_signal_timeout_seconds = 10
+        # Machine OFFLINE tabhi hogi jab COUNT aur J dono 3 minutes tak na aaye.
+        # Short MQTT/J gaps se false OFF/ON blinking nahi hogi.
+        self.power_signal_timeout_seconds = 180
 
         self.idle_tracker = StrictIdlePolicy(
             grace_seconds=self.online_idle_threshold_seconds,
@@ -4568,7 +4568,7 @@ class Plant1ExactRequirementState:
             # ==========================================================
 
             # Machine is physically ON when a REAL current-shift
-            # COUNT/J fresh within power_signal_timeout_seconds (10 sec)
+            # COUNT/J fresh within power_signal_timeout_seconds (180 sec / 3 min)
             machine_on = recent_count_signal or has_json
 
             # RUNNING strictly depends on COUNT.
