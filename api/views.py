@@ -691,7 +691,6 @@ def get_pending_ideal_reports(request):
         )
 
 
-
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def submit_ideal_report(request, event_id):
@@ -846,7 +845,7 @@ def submit_ideal_report(request, event_id):
         logical_segments = [first_segment]
 
         current_segment = first_segment
-        
+
         # ==================================================
         # HOUR_CHANGE RACE-SAFE FORWARD CHAIN
         #
@@ -872,11 +871,9 @@ def submit_ideal_report(request, event_id):
             expected_start = current_segment.ideal_end_at
 
             # ==================================================
-        
 
             next_segment = (
-                IdealTimeSegmentReason.objects
-                .filter(
+                IdealTimeSegmentReason.objects.filter(
                     plant_location=current_segment.plant_location,
                     machine_no=current_segment.machine_no,
                     ideal_mode=current_segment.ideal_mode,
@@ -886,7 +883,6 @@ def submit_ideal_report(request, event_id):
                 .order_by("-id")
                 .first()
             )
-
 
             # ==================================================
             # 2. LEGACY TIMESTAMP SAFETY
@@ -901,23 +897,16 @@ def submit_ideal_report(request, event_id):
             # ==================================================
 
             if next_segment is None and expected_start is not None:
-            
+
                 tolerance = timedelta(seconds=2)
 
                 next_segment = (
-                    IdealTimeSegmentReason.objects
-                    .filter(
+                    IdealTimeSegmentReason.objects.filter(
                         plant_location=current_segment.plant_location,
                         machine_no=current_segment.machine_no,
                         ideal_mode=current_segment.ideal_mode,
-
-                        ideal_start_at__gte=(
-                            expected_start - tolerance
-                        ),
-
-                        ideal_start_at__lte=(
-                            expected_start + tolerance
-                        ),
+                        ideal_start_at__gte=(expected_start - tolerance),
+                        ideal_start_at__lte=(expected_start + tolerance),
                     )
                     .exclude(pk=current_segment.pk)
                     .order_by("-id")
@@ -925,7 +914,7 @@ def submit_ideal_report(request, event_id):
                 )
 
                 if next_segment is not None:
-                
+
                     print(
                         f"🔗 HOUR_CHANGE CONTINUATION RECOVERED | "
                         f"{current_segment.plant_location} | "
@@ -2113,8 +2102,7 @@ def _plant_live_common(
                     bulk_cumulative[str(machine_key).strip()] = int(
                         cumulative_count or 0
                     )
-                    
-                    
+
                 # ==========================================================
                 # FIRST MACHINE ON TIME OF CURRENT SHIFT
                 #
@@ -2158,10 +2146,7 @@ def _plant_live_common(
                     else:
                         first_on_time = first_on_time.astimezone(ist_tz)
 
-                    bulk_first_machine_on[
-                        str(machine_key).strip()
-                    ] = first_on_time
-
+                    bulk_first_machine_on[str(machine_key).strip()] = first_on_time
 
                 # ==========================================================
                 # FIRST PRODUCTION COUNT OF CURRENT SHIFT
@@ -2203,17 +2188,11 @@ def _plant_live_common(
 
                     # plant1_data / plant2_data timestamp is local DB time.
                     if first_count_time.tzinfo is None:
-                        first_count_time = ist_tz.localize(
-                            first_count_time
-                        )
+                        first_count_time = ist_tz.localize(first_count_time)
                     else:
-                        first_count_time = first_count_time.astimezone(
-                            ist_tz
-                        )
+                        first_count_time = first_count_time.astimezone(ist_tz)
 
-                    bulk_first_count[
-                        str(machine_key).strip()
-                    ] = first_count_time    
+                    bulk_first_count[str(machine_key).strip()] = first_count_time
 
                 # Ideal summaries: today, current shift, current hour.
                 # ==========================================================
@@ -2694,7 +2673,6 @@ def _plant_live_common(
                         if 0 < prefix_seconds < 180:
                             offline_live_prefix_seconds = prefix_seconds
 
-                
                 # These values do NOT change after server restart
                 # and do NOT change after later OFF/ON or idle/run cycles.
                 # They reset automatically when shift changes because
@@ -2708,17 +2686,13 @@ def _plant_live_common(
                 first_on_obj = bulk_first_machine_on.get(m_str)
                 first_count_obj = bulk_first_count.get(m_str)
 
-
                 # ----------------------------------------------------------
                 # MACHINE ON AT
                 # ----------------------------------------------------------
 
                 if first_on_obj is not None:
 
-                    on_since_str = first_on_obj.strftime(
-                        "%H:%M:%S"
-                    )
-
+                    on_since_str = first_on_obj.strftime("%H:%M:%S")
 
                 # ----------------------------------------------------------
                 # START PRODUCTION AT
@@ -2726,10 +2700,7 @@ def _plant_live_common(
 
                 if first_count_obj is not None:
 
-                    first_count_str = first_count_obj.strftime(
-                        "%H:%M:%S"
-                    )
-
+                    first_count_str = first_count_obj.strftime("%H:%M:%S")
 
                 # ----------------------------------------------------------
                 # DELAY: MACHINE ON -> FIRST PRODUCTION COUNT
@@ -2743,13 +2714,7 @@ def _plant_live_common(
 
                     time_to_first_count = max(
                         0,
-                        int(
-                            (
-                                first_count_obj
-                                - first_on_obj
-                            ).total_seconds()
-                            / 60
-                        ),
+                        int((first_count_obj - first_on_obj).total_seconds() / 60),
                     )
 
                 segment_info = getattr(state_obj, "machine_segments", {}).get(
@@ -7345,8 +7310,235 @@ def production_line_status_data(request):
         )
 
 
+from datetime import datetime, timedelta, time as dt_time
+from django.utils import timezone
+
+
+def get_current_operator_shift():
+    """
+    Shift A: 08:30 AM -> 08:00 PM
+    Shift B: 08:00 PM -> 08:30 AM
+    """
+
+    now_local = timezone.localtime(timezone.now())
+
+    current_date = now_local.date()
+    current_time = now_local.time()
+
+    shift_a_start = dt_time(8, 30)
+    shift_a_end = dt_time(20, 0)
+
+    current_tz = timezone.get_current_timezone()
+
+    # ===========================
+    # SHIFT A
+    # ===========================
+    if shift_a_start <= current_time < shift_a_end:
+
+        shift = "A"
+
+        start_naive = datetime.combine(current_date, dt_time(8, 30))
+
+        end_naive = datetime.combine(current_date, dt_time(20, 0))
+
+    # ===========================
+    # SHIFT B - after 8 PM
+    # ===========================
+    elif current_time >= shift_a_end:
+
+        shift = "B"
+
+        start_naive = datetime.combine(current_date, dt_time(20, 0))
+
+        end_naive = datetime.combine(current_date + timedelta(days=1), dt_time(8, 30))
+
+    # ===========================
+    # SHIFT B - midnight -> 8:30
+    # ===========================
+    else:
+
+        shift = "B"
+
+        start_naive = datetime.combine(current_date - timedelta(days=1), dt_time(20, 0))
+
+        end_naive = datetime.combine(current_date, dt_time(8, 30))
+
+    shift_start = timezone.make_aware(start_naive, current_tz)
+
+    shift_end = timezone.make_aware(end_naive, current_tz)
+
+    return shift, shift_start, shift_end
+
+
+def close_expired_operator_assignments():
+    """
+    Any assignment created before the CURRENT shift started
+    must no longer remain active.
+    """
+
+    current_shift, shift_start, shift_end = get_current_operator_shift()
+
+    expired_assignments = OperatorAssignment.objects.filter(
+        is_current=True,
+        start_time__lt=shift_start,
+    )
+
+    updated_count = expired_assignments.update(
+        status="Completed",
+        reason="Shift Over",
+        end_time=shift_start,
+        is_current=False,
+    )
+
+    return updated_count
+
+@api_view(["POST"])
+def end_operator_shift(request):
+    """
+    Manually complete all active assignments
+    for selected plant.
+    """
+
+    try:
+        plant = request.data.get("plant")
+
+        if plant not in [
+            "plant_1",
+            "plant_2",
+        ]:
+            return Response(
+                {
+                    "success": False,
+                    "message": "Invalid plant",
+                },
+                status=400,
+            )
+
+        now = timezone.now()
+
+        assignments = OperatorAssignment.objects.filter(
+            plant=plant,
+            is_current=True,
+        )
+
+        completed_count = assignments.update(
+            status="Completed",
+            reason="Shift Over",
+            end_time=now,
+            is_current=False,
+        )
+
+        return Response(
+            {
+                "success": True,
+                "message": "Shift completed successfully",
+                "completed_assignments": completed_count,
+            }
+        )
+
+    except Exception as e:
+        print(f"End shift error: {e}")
+
+        return Response(
+            {
+                "success": False,
+                "error": str(e),
+            },
+            status=500,
+        )
+
+
 # ========== NEW OPERATOR ASSIGNMENT APIs ==========
 
+@api_view(["GET"])
+def get_previous_operator_assignment(request):
+    """
+    Return last completed/transferred operator
+    for selected machine.
+    """
+
+    try:
+        close_expired_operator_assignments()
+
+        plant = request.GET.get("plant")
+        machine_no = request.GET.get("machine_no")
+
+        if not plant or not machine_no:
+            return Response(
+                {
+                    "success": False,
+                    "message": "plant and machine_no are required",
+                },
+                status=400,
+            )
+
+        previous = (
+            OperatorAssignment.objects
+            .filter(
+                plant=plant,
+                machine_no=str(machine_no),
+                is_current=False,
+            )
+            .order_by(
+                "-end_time",
+                "-start_time",
+                "-id",
+            )
+            .first()
+        )
+
+        if not previous:
+            return Response(
+                {
+                    "success": True,
+                    "assignment": None,
+                }
+            )
+
+        return Response(
+            {
+                "success": True,
+                "assignment": {
+                    "id": previous.id,
+                    "plant": previous.plant,
+                    "machine_no": previous.machine_no,
+                    "operator_name": previous.operator_name,
+                    "shift": previous.shift,
+                    "status": previous.status,
+                    "reason": previous.reason,
+                    "start_time": (
+                        timezone.localtime(
+                            previous.start_time
+                        ).isoformat()
+                        if previous.start_time
+                        else None
+                    ),
+                    "end_time": (
+                        timezone.localtime(
+                            previous.end_time
+                        ).isoformat()
+                        if previous.end_time
+                        else None
+                    ),
+                },
+            }
+        )
+
+    except Exception as e:
+        print(
+            f"Previous assignment error: {e}"
+        )
+
+        return Response(
+            {
+                "success": False,
+                "error": str(e),
+            },
+            status=500,
+        )
+
+
+from django.db.models.functions import Lower
 
 @api_view(["GET"])
 def get_operators_by_plant(request):
@@ -7362,7 +7554,7 @@ def get_operators_by_plant(request):
 
         operators = (
             Operator.objects.filter(plant=plant, is_active=True)
-            .order_by("name")
+            .order_by(Lower("name"))
             .values("id", "name")
         )
 
@@ -7469,10 +7661,11 @@ from .models import Operator, OperatorAssignment  # Ensure ye models imported ha
 def save_operator_assignment(request):
     """Save operator assignment to machine"""
     try:
+        close_expired_operator_assignments()
         plant = request.data.get("plant")
         operator_name = request.data.get("operator_name")
         machine_no = request.data.get("machine_no")
-        shift = request.data.get("shift")
+        shift, shift_start, shift_end = get_current_operator_shift()
         assigned_by = request.data.get("assigned_by", "Admin")
 
         # Frontend se override ka order
@@ -7571,6 +7764,9 @@ def get_operator_assignments(request):
     """Current machine assignments"""
 
     try:
+        # FIRST automatically complete previous shift
+        close_expired_operator_assignments()
+
         plant = request.GET.get("plant")
 
         queryset = OperatorAssignment.objects.filter(is_current=True)
@@ -8023,6 +8219,7 @@ def to_ist_aware(dt):
 
     return dt.astimezone(IST_TZ)
 
+
 # UPDATED: Added shift parameter to handle specific shift timings
 def get_time_boundaries(
     year,
@@ -8091,9 +8288,7 @@ def get_time_boundaries(
                 microsecond=0,
             )
 
-            end_date = (
-                base_date + timedelta(days=1)
-            ).replace(
+            end_date = (base_date + timedelta(days=1)).replace(
                 hour=8,
                 minute=0,
                 second=0,
@@ -8309,9 +8504,7 @@ def monthly_summary(request):
 
         table_name, _ = get_plant_table(plant)
 
-        plant_location = get_plant_location_name(
-            plant
-        )
+        plant_location = get_plant_location_name(plant)
 
         (
             start_date,
@@ -8471,24 +8664,14 @@ def monthly_summary(request):
 
         for row in prod_results:
 
-            key = (
-                int(row[0])
-                if row[0] is not None
-                else -1
-            )
+            key = int(row[0]) if row[0] is not None else -1
 
             if key in db_data:
-                db_data[key]["prod"] += (
-                    row[1] or 0
-                )
+                db_data[key]["prod"] += row[1] or 0
 
         for row in idle_results:
 
-            key = (
-                int(row[0])
-                if row[0] is not None
-                else -1
-            )
+            key = int(row[0]) if row[0] is not None else -1
 
             if key in db_data:
 
@@ -8517,11 +8700,7 @@ def monthly_summary(request):
 
             shutdown = db_data[key]["shutdown"]
 
-            has_data = (
-                prod > 0
-                or idle > 0
-                or shutdown > 0
-            )
+            has_data = prod > 0 or idle > 0 or shutdown > 0
 
             if has_data:
                 days_with_data += 1
@@ -8536,55 +8715,39 @@ def monthly_summary(request):
                 {
                     "day": key,
                     "production": prod,
-
                     # ONLINE Ideal
                     "idle_minutes": idle,
-
                     # OFFLINE Ideal
                     "shutdown_minutes": shutdown,
-
                     "has_data": has_data,
                 }
             )
 
-        total_combined_mins = (
-            total_online_idle_mins
-            + total_offline_mins
-        )
+        total_combined_mins = total_online_idle_mins + total_offline_mins
 
         return Response(
             {
                 "success": True,
-
                 "plant": plant,
                 "plant_location": plant_location,
-
                 "summary": {
                     "total_production": total_prod,
-
                     # Keep old field so current FE remains compatible.
                     "total_idle_hours": round(
                         total_combined_mins / 60,
                         2,
                     ),
-
                     # New exact separate values.
                     "online_idle_hours": round(
                         total_online_idle_mins / 60,
                         2,
                     ),
-
                     "offline_shutdown_hours": round(
                         total_offline_mins / 60,
                         2,
                     ),
-
                     "days_with_data": days_with_data,
-
-                    "days_in_month": len(
-                        expected_keys
-                    ),
-
+                    "days_in_month": len(expected_keys),
                     "coverage": round(
                         (
                             days_with_data
@@ -8597,9 +8760,7 @@ def monthly_summary(request):
                         1,
                     ),
                 },
-
-                "daily_breakdown":
-                    daily_breakdown,
+                "daily_breakdown": daily_breakdown,
             }
         )
 
@@ -8661,22 +8822,16 @@ def machine_analysis(request):
             "monthly",
         )
 
-        target_date_str = request.GET.get(
-            "date"
-        )
+        target_date_str = request.GET.get("date")
 
         shift = request.GET.get(
             "shift",
             "fullday",
         )
 
-        table_name, _ = get_plant_table(
-            plant
-        )
+        table_name, _ = get_plant_table(plant)
 
-        plant_location = (
-            get_plant_location_name(plant)
-        )
+        plant_location = get_plant_location_name(plant)
 
         (
             start_date,
@@ -8691,13 +8846,9 @@ def machine_analysis(request):
             shift,
         )
 
-        ideal_start_date = to_ist_aware(
-            start_date
-        )
+        ideal_start_date = to_ist_aware(start_date)
 
-        ideal_end_date = to_ist_aware(
-            end_date
-        )
+        ideal_end_date = to_ist_aware(end_date)
 
         if target_date_str:
             try:
@@ -8833,24 +8984,14 @@ def machine_analysis(request):
 
         for row in prod_results:
 
-            key = (
-                int(row[0])
-                if row[0] is not None
-                else -1
-            )
+            key = int(row[0]) if row[0] is not None else -1
 
             if key in db_data:
-                db_data[key]["prod"] += (
-                    row[1] or 0
-                )
+                db_data[key]["prod"] += row[1] or 0
 
         for row in idle_results:
 
-            key = (
-                int(row[0])
-                if row[0] is not None
-                else -1
-            )
+            key = int(row[0]) if row[0] is not None else -1
 
             if key in db_data:
 
@@ -8877,11 +9018,7 @@ def machine_analysis(request):
             idle = db_data[key]["idle"]
             shutdown = db_data[key]["shutdown"]
 
-            has_data = (
-                prod > 0
-                or idle > 0
-                or shutdown > 0
-            )
+            has_data = prod > 0 or idle > 0 or shutdown > 0
 
             if has_data:
                 active_days += 1
@@ -8897,11 +9034,7 @@ def machine_analysis(request):
                     "idle_minutes": idle,
                     "shutdown_minutes": shutdown,
                     "has_data": has_data,
-                    "status": (
-                        "Active"
-                        if has_data
-                        else "No Data"
-                    ),
+                    "status": ("Active" if has_data else "No Data"),
                 }
             )
 
@@ -8913,70 +9046,38 @@ def machine_analysis(request):
         return Response(
             {
                 "success": True,
-
                 "machine_info": {
                     "machine_no": machine_no,
-                    "machine_id":
-                        f"M-{machine_no.zfill(2)}",
+                    "machine_id": f"M-{machine_no.zfill(2)}",
                     "period_type": period,
                 },
-
                 "production_summary": {
-                    "total_production":
-                        total_prod,
-
+                    "total_production": total_prod,
                     "average_daily": round(
-                        (
-                            total_prod
-                            / active_days
-                        )
-                        if active_days > 0
-                        else 0,
+                        (total_prod / active_days) if active_days > 0 else 0,
                         1,
                     ),
                 },
-
                 "idle_summary": {
                     "total_idle_hours": round(
                         total_idle_mins / 60,
                         2,
                     ),
-
-                    "total_shutdown_hours":
-                        round(
-                            total_shutdown_mins
-                            / 60,
-                            2,
-                        ),
-                },
-
-                "machine_status": {
-                    "active_days":
-                        active_days,
-
-                    "inactive_days":
-                        total_periods
-                        - active_days,
-
-                    "active_percentage":
-                        round(
-                            (
-                                active_days
-                                / total_periods
-                            )
-                            * 100,
-                            1,
-                        ),
-
-                    "status": (
-                        "Operational"
-                        if active_days > 0
-                        else "No Data"
+                    "total_shutdown_hours": round(
+                        total_shutdown_mins / 60,
+                        2,
                     ),
                 },
-
-                "daily_breakdown":
-                    daily_breakdown,
+                "machine_status": {
+                    "active_days": active_days,
+                    "inactive_days": total_periods - active_days,
+                    "active_percentage": round(
+                        (active_days / total_periods) * 100,
+                        1,
+                    ),
+                    "status": ("Operational" if active_days > 0 else "No Data"),
+                },
+                "daily_breakdown": daily_breakdown,
             }
         )
 
@@ -9063,7 +9164,8 @@ def machine_wise(request):
         return Response({"success": True, "data": machine_data})
     except Exception as e:
         return Response({"success": False, "error": str(e)}, status=500)
-    
+
+
 @never_cache
 @api_view(["GET"])
 def production_history_machine_list(request):
@@ -9081,9 +9183,7 @@ def production_history_machine_list(request):
         # -----------------------------------------------
         # 1. Get selected plant from frontend
         # -----------------------------------------------
-        plant = str(
-            request.GET.get("plant", "plant1")
-        ).strip().lower()
+        plant = str(request.GET.get("plant", "plant1")).strip().lower()
 
         # -----------------------------------------------
         # 2. Validate plant
@@ -9158,11 +9258,7 @@ def production_history_machine_list(request):
         # -----------------------------------------------
         # 5. Convert DB rows into simple number list
         # -----------------------------------------------
-        machines = [
-            int(row[0])
-            for row in rows
-            if row[0] is not None
-        ]
+        machines = [int(row[0]) for row in rows if row[0] is not None]
 
         # -----------------------------------------------
         # 6. Send list to React
@@ -9187,7 +9283,7 @@ def production_history_machine_list(request):
                 "error": str(e),
             },
             status=500,
-        )    
+        )
 
 
 @api_view(["POST"])
@@ -9968,8 +10064,7 @@ class CurrentUserProfileView(APIView):
         profile = self.get_object()
 
         serializer = UserDepartmentProfileSerializer(
-            profile,
-            context={"request": request}
+            profile, context={"request": request}
         )
 
         return Response(serializer.data)
@@ -9978,10 +10073,7 @@ class CurrentUserProfileView(APIView):
         profile = self.get_object()
 
         serializer = UserDepartmentProfileSerializer(
-            profile,
-            data=request.data,
-            partial=True,
-            context={"request": request}
+            profile, data=request.data, partial=True, context={"request": request}
         )
 
         if serializer.is_valid():

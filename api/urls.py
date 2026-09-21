@@ -82,6 +82,16 @@ urlpatterns = [
         views.get_assignment_history,
         name="get_assignment_history",
     ),
+    path(
+        "assignment/end-shift/",
+        views.end_operator_shift,
+        name="end_operator_shift",
+    ),
+    path(
+        "assignment/previous/",
+        views.get_previous_operator_assignment,
+        name="get_previous_operator_assignment",
+    ),
     # Old Assignment APIs (Keep existing)
     path("assignments/", views.create_assignment, name="create_assignment"),
     path(
