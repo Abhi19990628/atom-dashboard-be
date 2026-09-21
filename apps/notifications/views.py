@@ -92,12 +92,11 @@ def get_my_notifications(request):
         )
 
         if profile is None or not profile.location:
-
+        
             return Response({
                 "success": True,
                 "data": [],
             })
-
         notifications = notifications.filter(
             ideal_event__plant_location=profile.location
         )
