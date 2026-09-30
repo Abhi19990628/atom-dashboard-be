@@ -93,6 +93,7 @@ urlpatterns = [
         name="get_previous_operator_assignment",
     ),
     # Old Assignment APIs (Keep existing)
+    path("operator-timeline/", views.get_operator_timeline, name="get_operator_timeline"),
     path("assignments/", views.create_assignment, name="create_assignment"),
     path(
         "machines/<str:machine_no>/auto-fill/",
