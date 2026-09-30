@@ -5518,87 +5518,261 @@ from django.utils import timezone
 
 def get_current_operator_shift():
     """
-    Shift A: 08:30 AM -> 08:00 PM
-    Shift B: 08:00 PM -> 08:30 AM
+    Shift A : 08:30 AM -> 08:00 PM
+    Break   : 08:00 PM -> 08:30 PM
+    Shift B : 08:30 PM -> 08:00 AM
+    Break   : 08:00 AM -> 08:30 AM
     """
 
     now_local = timezone.localtime(timezone.now())
-
-    current_date = now_local.date()
+    today = now_local.date()
     current_time = now_local.time()
+    tz = timezone.get_current_timezone()
 
-    shift_a_start = dt_time(8, 30)
-    shift_a_end = dt_time(20, 0)
-
-    current_tz = timezone.get_current_timezone()
-
-    # ===========================
     # SHIFT A
-    # ===========================
-    if shift_a_start <= current_time < shift_a_end:
-
+    if dt_time(8, 30) <= current_time < dt_time(20, 0):
         shift = "A"
 
-        start_naive = datetime.combine(current_date, dt_time(8, 30))
+        start = timezone.make_aware(
+            datetime.combine(today, dt_time(8, 30)),
+            tz
+        )
 
-        end_naive = datetime.combine(current_date, dt_time(20, 0))
+        end = timezone.make_aware(
+            datetime.combine(today, dt_time(20, 0)),
+            tz
+        )
 
-    # ===========================
-    # SHIFT B - after 8 PM
-    # ===========================
-    elif current_time >= shift_a_end:
+        return shift, start, end
 
+    # SHIFT B - Evening
+    if current_time >= dt_time(20, 30):
         shift = "B"
 
-        start_naive = datetime.combine(current_date, dt_time(20, 0))
+        start = timezone.make_aware(
+            datetime.combine(today, dt_time(20, 30)),
+            tz
+        )
 
-        end_naive = datetime.combine(current_date + timedelta(days=1), dt_time(8, 30))
+        end = timezone.make_aware(
+            datetime.combine(today + timedelta(days=1), dt_time(8, 0)),
+            tz
+        )
 
-    # ===========================
-    # SHIFT B - midnight -> 8:30
-    # ===========================
+        return shift, start, end
+
+    # SHIFT B - After midnight
+    if current_time < dt_time(8, 0):
+        shift = "B"
+
+        start = timezone.make_aware(
+            datetime.combine(today - timedelta(days=1), dt_time(20, 30)),
+            tz
+        )
+
+        end = timezone.make_aware(
+            datetime.combine(today, dt_time(8, 0)),
+            tz
+        )
+
+        return shift, start, end
+
+    # 08:00-08:30 AM or 08:00-08:30 PM = shift gap
+    return None, None, None
+
+def get_assignment_shift_end(assignment):
+    """
+    Assignment jis shift me create hua tha,
+    us shift ka exact end return karega.
+    """
+
+    start_local = timezone.localtime(assignment.start_time)
+    date = start_local.date()
+    tz = timezone.get_current_timezone()
+
+    if assignment.shift == "A":
+        end_naive = datetime.combine(
+            date,
+            dt_time(20, 0)
+        )
+
+    elif assignment.shift == "B":
+
+        # Evening me start hua B shift
+        if start_local.time() >= dt_time(20, 30):
+            end_naive = datetime.combine(
+                date + timedelta(days=1),
+                dt_time(8, 0)
+            )
+
+        # Midnight ke baad assignment hua
+        else:
+            end_naive = datetime.combine(
+                date,
+                dt_time(8, 0)
+            )
+
     else:
+        return None
 
-        shift = "B"
-
-        start_naive = datetime.combine(current_date - timedelta(days=1), dt_time(20, 0))
-
-        end_naive = datetime.combine(current_date, dt_time(8, 30))
-
-    shift_start = timezone.make_aware(start_naive, current_tz)
-
-    shift_end = timezone.make_aware(end_naive, current_tz)
-
-    return shift, shift_start, shift_end
-
-
-def close_expired_operator_assignments():
-    """
-    Any assignment created before the CURRENT shift started
-    must no longer remain active.
-    """
-
-    current_shift, shift_start, shift_end = get_current_operator_shift()
-
-    expired_assignments = OperatorAssignment.objects.filter(
-        is_current=True,
-        start_time__lt=shift_start,
+    return timezone.make_aware(
+        end_naive,
+        tz
     )
 
-    updated_count = expired_assignments.update(
-        status="Completed",
-        reason="Shift Over",
-        end_time=shift_start,
-        is_current=False,
+
+PLANT_DATA_TABLES = {
+    "plant_1": '"live_data"."plant1_data"',
+    "plant_2": '"live_data"."plant2_data"',
+}
+
+
+def get_operator_last_count_time(
+    plant,
+    machine_no,
+    start_time,
+    end_time,
+):
+    """
+    Operator assignment start hone ke baad aur shift/operator
+    end hone se pehle ka LAST valid production count time.
+    """
+
+    table = PLANT_DATA_TABLES.get(plant)
+
+    if not table:
+        return None
+
+    start_local = timezone.localtime(start_time)
+    end_local = timezone.localtime(end_time)
+
+    # plant1_data / plant2_data timestamps local DB time hain
+    start_naive = start_local.replace(
+        tzinfo=None,
+        microsecond=0,
     )
 
-    return updated_count
+    end_naive = end_local.replace(
+        tzinfo=None,
+        microsecond=0,
+    )
+
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT MAX(timestamp)
+                FROM {table}
+                WHERE TRIM(machine_no::text) = %s
+                  AND timestamp >= %s
+                  AND timestamp <= %s
+                  AND COALESCE(count, 0) > 0
+                """,
+                [
+                    str(machine_no),
+                    start_naive,
+                    end_naive,
+                ],
+            )
+
+            row = cursor.fetchone()
+
+        if not row or not row[0]:
+            return None
+
+        last_count = row[0]
+
+        if timezone.is_naive(last_count):
+            last_count = timezone.make_aware(
+                last_count,
+                timezone.get_current_timezone(),
+            )
+
+        return last_count
+
+    except Exception as e:
+        print(
+            f"❌ Last count error | "
+            f"{plant} | M{machine_no} | {e}"
+        )
+        return None
+
+
+def close_expired_operator_assignments(plant=None):
+    """
+    Close ONLY assignments whose own shift has actually finished.
+
+    Important:
+    - Temporary machine OFF/ON does NOT close the operator assignment.
+    - Operator change is handled separately at the actual change time.
+    - Shift completion always saves the exact scheduled shift end time.
+    - Last production count time is NOT used as assignment.end_time.
+    """
+
+    now = timezone.now()
+
+    active_assignments = OperatorAssignment.objects.filter(
+        is_current=True
+    )
+
+    if plant:
+        active_assignments = active_assignments.filter(
+            plant=plant
+        )
+
+    completed_count = 0
+
+    for assignment in active_assignments:
+
+        shift_end = get_assignment_shift_end(
+            assignment
+        )
+
+        if not shift_end:
+            continue
+
+        # Shift is still running -> keep assignment active.
+        if now < shift_end:
+            continue
+
+        # Shift is over.
+        # Save EXACT scheduled shift end time, even if this function
+        # runs a few minutes later and even if the last count was earlier.
+        assignment.status = "Completed"
+        assignment.reason = "Shift Over"
+        assignment.end_time = shift_end
+        assignment.is_current = False
+
+        assignment.save(
+            update_fields=[
+                "status",
+                "reason",
+                "end_time",
+                "is_current",
+            ]
+        )
+
+        completed_count += 1
+
+        print(
+            f"✅ OPERATOR SHIFT CLOSED | "
+            f"{assignment.plant} | "
+            f"M{assignment.machine_no} | "
+            f"{assignment.operator_name} | "
+            f"Start={assignment.start_time} | "
+            f"End={shift_end}"
+        )
+
+    return completed_count
+
 
 @api_view(["POST"])
 def end_operator_shift(request):
     """
-    Manually complete all active assignments
-    for selected plant.
+    Close active assignments only when their scheduled shift is actually over.
+
+    This endpoint will NOT close operators early.
+    end_time is always the exact scheduled shift end.
     """
 
     try:
@@ -5616,25 +5790,25 @@ def end_operator_shift(request):
                 status=400,
             )
 
-        now = timezone.now()
+        completed_count = close_expired_operator_assignments(
+            plant=plant
+        )
 
-        assignments = OperatorAssignment.objects.filter(
+        still_active = OperatorAssignment.objects.filter(
             plant=plant,
             is_current=True,
-        )
-
-        completed_count = assignments.update(
-            status="Completed",
-            reason="Shift Over",
-            end_time=now,
-            is_current=False,
-        )
+        ).count()
 
         return Response(
             {
                 "success": True,
-                "message": "Shift completed successfully",
+                "message": (
+                    "Expired shift assignments closed successfully."
+                    if completed_count
+                    else "No shift-over assignment found yet."
+                ),
                 "completed_assignments": completed_count,
+                "still_active_assignments": still_active,
             }
         )
 
@@ -5651,6 +5825,728 @@ def end_operator_shift(request):
 
 
 # ========== NEW OPERATOR ASSIGNMENT APIs ==========
+
+
+def get_user_allowed_plants(user):
+    """
+    Returns plants this logged-in user is allowed to access.
+    """
+
+    if not user or not user.is_authenticated:
+        return []
+
+    # Admin can access both plants
+    if user.is_superuser:
+        return ["plant_1", "plant_2"]
+
+    groups = {
+        str(name).strip().lower() for name in user.groups.values_list("name", flat=True)
+    }
+
+    allowed = []
+
+    if "plant_1_user" in groups:
+        allowed.append("plant_1")
+
+    if "plant_2_user" in groups:
+        allowed.append("plant_2")
+
+    return allowed
+
+
+def resolve_user_plant(request):
+    """
+    Normal user:
+        Plant automatically comes from login group.
+
+    Superuser / user having both plant groups:
+        requested plant is allowed.
+    """
+
+    allowed_plants = get_user_allowed_plants(request.user)
+
+    if not allowed_plants:
+        return None, [], "No plant access assigned to this user."
+
+    if request.method == "GET":
+        requested_plant = str(request.GET.get("plant") or "").strip().lower()
+    else:
+        requested_plant = str(request.data.get("plant") or "").strip().lower()
+
+    # User belongs to only one plant
+    if len(allowed_plants) == 1:
+        return allowed_plants[0], allowed_plants, None
+
+    # Admin / multi-plant user
+    if requested_plant in allowed_plants:
+        return requested_plant, allowed_plants, None
+
+    return allowed_plants[0], allowed_plants, None
+
+
+def operator_seconds_display(total_seconds):
+    total_seconds = max(0, int(total_seconds or 0))
+
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
+
+    if hours:
+        return f"{hours}h {minutes}m"
+
+    if minutes:
+        return f"{minutes}m {seconds}s"
+
+    return f"{seconds}s"
+
+
+def get_operator_period_window(period, anchor_date=None):
+    import pytz
+
+    ist = pytz.timezone("Asia/Kolkata")
+
+    if anchor_date:
+        selected_date = datetime.strptime(
+            anchor_date,
+            "%Y-%m-%d",
+        ).date()
+    else:
+        selected_date = timezone.localtime().date()
+
+    period = str(period or "today").lower()
+
+    if period == "today":
+
+        start_date = selected_date
+        end_date = selected_date + timedelta(days=1)
+
+    elif period == "weekly":
+
+        # Monday -> next Monday
+        start_date = selected_date - timedelta(days=selected_date.weekday())
+        end_date = start_date + timedelta(days=7)
+
+    elif period == "monthly":
+
+        start_date = selected_date.replace(day=1)
+
+        if start_date.month == 12:
+            end_date = start_date.replace(
+                year=start_date.year + 1,
+                month=1,
+            )
+        else:
+            end_date = start_date.replace(
+                month=start_date.month + 1,
+            )
+
+    elif period == "yearly":
+
+        start_date = selected_date.replace(
+            month=1,
+            day=1,
+        )
+
+        end_date = start_date.replace(
+            year=start_date.year + 1,
+        )
+
+    else:
+        raise ValueError("period must be today, weekly, monthly or yearly")
+
+    start = ist.localize(datetime.combine(start_date, dt_time.min))
+
+    end = ist.localize(datetime.combine(end_date, dt_time.min))
+
+    return start, end
+
+
+def get_operator_production(
+    plant,
+    machine_no,
+    start_at,
+    end_at,
+):
+    import pytz
+
+    ist = pytz.timezone("Asia/Kolkata")
+
+    table_map = {
+        "plant_1": "live_data.plant1_data",
+        "plant_2": "live_data.plant2_data",
+    }
+
+    table_name = table_map[plant]
+
+    # Production timestamp is WITHOUT TIME ZONE.
+    # Convert assignment timestamps to local IST naive timestamps.
+    start_naive = start_at.astimezone(ist).replace(tzinfo=None)
+
+    end_naive = end_at.astimezone(ist).replace(tzinfo=None)
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"""
+            SELECT COALESCE(SUM(count), 0)
+            FROM {table_name}
+            WHERE TRIM(machine_no::text) = %s
+              AND timestamp >= %s::timestamp WITHOUT TIME ZONE
+              AND timestamp <  %s::timestamp WITHOUT TIME ZONE
+            """,
+            [
+                str(machine_no),
+                start_naive,
+                end_naive,
+            ],
+        )
+
+        result = cursor.fetchone()
+
+    return int(result[0] or 0)
+
+
+def merge_operator_intervals(intervals):
+    if not intervals:
+        return []
+
+    intervals = sorted(
+        [(start, end) for start, end in intervals if start and end and end > start],
+        key=lambda x: x[0],
+    )
+
+    if not intervals:
+        return []
+
+    merged = [list(intervals[0])]
+
+    for start, end in intervals[1:]:
+
+        last_start, last_end = merged[-1]
+
+        if start <= last_end:
+            if end > last_end:
+                merged[-1][1] = end
+        else:
+            merged.append([start, end])
+
+    return [(start, end) for start, end in merged]
+
+
+def subtract_operator_intervals(base, blocked):
+    base = merge_operator_intervals(base)
+    blocked = merge_operator_intervals(blocked)
+
+    result = []
+
+    for base_start, base_end in base:
+
+        pieces = [(base_start, base_end)]
+
+        for block_start, block_end in blocked:
+
+            next_pieces = []
+
+            for piece_start, piece_end in pieces:
+
+                if block_end <= piece_start or block_start >= piece_end:
+                    next_pieces.append((piece_start, piece_end))
+                    continue
+
+                if piece_start < block_start:
+                    next_pieces.append((piece_start, block_start))
+
+                if block_end < piece_end:
+                    next_pieces.append((block_end, piece_end))
+
+            pieces = next_pieces
+
+        result.extend(pieces)
+
+    return result
+
+
+def get_operator_idle_seconds(
+    plant,
+    machine_no,
+    assignment_start,
+    assignment_end,
+):
+    plant_location = "Plant 1" if plant == "plant_1" else "Plant 2"
+
+    try:
+        machine_number = int(machine_no)
+    except (TypeError, ValueError):
+        return 0, 0
+
+    # One-hour lookback lets us rebuild a HOUR_CHANGE chain
+    # which started immediately before the operator assignment.
+    lookup_start = assignment_start - timedelta(hours=1)
+
+    rows = list(
+        IdealTimeSegmentReason.objects.filter(
+            plant_location=plant_location,
+            machine_no=machine_number,
+            ideal_start_at__lt=assignment_end,
+        )
+        .filter(Q(ideal_end_at__gt=lookup_start) | Q(ideal_end_at__isnull=True))
+        .values(
+            "id",
+            "ideal_mode",
+            "ideal_start_at",
+            "ideal_end_at",
+            "ideal_time",
+            "closed_by",
+        )
+        .order_by(
+            "ideal_start_at",
+            "id",
+        )
+    )
+
+    now = timezone.now()
+
+    # Remove exact duplicate physical rows.
+    unique = {}
+
+    for row in rows:
+
+        mode = str(row["ideal_mode"] or "").strip().upper()
+
+        if mode not in ["ONLINE", "OFFLINE"]:
+            continue
+
+        start = row["ideal_start_at"]
+
+        if not start:
+            continue
+
+        if row["ideal_end_at"]:
+            end = row["ideal_end_at"]
+
+            if int(row["ideal_time"] or 0) <= 0:
+                continue
+        else:
+            end = min(
+                now,
+                assignment_end,
+            )
+
+        if end <= start:
+            continue
+
+        key = (
+            mode,
+            start,
+            end,
+        )
+
+        old = unique.get(key)
+
+        if old is None or int(row["id"]) > int(old["id"]):
+            row["_effective_end"] = end
+            row["_mode"] = mode
+            unique[key] = row
+
+    clean_rows = sorted(
+        unique.values(),
+        key=lambda r: (
+            r["_mode"],
+            r["ideal_start_at"],
+            r["id"],
+        ),
+    )
+
+    final_intervals = {
+        "ONLINE": [],
+        "OFFLINE": [],
+    }
+
+    # Build logical event chains.
+    for mode in ["ONLINE", "OFFLINE"]:
+
+        mode_rows = [row for row in clean_rows if row["_mode"] == mode]
+
+        current_group = []
+
+        def finish_group(group):
+
+            if not group:
+                return
+
+            logical_start = group[0]["ideal_start_at"]
+            logical_end = group[-1]["_effective_end"]
+
+            if logical_end <= logical_start:
+                return
+
+            logical_seconds = int((logical_end - logical_start).total_seconds())
+
+            # Same threshold used by your current
+            # machine-history logic.
+            # ONLINE idle only after 3 minutes
+            if mode == "ONLINE" and logical_seconds < 180:
+                return
+
+            # OFFLINE time counts immediately
+            if mode == "OFFLINE" and logical_seconds <= 0:
+                return
+
+            overlap_start = max(
+                logical_start,
+                assignment_start,
+            )
+
+            overlap_end = min(
+                logical_end,
+                assignment_end,
+            )
+
+            if overlap_end > overlap_start:
+                final_intervals[mode].append(
+                    (
+                        overlap_start,
+                        overlap_end,
+                    )
+                )
+
+        for row in mode_rows:
+
+            if not current_group:
+                current_group = [row]
+                continue
+
+            previous = current_group[-1]
+
+            previous_end = previous["_effective_end"]
+            current_start = row["ideal_start_at"]
+
+            gap = abs((current_start - previous_end).total_seconds())
+
+            same_logical_event = (
+                str(previous["closed_by"] or "").strip().upper() == "HOUR_CHANGE"
+                and gap <= 2
+            )
+
+            if same_logical_event:
+                current_group.append(row)
+            else:
+                finish_group(current_group)
+                current_group = [row]
+
+        finish_group(current_group)
+
+    offline_ranges = merge_operator_intervals(final_intervals["OFFLINE"])
+
+    online_ranges = merge_operator_intervals(final_intervals["ONLINE"])
+
+    # Machine cannot be ONLINE-idle and OFFLINE
+    # during the same physical seconds.
+    online_ranges = subtract_operator_intervals(
+        online_ranges,
+        offline_ranges,
+    )
+
+    online_seconds = sum(
+        int((end - start).total_seconds()) for start, end in online_ranges
+    )
+
+    offline_seconds = sum(
+        int((end - start).total_seconds()) for start, end in offline_ranges
+    )
+
+    return online_seconds, offline_seconds
+
+
+@never_cache
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def get_operator_profile_history(request):
+    try:
+
+        close_expired_operator_assignments()
+        operator_id = request.GET.get("operator_id")
+
+        if not operator_id:
+            return Response(
+                {
+                    "success": False,
+                    "message": "operator_id is required",
+                },
+                status=400,
+            )
+
+        period = str(
+            request.GET.get(
+                "period",
+                "today",
+            )
+        ).lower()
+
+        selected_date = request.GET.get("date")
+
+        plant, allowed_plants, error = resolve_user_plant(request)
+
+        if error:
+            return Response(
+                {
+                    "success": False,
+                    "message": error,
+                },
+                status=403,
+            )
+
+        try:
+            period_start, period_end = get_operator_period_window(
+                period,
+                selected_date,
+            )
+        except ValueError as e:
+            return Response(
+                {
+                    "success": False,
+                    "message": str(e),
+                },
+                status=400,
+            )
+
+        operator = Operator.objects.filter(
+            id=operator_id,
+            plant=plant,
+            is_active=True,
+        ).first()
+
+        if not operator:
+            return Response(
+                {
+                    "success": False,
+                    "message": ("Operator not found in your plant."),
+                },
+                status=404,
+            )
+
+        # Assignment overlaps selected period.
+        assignments = (
+            OperatorAssignment.objects.filter(
+                plant=plant,
+                operator_id=operator.id,
+                start_time__lt=period_end,
+            )
+            .filter(Q(end_time__gt=period_start) | Q(end_time__isnull=True))
+            .order_by("start_time", "id")
+        )
+
+        now = timezone.now()
+
+        assignment_history = []
+
+        total_production = 0
+        total_assigned_seconds = 0
+        total_online_idle_seconds = 0
+        total_offline_idle_seconds = 0
+
+        for assignment in assignments:
+
+            effective_start = max(
+                assignment.start_time,
+                period_start,
+            )
+
+            actual_end = assignment.end_time if assignment.end_time else now
+
+            effective_end = min(
+                actual_end,
+                period_end,
+            )
+
+            if effective_end <= effective_start:
+                continue
+
+            duration_seconds = int((effective_end - effective_start).total_seconds())
+
+            production = get_operator_production(
+                plant=plant,
+                machine_no=assignment.machine_no,
+                start_at=effective_start,
+                end_at=effective_end,
+            )
+
+            (
+                online_idle_seconds,
+                offline_idle_seconds,
+            ) = get_operator_idle_seconds(
+                plant=plant,
+                machine_no=assignment.machine_no,
+                assignment_start=effective_start,
+                assignment_end=effective_end,
+            )
+
+            total_production += production
+
+            total_assigned_seconds += duration_seconds
+
+            total_online_idle_seconds += online_idle_seconds
+
+            total_offline_idle_seconds += offline_idle_seconds
+
+            assignment_history.append(
+                {
+                    "id": assignment.id,
+                    "machine_no": assignment.machine_no,
+                    "shift": assignment.shift,
+                    "status": assignment.status,
+                    "reason": assignment.reason,
+                    "remarks": assignment.remarks,
+                    "is_current": assignment.is_current,
+                    "start_time": (timezone.localtime(effective_start).isoformat()),
+                    "end_time": (timezone.localtime(effective_end).isoformat()),
+                    "duration_seconds": (duration_seconds),
+                    "duration_display": (operator_seconds_display(duration_seconds)),
+                    "production": production,
+                    "online_idle_seconds": (online_idle_seconds),
+                    "online_idle_display": (
+                        operator_seconds_display(online_idle_seconds)
+                    ),
+                    "offline_idle_seconds": (offline_idle_seconds),
+                    "offline_idle_display": (
+                        operator_seconds_display(offline_idle_seconds)
+                    ),
+                }
+            )
+
+        current_assignment = (
+            OperatorAssignment.objects.filter(
+                plant=plant,
+                operator_id=operator.id,
+                is_current=True,
+            )
+            .order_by("-start_time", "-id")
+            .first()
+        )
+
+        previous_assignment = (
+            OperatorAssignment.objects.filter(
+                plant=plant,
+                operator_id=operator.id,
+                is_current=False,
+            )
+            .order_by(
+                "-end_time",
+                "-start_time",
+                "-id",
+            )
+            .first()
+        )
+
+        if current_assignment:
+
+            current_status = {
+                "status": "Assigned",
+                "machine_no": (current_assignment.machine_no),
+                "shift": current_assignment.shift,
+                "since": (
+                    timezone.localtime(current_assignment.start_time).isoformat()
+                ),
+            }
+
+        else:
+
+            current_status = {
+                "status": "Free",
+                "machine_no": None,
+                "shift": None,
+                "since": (
+                    timezone.localtime(previous_assignment.end_time).isoformat()
+                    if (previous_assignment and previous_assignment.end_time)
+                    else None
+                ),
+            }
+
+        productive_seconds = max(
+            0,
+            total_assigned_seconds
+            - total_online_idle_seconds
+            - total_offline_idle_seconds,
+        )
+
+        return Response(
+            {
+                "success": True,
+                "plant": plant,
+                "allowed_plants": allowed_plants,
+                "period": period,
+                "period_start": (timezone.localtime(period_start).isoformat()),
+                "period_end": (timezone.localtime(period_end).isoformat()),
+                "operator": {
+                    "id": operator.id,
+                    "name": operator.name,
+                    "employee_code": (
+                        getattr(
+                            operator,
+                            "employee_code",
+                            "",
+                        )
+                        or ""
+                    ),
+                    # These return null/blank if those
+                    # fields don't exist in your Operator model.
+                    "department": getattr(
+                        operator,
+                        "department",
+                        None,
+                    ),
+                    "phone": getattr(
+                        operator,
+                        "phone",
+                        None,
+                    ),
+                    "email": getattr(
+                        operator,
+                        "email",
+                        None,
+                    ),
+                },
+                "current_status": current_status,
+                "insights": {
+                    "total_production": (total_production),
+                    "working_seconds": (total_assigned_seconds),
+                    "working_display": (
+                        operator_seconds_display(total_assigned_seconds)
+                    ),
+                    "productive_seconds": (productive_seconds),
+                    "productive_display": (
+                        operator_seconds_display(productive_seconds)
+                    ),
+                    "online_idle_seconds": (total_online_idle_seconds),
+                    "online_idle_display": (
+                        operator_seconds_display(total_online_idle_seconds)
+                    ),
+                    "offline_idle_seconds": (total_offline_idle_seconds),
+                    "offline_idle_display": (
+                        operator_seconds_display(total_offline_idle_seconds)
+                    ),
+                    "assignment_count": len(assignment_history),
+                    "previous_machine": (
+                        previous_assignment.machine_no if previous_assignment else None
+                    ),
+                },
+                "assignment_history": (assignment_history),
+                # Same data is suitable for the
+                # Work Breakdown cards.
+                "work_breakdown": (assignment_history),
+            }
+        )
+
+    except Exception as e:
+        traceback.print_exc()
+
+        return Response(
+            {
+                "success": False,
+                "error": str(e),
+            },
+            status=500,
+        )
+
 
 @api_view(["GET"])
 def get_previous_operator_assignment(request):
@@ -5675,8 +6571,7 @@ def get_previous_operator_assignment(request):
             )
 
         previous = (
-            OperatorAssignment.objects
-            .filter(
+            OperatorAssignment.objects.filter(
                 plant=plant,
                 machine_no=str(machine_no),
                 is_current=False,
@@ -5709,16 +6604,12 @@ def get_previous_operator_assignment(request):
                     "status": previous.status,
                     "reason": previous.reason,
                     "start_time": (
-                        timezone.localtime(
-                            previous.start_time
-                        ).isoformat()
+                        timezone.localtime(previous.start_time).isoformat()
                         if previous.start_time
                         else None
                     ),
                     "end_time": (
-                        timezone.localtime(
-                            previous.end_time
-                        ).isoformat()
+                        timezone.localtime(previous.end_time).isoformat()
                         if previous.end_time
                         else None
                     ),
@@ -5727,9 +6618,7 @@ def get_previous_operator_assignment(request):
         )
 
     except Exception as e:
-        print(
-            f"Previous assignment error: {e}"
-        )
+        print(f"Previous assignment error: {e}")
 
         return Response(
             {
@@ -5742,36 +6631,60 @@ def get_previous_operator_assignment(request):
 
 from django.db.models.functions import Lower
 
-@api_view(["GET"])
-def get_operators_by_plant(request):
-    """Get operators for selected plant - alphabetically sorted"""
-    try:
-        plant = request.GET.get("plant", "plant_2")
 
-        if plant not in ["plant_1", "plant_2"]:
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def get_operators_by_plant(request):
+    try:
+        plant, allowed_plants, error = resolve_user_plant(request)
+
+        if error:
             return Response(
-                {"success": False, "message": "Invalid plant. Use plant_1 or plant_2"},
-                status=400,
+                {
+                    "success": False,
+                    "message": error,
+                },
+                status=403,
             )
 
-        operators = (
-            Operator.objects.filter(plant=plant, is_active=True)
-            .order_by(Lower("name"))
-            .values("id", "name")
+        search = str(request.GET.get("q") or "").strip()
+
+        operators = Operator.objects.filter(
+            plant=plant,
+            is_active=True,
+        )
+
+        if search:
+            operators = operators.filter(
+                Q(name__icontains=search) | Q(employee_code__icontains=search)
+            )
+
+        operators = operators.order_by(Lower("name")).values(
+            "id",
+            "name",
+            "employee_code",
         )
 
         return Response(
             {
                 "success": True,
                 "plant": plant,
+                "allowed_plants": allowed_plants,
                 "operators": list(operators),
-                "count": len(operators),
+                "count": operators.count(),
             }
         )
 
     except Exception as e:
         print(f"❌ Error fetching operators: {e}")
-        return Response({"success": False, "error": str(e)}, status=500)
+
+        return Response(
+            {
+                "success": False,
+                "error": str(e),
+            },
+            status=500,
+        )
 
 
 @api_view(["POST"])
@@ -5860,87 +6773,198 @@ from .models import Operator, OperatorAssignment  # Ensure ye models imported ha
 
 
 @api_view(["POST"])
+@permission_classes([IsAuthenticated])
 def save_operator_assignment(request):
-    """Save operator assignment to machine"""
+    """Save operator assignment to an ONLINE machine."""
+
     try:
+        # First close only assignments whose previous shift has actually ended.
         close_expired_operator_assignments()
-        plant = request.data.get("plant")
-        operator_name = request.data.get("operator_name")
-        machine_no = request.data.get("machine_no")
-        shift, shift_start, shift_end = get_current_operator_shift()
-        assigned_by = request.data.get("assigned_by", "Admin")
 
-        # Frontend se override ka order
-        override = request.data.get("override", False)
+        # Plant is resolved from logged-in user.
+        plant, allowed_plants, error = resolve_user_plant(request)
 
-        if not all([plant, operator_name, machine_no, shift]):
+        if error:
             return Response(
-                {"success": False, "message": "All fields are required"}, status=400
+                {
+                    "success": False,
+                    "message": error,
+                },
+                status=403,
             )
 
-        # 1. Operator ID nikalo
+        operator_name = request.data.get("operator_name")
+        machine_no = request.data.get("machine_no")
+        assigned_by = request.user.username
+        override = request.data.get("override", False)
+
+        # Resolve current shift only once.
+        shift, shift_start, shift_end = get_current_operator_shift()
+
+        # 08:00-08:30 gap: no active shift, so no new assignment.
+        if not shift:
+            return Response(
+                {
+                    "success": False,
+                    "message": (
+                        "No active shift right now. "
+                        "Operator assignment is not allowed."
+                    ),
+                },
+                status=400,
+            )
+
+        if not operator_name or not machine_no:
+            return Response(
+                {
+                    "success": False,
+                    "message": "Operator and machine are required",
+                },
+                status=400,
+            )
+
+        # Operator ID.
         if operator_name == "No Operator Available":
             operator_id = 0
         else:
             operator = Operator.objects.filter(
-                name=operator_name, plant=plant, is_active=True
+                name=operator_name,
+                plant=plant,
+                is_active=True,
             ).first()
+
             if not operator:
-                return Response(
-                    {"success": False, "message": "Operator not found"}, status=404
-                )
-            operator_id = operator.id
-
-        # 2. Check karo kya Machine pehle se busy hai?
-        existing_machine = OperatorAssignment.objects.filter(
-            plant=plant, machine_no=str(machine_no), is_current=True
-        ).first()
-
-        # 3. Check karo kya Operator kisi aur machine par busy hai?
-        existing_operator = OperatorAssignment.objects.filter(
-            plant=plant, operator_id=operator_id, is_current=True
-        ).first()
-
-        # Agar Override FALSE hai aur koi ek bhi busy hai, toh error do
-        if not override:
-            if existing_machine:
-                return Response(
-                    {"success": False, "message": f"Machine {machine_no} is busy"},
-                    status=400,
-                )
-            if existing_operator and operator_id != 0:
                 return Response(
                     {
                         "success": False,
-                        "message": f"{operator_name} is busy on Machine {existing_operator.machine_no}",
+                        "message": "Operator not found",
+                    },
+                    status=404,
+                )
+
+            operator_id = operator.id
+
+        # Machine must be ONLINE for a NEW assignment.
+        # Existing assignments are NOT removed when a machine temporarily
+        # goes OFFLINE (lunch/tea/material wait/etc.).
+        if not is_machine_online_for_assignment(
+            plant,
+            machine_no,
+        ):
+            return Response(
+                {
+                    "success": False,
+                    "message": (
+                        f"Machine {machine_no} is OFFLINE. "
+                        "Operator cannot be assigned."
+                    ),
+                },
+                status=409,
+            )
+
+        # Current assignment on this machine.
+        existing_machine = OperatorAssignment.objects.filter(
+            plant=plant,
+            machine_no=str(machine_no),
+            is_current=True,
+        ).first()
+
+        # Current assignment of this operator on another machine.
+        existing_operator = OperatorAssignment.objects.filter(
+            plant=plant,
+            operator_id=operator_id,
+            is_current=True,
+        ).first()
+
+        # Same operator is already on the same machine:
+        # do not create a duplicate row.
+        if (
+            existing_machine
+            and existing_machine.operator_id == operator_id
+        ):
+            return Response(
+                {
+                    "success": True,
+                    "message": (
+                        f"{operator_name} is already assigned "
+                        f"to Machine {machine_no}"
+                    ),
+                    "assignment": {
+                        "id": existing_machine.id,
+                    },
+                },
+                status=200,
+            )
+
+        # Normal assignment: machine and operator both must be free.
+        if not override:
+            if existing_machine:
+                return Response(
+                    {
+                        "success": False,
+                        "message": f"Machine {machine_no} is busy",
                     },
                     status=400,
                 )
 
-        # 🔥 SMART LOGIC: Agar Override TRUE hai, toh dono ko purani duty se free karo!
+            if existing_operator and operator_id != 0:
+                return Response(
+                    {
+                        "success": False,
+                        "message": (
+                            f"{operator_name} is busy on Machine "
+                            f"{existing_operator.machine_no}"
+                        ),
+                    },
+                    status=400,
+                )
+
+        # Reallocation / operator change.
+        # Old assignment closes at the EXACT operator-change time.
         if override:
-            # A. Agar machine par pehle se koi (Abhishek) tha, usko hatao
+            change_time = timezone.now()
+
             if existing_machine:
                 existing_machine.status = "Transferred"
-                existing_machine.end_time = timezone.now()
+                existing_machine.end_time = change_time
                 existing_machine.is_current = False
-                existing_machine.save()
+                existing_machine.save(
+                    update_fields=[
+                        "status",
+                        "end_time",
+                        "is_current",
+                    ]
+                )
 
-            # B. Agar naya operator (Bablu) pehle kisi aur machine par tha, uski wo duty khatam karo
-            if existing_operator and operator_id != 0:
+            if (
+                existing_operator
+                and operator_id != 0
+                and (
+                    not existing_machine
+                    or existing_operator.id != existing_machine.id
+                )
+            ):
                 existing_operator.status = "Transferred"
-                existing_operator.end_time = timezone.now()
+                existing_operator.end_time = change_time
                 existing_operator.is_current = False
-                existing_operator.save()
+                existing_operator.save(
+                    update_fields=[
+                        "status",
+                        "end_time",
+                        "is_current",
+                    ]
+                )
+        else:
+            change_time = timezone.now()
 
-        # 4. Naya Assignment Banao (Bablu -> Machine 2)
+        # New/current assignment.
         assignment = OperatorAssignment.objects.create(
             plant=plant,
             operator_id=operator_id,
             operator_name=operator_name,
             machine_no=str(machine_no),
             shift=shift,
-            start_time=timezone.now(),
+            start_time=change_time,
             status="Assigned",
             reason="Operator Reallocated" if override else "Initial Assignment",
             remarks="",
@@ -5952,13 +6976,51 @@ def save_operator_assignment(request):
             {
                 "success": True,
                 "message": f"{operator_name} assigned successfully",
-                "assignment": {"id": assignment.id},
+                "assignment": {
+                    "id": assignment.id,
+                },
             }
         )
 
     except Exception as e:
+        import traceback
+
         print(f"❌ Error saving assignment: {e}")
-        return Response({"success": False, "error": str(e)}, status=500)
+        traceback.print_exc()
+
+        return Response(
+            {
+                "success": False,
+                "error": str(e),
+            },
+            status=500,
+        )
+
+
+def is_machine_online_for_assignment(plant, machine_no):
+
+    machine_no = int(machine_no)
+
+    if plant == "plant_1":
+        from apps.mqtt.simple_plant1 import (
+            PLANT1_EXACT_REQUIREMENT_STATE as state
+        )
+
+    elif plant == "plant_2":
+        from apps.mqtt.simple_plant2 import (
+            PLANT2_EXACT_REQUIREMENT_STATE as state
+        )
+
+    else:
+        return False
+
+    status_info = state.get_machine_status(
+        machine_no
+    )
+
+    return bool(
+        status_info.get("machine_on")
+    )
 
 
 @api_view(["GET"])
@@ -6014,20 +7076,52 @@ def get_operator_assignments(request):
 
 
 @api_view(["POST"])
+@permission_classes([IsAuthenticated])
 def transfer_operator(request):
     """Transfer operator from one machine to another"""
 
     try:
-        operator_name = request.data.get("operator_name")
-        plant = request.data.get("plant")
-        from_machine = str(request.data.get("from_machine"))
-        to_machine = str(request.data.get("to_machine"))
-        shift = request.data.get("shift")
-        reason = request.data.get("reason", "")
-        remarks = request.data.get("remarks", "")
-        assigned_by = request.data.get("assigned_by", "Admin")
+        close_expired_operator_assignments()
 
-        if not all([operator_name, plant, from_machine, to_machine, shift]):
+        plant, allowed_plants, error = resolve_user_plant(request)
+
+        if error:
+            return Response(
+                {
+                    "success": False,
+                    "message": error,
+                },
+                status=403,
+            )
+
+        operator_name = request.data.get("operator_name")
+
+        from_machine = str(request.data.get("from_machine") or "").strip()
+
+        to_machine = str(request.data.get("to_machine") or "").strip()
+
+        shift = request.data.get("shift")
+
+        reason = request.data.get(
+            "reason",
+            "",
+        )
+
+        remarks = request.data.get(
+            "remarks",
+            "",
+        )
+
+        assigned_by = request.user.username
+
+        if not all(
+            [
+                operator_name,
+                from_machine,
+                to_machine,
+                shift,
+            ]
+        ):
             return Response(
                 {
                     "success": False,
@@ -6035,6 +7129,9 @@ def transfer_operator(request):
                 },
                 status=400,
             )
+
+        # your existing code continues from:
+        # current = OperatorAssignment.objects.filter(...)
 
         # Check current assignment
         current = OperatorAssignment.objects.filter(
