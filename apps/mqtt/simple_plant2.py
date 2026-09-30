@@ -9886,30 +9886,37 @@ def auto_generate_idle_notification(machine_no, idle_mins):
         # On form submit:
         #   user_id = request.user.id
         # ==========================================================
+                #Aman palll
+                        #from here 
+                  #onlyyy you have to uncomment this part if you want to create notification in database, otherwise it will just print the message in console.
+          
+          
+        # notification, created = Notification.objects.get_or_create(
+        #     ideal_event=canonical_ideal_event,
+        #     defaults={
+        #         "message": message,
+        #         "is_read": False,
+        #         # Notification actually jab create ho
+        #         # wahi timestamp save hoga.
+        #         "created_at": timezone.now(),
+        #         # Reason submit hone tak NULL
+        #         "user": None,
+        #     },
+        # )
 
-        notification, created = Notification.objects.get_or_create(
-            ideal_event=canonical_ideal_event,
-            defaults={
-                "message": message,
-                "is_read": False,
-                # Notification actually jab create ho
-                # wahi timestamp save hoga.
-                "created_at": timezone.now(),
-                # Reason submit hone tak NULL
-                "user": None,
-            },
-        )
-
-        print(
-            f"🔔 PLANT 2 IDLE ALERT | "
-            f"M{machine_no} | "
-            f"{ideal_mode} | "
-            f"Idle={idle_mins}m | "
-            f"IdealID={canonical_ideal_event.id} | "
-            f"NotificationID={notification.pk} | "
-            f"Created={created}",
-            flush=True,
-        )
+        # print(
+        #     f"🔔 PLANT 2 IDLE ALERT | "
+        #     f"M{machine_no} | "
+        #     f"{ideal_mode} | "
+        #     f"Idle={idle_mins}m | "
+        #     f"IdealID={canonical_ideal_event.id} | "
+        #     f"NotificationID={notification.pk} | "
+        #     f"Created={created}",
+        #     flush=True,
+        # )
+  
+        
+        # to here just print the message in console instead of creating notification in database.
 
         return True
 

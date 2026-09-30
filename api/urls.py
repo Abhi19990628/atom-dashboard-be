@@ -73,6 +73,11 @@ urlpatterns = [
         "assignment/history/", views.get_assignment_history, name="assignment_history"
     ),
     path(
+        "operator-profile-history/",
+        views.get_operator_profile_history,
+        name="operator-profile-history",
+    ),
+    path(
         "assignments/list/",
         views.get_operator_assignments,
         name="get_operator_assignments",
