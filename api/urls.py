@@ -194,4 +194,5 @@ urlpatterns = [
         views.attendance_employee_calendar,
         name="attendance_employee_calendar",
     ),
+    path('machine-tool-history/', views.machine_tool_and_height_history, name='machine_tool_and_height_history'),
 ]

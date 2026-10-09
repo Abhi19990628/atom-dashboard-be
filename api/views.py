@@ -10382,3 +10382,253 @@ def attendance_employee_calendar(request, paycode):
         return Response(
             {"success": False, "message": str(e), "records": []}, status=500
         )
+
+@never_cache
+@api_view(["GET"])
+def machine_tool_and_height_history(request):
+    """
+    Dedicated Fast API for Tool Change & Shut Height Change History.
+    Supports:
+      - ?plant_no=2&machine_no=11&days=1  (Today)
+      - ?plant_no=2&machine_no=11&days=2  (Last 2 Days)
+      - ?plant_no=2&machine_no=11&days=5  (Last 5 Days)
+      - ?plant_no=2&machine_no=11&start_date=2026-10-01&end_date=2026-10-06 (Custom Date Range)
+    Time Complexity: O(log N) DB Index Seek + O(K) single-pass Python parsing (where K = matched rows).
+    """
+    try:
+        import re
+        import pytz
+        from datetime import datetime, timedelta, time
+        from django.db import connection
+        from rest_framework.response import Response
+
+        plant_param = str(request.GET.get("plant_no") or request.GET.get("plant") or "1").strip().lower()
+        plant_no = 2 if "2" in plant_param else 1
+        machine_no = str(request.GET.get("machine_no", "")).strip()
+
+        if not machine_no:
+            return Response({"success": False, "error": "machine_no is required"}, status=400)
+
+        ist_tz = pytz.timezone("Asia/Kolkata")
+        now_ist = datetime.now(ist_tz)
+
+        # Date / Range Filtering Logic
+        days_param = request.GET.get("days", "").strip()
+        start_date_str = request.GET.get("start_date", "").strip()
+        end_date_str = request.GET.get("end_date", "").strip()
+        single_date_str = request.GET.get("date", "").strip()
+
+        if start_date_str and end_date_str:
+            s_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
+            e_date = datetime.strptime(end_date_str, "%Y-%m-%d").date()
+            start_dt = ist_tz.localize(datetime.combine(s_date, time(0, 0, 0)))
+            end_dt = ist_tz.localize(datetime.combine(e_date, time(23, 59, 59)))
+            filter_label = f"{start_date_str} to {end_date_str}"
+        elif days_param:
+            days_int = max(1, int(days_param))
+            if days_int == 1:
+                # 1 Day = Today from 00:00:00
+                start_dt = ist_tz.localize(datetime.combine(now_ist.date(), time(0, 0, 0)))
+                filter_label = "Today"
+            else:
+                # Last N days (including today)
+                s_date = now_ist.date() - timedelta(days=days_int - 1)
+                start_dt = ist_tz.localize(datetime.combine(s_date, time(0, 0, 0)))
+                filter_label = f"Last {days_int} Days"
+            end_dt = now_ist
+        elif single_date_str:
+            s_date = datetime.strptime(single_date_str, "%Y-%m-%d").date()
+            start_dt = ist_tz.localize(datetime.combine(s_date, time(0, 0, 0)))
+            end_dt = ist_tz.localize(datetime.combine(s_date, time(23, 59, 59)))
+            filter_label = single_date_str
+        else:
+            # Default: Today
+            start_dt = ist_tz.localize(datetime.combine(now_ist.date(), time(0, 0, 0)))
+            end_dt = now_ist
+            filter_label = "Today"
+
+        start_str_tz = start_dt.strftime("%Y-%m-%d %H:%M:%S+05:30")
+        end_str_tz = end_dt.strftime("%Y-%m-%d %H:%M:%S+05:30")
+
+        data_table = "live_data.plant1_data" if plant_no == 1 else "live_data.plant2_data"
+
+        # Pre-compiled Regex for O(1) parsing speed
+        re_from_height = re.compile(r"from\s+([0-9.]+)", re.IGNORECASE)
+        re_to_height = re.compile(r"to\s+([0-9.]+)", re.IGNORECASE)
+
+        # In-memory dictionary cache so _tid_payload is called only ONCE per unique tool_id
+        tool_meta_cache = {}
+
+        def get_cached_tool_meta(tid):
+            if not tid:
+                return {}
+            if tid not in tool_meta_cache:
+                try:
+                    meta = _tid_payload(tid) or {}
+                except Exception:
+                    meta = {}
+                meta["tool_id"] = tid
+                tool_meta_cache[tid] = meta
+            return tool_meta_cache[tid]
+
+        current_tool = {
+            "customer": "N/A",
+            "customer_name": "N/A",
+            "model": "N/A",
+            "model_name": "N/A",
+            "part_name": "N/A",
+            "part_number": "N/A",
+            "tool_name": "N/A",
+            "tool_id": "N/A",
+            "shut_height": "N/A",
+        }
+
+        with connection.cursor() as cursor:
+            # 1. Fetch Latest Running Tool & Shut Height (Fast LIMIT 1 query)
+            cursor.execute(
+                f"""
+                SELECT LOWER(LEFT(TRIM(tool_id::text), 24)) AS clean_tool_id, shut_height
+                FROM {data_table}
+                WHERE machine_no = %s
+                  AND tool_id IS NOT NULL
+                  AND LOWER(LEFT(TRIM(tool_id::text), 24)) ~ '^e2[0-9a-f]{{22}}$'
+                  AND LOWER(LEFT(TRIM(tool_id::text), 24)) NOT LIKE 'e000%%'
+                ORDER BY timestamp DESC
+                LIMIT 1
+                """,
+                [machine_no],
+            )
+            live_row = cursor.fetchone()
+            if live_row and live_row[0]:
+                norm_tid = _normalize_tool_id(live_row[0])
+                if norm_tid:
+                    current_tool.update(get_cached_tool_meta(norm_tid))
+                if live_row[1] is not None:
+                    current_tool["shut_height"] = str(live_row[1])
+
+            # 2. Fetch Event Logs in Ascending Order to detect exact Tool Transitions in O(K) single pass
+            cursor.execute(
+                """
+                SELECT id, event_type, timestamp, shift, details
+                FROM live_data."Machine_Event_Logs"
+                WHERE plant_no = %s
+                  AND machine_no = %s
+                  AND event_type IN ('TOOL_CHANGE', 'SHUT_HEIGHT_CHANGE')
+                  AND timestamp >= %s::timestamp WITH TIME ZONE
+                  AND timestamp <= %s::timestamp WITH TIME ZONE
+                ORDER BY timestamp ASC
+                """,
+                [plant_no, machine_no, start_str_tz, end_str_tz],
+            )
+            rows = cursor.fetchall()
+                                                                                                                       
+        tool_changes = []
+        shut_height_changes = []
+        last_seen_tool_id = None
+
+        for row_id, event_type, ts_obj, shift_val, details in rows:
+            details_str = str(details or "")
+
+            # Ignore invalid/dummy readings
+            if event_type == "SHUT_HEIGHT_CHANGE" and ("1.01" in details_str or "0.01" in details_str):
+                continue
+
+            if ts_obj.tzinfo is None:
+                ts_ist = ist_tz.localize(ts_obj)
+            else:
+                ts_ist = ts_obj.astimezone(ist_tz)
+
+            extracted_tid = _extract_tool_id_from_text(details_str)
+            if extracted_tid and "e000" in extracted_tid.lower():
+                extracted_tid = None
+
+            tool_meta = get_cached_tool_meta(extracted_tid) if extracted_tid else {}
+
+            base_event = {
+                "id": row_id,
+                "timestamp": ts_ist.isoformat(),
+                "system_time": ts_ist.strftime("%Y-%m-%d %H:%M:%S"),
+                "date": ts_ist.strftime("%Y-%m-%d"),
+                "time": ts_ist.strftime("%I:%M %p"),
+                "display_time": ts_ist.strftime("%d %b, %I:%M %p"),
+                "shift": shift_val or "A",
+                "details": details_str,
+                **tool_meta,
+            }
+
+            # Case A: Explicit TOOL_CHANGE row
+            if event_type == "TOOL_CHANGE":
+                if not extracted_tid:
+                    continue
+                if extracted_tid != last_seen_tool_id:
+                    tc_event = {
+                        **base_event,
+                        "type": "TOOL_CHANGE",
+                        "title": "Tool Changed",
+                        "previous_tool_id": last_seen_tool_id,
+                    }
+                    tool_changes.append(tc_event)
+                    last_seen_tool_id = extracted_tid
+
+            # Case B: SHUT_HEIGHT_CHANGE row
+            elif event_type == "SHUT_HEIGHT_CHANGE":
+                m_from = re_from_height.search(details_str)
+                m_to = re_to_height.search(details_str)
+                old_h = m_from.group(1) if m_from else None
+                new_h = m_to.group(1) if m_to else None
+
+                sh_event = {
+                    **base_event,
+                    "type": "SHUT_HEIGHT_CHANGE",
+                    "title": "Height Changed",
+                    "old_height": old_h,
+                    "new_height": new_h,
+                    "shut_height": new_h,
+                }
+                shut_height_changes.append(sh_event)
+
+                # Smart Check: Agar SHUT_HEIGHT_CHANGE ke andar Tool ID change huyi hai
+                if extracted_tid and extracted_tid != last_seen_tool_id:
+                    prev_meta = get_cached_tool_meta(last_seen_tool_id) if last_seen_tool_id else {}
+                    prev_name = prev_meta.get("tool_name") or prev_meta.get("part_name") or last_seen_tool_id or "Previous Tool"
+                    curr_name = tool_meta.get("tool_name") or tool_meta.get("part_name") or extracted_tid
+
+                    tc_from_sh = {
+                        **base_event,
+                        "type": "TOOL_CHANGE",
+                        "title": "Tool Active / Changed",
+                        "previous_tool_id": last_seen_tool_id,
+                        "details": (
+                            f"Tool changed from {prev_name} to {curr_name}"
+                            if last_seen_tool_id
+                            else f"Active Tool: {curr_name}"
+                        ),
+                        "shut_height": new_h,
+                    }
+                    tool_changes.append(tc_from_sh)
+                    last_seen_tool_id = extracted_tid
+
+        # Latest events sabse upar dikhane ke liye reverse (O(K))
+        tool_changes.reverse()
+        shut_height_changes.reverse()
+
+        # Agar live table me tool nahi mila, to latest event se fallback lein
+        if current_tool["tool_id"] == "N/A" and last_seen_tool_id:
+            current_tool.update(get_cached_tool_meta(last_seen_tool_id))
+
+        return Response({
+            "success": True,
+            "plant_no": plant_no,
+            "machine_no": machine_no,
+            "filter_label": filter_label,
+            "start_date": start_dt.strftime("%Y-%m-%d"),
+            "end_date": end_dt.strftime("%Y-%m-%d"),
+            "current_tool": current_tool,
+            "tool_change_count": len(tool_changes),
+            "tool_changes": tool_changes,
+            "shut_height_change_count": len(shut_height_changes),
+            "shut_height_changes": shut_height_changes,
+        })
+
+    except Exception as e:
+        return Response({"success": False, "error": str(e)}, status=500)
