@@ -6632,22 +6632,35 @@ def get_previous_operator_assignment(request):
 from django.db.models.functions import Lower
 
 
+from django.db.models import Q
+from django.db.models.functions import Lower
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from rest_framework import status
+
+from .models import Operator
+
+
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
 def get_operators_by_plant(request):
     try:
-        plant, allowed_plants, error = resolve_user_plant(request)
+        plant = str(
+            request.GET.get("plant") or ""
+        ).strip().lower()
 
-        if error:
+        if plant not in ["plant_1", "plant_2"]:
             return Response(
                 {
                     "success": False,
-                    "message": error,
+                    "message": "Valid plant is required. Use plant_1 or plant_2.",
+                    "operators": [],
                 },
-                status=403,
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
-        search = str(request.GET.get("q") or "").strip()
+        search = str(
+            request.GET.get("q") or ""
+        ).strip()
 
         operators = Operator.objects.filter(
             plant=plant,
@@ -6656,27 +6669,140 @@ def get_operators_by_plant(request):
 
         if search:
             operators = operators.filter(
-                Q(name__icontains=search) | Q(employee_code__icontains=search)
+                Q(name__icontains=search) |
+                Q(employee_code__icontains=search)
             )
 
-        operators = operators.order_by(Lower("name")).values(
+        operators = operators.order_by(
+            Lower("name")
+        ).values(
             "id",
             "name",
             "employee_code",
+            "plant",
         )
+
+        operator_list = list(operators)
 
         return Response(
             {
                 "success": True,
                 "plant": plant,
-                "allowed_plants": allowed_plants,
-                "operators": list(operators),
-                "count": operators.count(),
-            }
+                "operators": operator_list,
+                "count": len(operator_list),
+            },
+            status=status.HTTP_200_OK,
         )
 
     except Exception as e:
-        print(f"❌ Error fetching operators: {e}")
+        print(
+            f"❌ Error fetching operators: {e}",
+            flush=True
+        )
+
+        return Response(
+            {
+                "success": False,
+                "error": str(e),
+                "operators": [],
+            },
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+
+@api_view(["POST"])
+def add_operator(request):
+    try:
+        name = str(
+            request.data.get("name") or ""
+        ).strip()
+
+        plant = str(
+            request.data.get("plant") or ""
+        ).strip().lower()
+
+        employee_code = request.data.get(
+            "employee_code"
+        )
+
+        # IMPORTANT:
+        # "", spaces and 0 should not be stored.
+        if employee_code is not None:
+            employee_code = str(
+                employee_code
+            ).strip()
+
+        if not employee_code or employee_code == "0":
+            employee_code = None
+
+        if not name:
+            return Response(
+                {
+                    "success": False,
+                    "message": "Operator name is required.",
+                },
+                status=400,
+            )
+
+        if plant not in [
+            "plant_1",
+            "plant_2",
+        ]:
+            return Response(
+                {
+                    "success": False,
+                    "message": "Invalid plant.",
+                },
+                status=400,
+            )
+
+        existing = Operator.objects.filter(
+            name__iexact=name,
+            plant=plant,
+        ).first()
+
+        if existing:
+            return Response(
+                {
+                    "success": False,
+                    "message": (
+                        f"{name} already exists in "
+                        f"{plant.replace('_', ' ').title()}."
+                    ),
+                },
+                status=400,
+            )
+
+        operator = Operator.objects.create(
+            name=name,
+            plant=plant,
+            employee_code=employee_code,
+            is_active=True,
+        )
+
+        return Response(
+            {
+                "success": True,
+                "message": (
+                    f"{name} added successfully."
+                ),
+                "operator": {
+                    "id": operator.id,
+                    "name": operator.name,
+                    "employee_code": (
+                        operator.employee_code
+                    ),
+                    "plant": operator.plant,
+                },
+            },
+            status=201,
+        )
+
+    except Exception as e:
+        print(
+            f"❌ Error adding operator: {e}",
+            flush=True
+        )
 
         return Response(
             {
@@ -6685,53 +6811,6 @@ def get_operators_by_plant(request):
             },
             status=500,
         )
-
-
-@api_view(["POST"])
-def add_operator(request):
-    """Add new operator from frontend"""
-    try:
-        name = request.data.get("name")
-        plant = request.data.get("plant", "plant_2")
-        emp_code = request.data.get("employee_code", "")  # 👇 Naya data aayega
-
-        if not name or not name.strip():
-            return Response(
-                {"success": False, "message": "Operator name is required"}, status=400
-            )
-
-        if plant not in ["plant_1", "plant_2"]:
-            return Response({"success": False, "message": "Invalid plant."}, status=400)
-
-        existing = Operator.objects.filter(
-            name__iexact=name.strip(), plant=plant
-        ).first()
-        if existing:
-            return Response(
-                {"success": False, "message": f"{name} already exists"}, status=400
-            )
-
-        # 👇 Employee code save kar rahe hain
-        operator = Operator.objects.create(
-            name=name.strip(), plant=plant, employee_code=emp_code
-        )
-
-        return Response(
-            {
-                "success": True,
-                "message": f"{name} added successfully",
-                "operator": {
-                    "id": operator.id,
-                    "name": operator.name,
-                    "plant": operator.plant,
-                },
-            }
-        )
-
-    except Exception as e:
-        print(f"❌ Error adding operator: {e}")
-        return Response({"success": False, "error": str(e)}, status=500)
-
 
 @api_view(["GET"])
 def get_machines_by_plant(request):
