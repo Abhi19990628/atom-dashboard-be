@@ -215,31 +215,6 @@ def get_available_dates(request):
             {"success": False, "message": f"Error fetching dates: {str(e)}"}, status=400
         )
 
-
-@api_view(["POST"])
-def create_assignment(request):
-    """AssignMachine.js se data receive karne ke liye"""
-    try:
-        data = request.data
-
-        assignment = OperatorAssignment.objects.create(
-            machine_no=data["machine_no"],
-            operator_name=data["operator_name"],
-            shift=data["shift"],
-            start_time=data["start_time"],
-        )
-
-        return Response(
-            {
-                "success": True,
-                "message": "Assignment saved successfully!",
-                "assignment_id": assignment.id,
-            }
-        )
-    except Exception as e:
-        return Response({"success": False, "message": f"Error: {str(e)}"}, status=400)
-
-
 @api_view(["GET"])
 def get_auto_fill_data(request, machine_no):
     """
@@ -379,31 +354,6 @@ def get_auto_fill_data(request, machine_no):
             },
             status=400,
         )
-
-
-@api_view(["POST"])
-def create_idle_report(request):
-    """IdleCase.js se data receive karne ke liye"""
-    try:
-        data = request.data
-
-        report = IdleReport.objects.create(
-            machine_no=data["machine_no"],
-            operator_name=data["operator_name"],
-            tool_id=data["tool_name"],
-            reason=data["reason"],
-        )
-
-        return Response(
-            {
-                "success": True,
-                "message": "Idle report saved successfully!",
-                "report_id": report.id,
-            }
-        )
-    except Exception as e:
-        return Response({"success": False, "message": f"Error: {str(e)}"}, status=400)
-
 
 @never_cache
 @api_view(["GET"])
@@ -1582,104 +1532,6 @@ try:
     from backend.apps.mqtt.simple_plant2 import EXACT_REQUIREMENT_STATE
 except ImportError:
     EXACT_REQUIREMENT_STATE = None
-
-
-@never_cache
-@api_view(["GET"])
-def exact_plant2_data(request):
-    """Get exact Plant 2 data as per user requirement"""
-    try:
-        # Get live machine data
-        live_machines = MACHINE_STATE.summarize(plant_filter=2, stale_after_seconds=300)
-
-        if EXACT_REQUIREMENT_STATE is None:
-            # Fallback: return basic machine data
-            return Response(
-                {
-                    "success": True,
-                    "total_machines": len(live_machines),
-                    "machines": [
-                        {
-                            **machine,
-                            "current_hour_count": 0,
-                            "last_hour_count": 0,
-                            "cumulative_count": 0,
-                            "shift": "A",
-                        }
-                        for machine in live_machines
-                    ],
-                }
-            )
-
-        # Enhance with exact requirement data
-        enhanced_machines = []
-        for machine in live_machines:
-            machine_no = machine["machine_no"]
-
-            # Get exact data
-            exact_data = EXACT_REQUIREMENT_STATE.get_machine_data(machine_no)
-
-            # Merge live data with exact data
-            combined = {**machine, **exact_data}  # Live data  # Exact requirement data
-            enhanced_machines.append(combined)
-
-        return Response(
-            {
-                "success": True,
-                "total_machines": len(enhanced_machines),
-                "machines": enhanced_machines,
-            }
-        )
-    except Exception as e:
-        print(f"Error in exact_plant2_data: {e}")
-        return Response(
-            {"success": False, "error": str(e), "total_machines": 0, "machines": []}
-        )
-
-
-@never_cache
-@cache_control(no_store=True, no_cache=True, must_revalidate=True, max_age=0)
-@api_view(["GET"])
-def live_machines(request):
-    """
-    GET /api/live-machines?plant=2&stale_after=120
-    Returns plant-wise live machines with status.
-    """
-    plant_str = request.GET.get("plant", "2")
-    try:
-        plant_no = int(plant_str)
-    except Exception:
-        plant_no = 2
-
-    try:
-        stale = int(request.GET.get("stale_after", "120"))
-    except Exception:
-        stale = 120
-
-    # Pull live records for this plant
-    data = MACHINE_STATE.summarize(plant_filter=plant_no, stale_after_seconds=stale)
-    # Sort by machine number for stable UI
-    data.sort(key=lambda r: r["machine_no"])
-
-    resp = Response({"success": True, "plant": plant_no, "machines": data})
-    resp["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-    return resp
-
-
-@never_cache
-@cache_control(no_store=True, no_cache=True, must_revalidate=True, max_age=0)
-@api_view(["GET"])
-def count52_live(request):
-    plant_no = COUNT52_GROUP["plant"]
-    data = MACHINE_STATE.summarize(plant_filter=plant_no, stale_after_seconds=999999)
-    allowed = set(COUNT52_GROUP["machines"])
-    out = [r for r in data if r["machine_no"] in allowed]
-    out.sort(key=lambda r: r["machine_no"])
-    resp = Response(
-        {"success": True, "topic": "COUNT52", "plant": plant_no, "machines": out}
-    )
-    resp["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-    return resp
 
 
 @never_cache
@@ -6632,22 +6484,35 @@ def get_previous_operator_assignment(request):
 from django.db.models.functions import Lower
 
 
+from django.db.models import Q
+from django.db.models.functions import Lower
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from rest_framework import status
+
+from .models import Operator
+
+
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
 def get_operators_by_plant(request):
     try:
-        plant, allowed_plants, error = resolve_user_plant(request)
+        plant = str(
+            request.GET.get("plant") or ""
+        ).strip().lower()
 
-        if error:
+        if plant not in ["plant_1", "plant_2"]:
             return Response(
                 {
                     "success": False,
-                    "message": error,
+                    "message": "Valid plant is required. Use plant_1 or plant_2.",
+                    "operators": [],
                 },
-                status=403,
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
-        search = str(request.GET.get("q") or "").strip()
+        search = str(
+            request.GET.get("q") or ""
+        ).strip()
 
         operators = Operator.objects.filter(
             plant=plant,
@@ -6656,27 +6521,140 @@ def get_operators_by_plant(request):
 
         if search:
             operators = operators.filter(
-                Q(name__icontains=search) | Q(employee_code__icontains=search)
+                Q(name__icontains=search) |
+                Q(employee_code__icontains=search)
             )
 
-        operators = operators.order_by(Lower("name")).values(
+        operators = operators.order_by(
+            Lower("name")
+        ).values(
             "id",
             "name",
             "employee_code",
+            "plant",
         )
+
+        operator_list = list(operators)
 
         return Response(
             {
                 "success": True,
                 "plant": plant,
-                "allowed_plants": allowed_plants,
-                "operators": list(operators),
-                "count": operators.count(),
-            }
+                "operators": operator_list,
+                "count": len(operator_list),
+            },
+            status=status.HTTP_200_OK,
         )
 
     except Exception as e:
-        print(f"❌ Error fetching operators: {e}")
+        print(
+            f"❌ Error fetching operators: {e}",
+            flush=True
+        )
+
+        return Response(
+            {
+                "success": False,
+                "error": str(e),
+                "operators": [],
+            },
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+
+@api_view(["POST"])
+def add_operator(request):
+    try:
+        name = str(
+            request.data.get("name") or ""
+        ).strip()
+
+        plant = str(
+            request.data.get("plant") or ""
+        ).strip().lower()
+
+        employee_code = request.data.get(
+            "employee_code"
+        )
+
+        # IMPORTANT:
+        # "", spaces and 0 should not be stored.
+        if employee_code is not None:
+            employee_code = str(
+                employee_code
+            ).strip()
+
+        if not employee_code or employee_code == "0":
+            employee_code = None
+
+        if not name:
+            return Response(
+                {
+                    "success": False,
+                    "message": "Operator name is required.",
+                },
+                status=400,
+            )
+
+        if plant not in [
+            "plant_1",
+            "plant_2",
+        ]:
+            return Response(
+                {
+                    "success": False,
+                    "message": "Invalid plant.",
+                },
+                status=400,
+            )
+
+        existing = Operator.objects.filter(
+            name__iexact=name,
+            plant=plant,
+        ).first()
+
+        if existing:
+            return Response(
+                {
+                    "success": False,
+                    "message": (
+                        f"{name} already exists in "
+                        f"{plant.replace('_', ' ').title()}."
+                    ),
+                },
+                status=400,
+            )
+
+        operator = Operator.objects.create(
+            name=name,
+            plant=plant,
+            employee_code=employee_code,
+            is_active=True,
+        )
+
+        return Response(
+            {
+                "success": True,
+                "message": (
+                    f"{name} added successfully."
+                ),
+                "operator": {
+                    "id": operator.id,
+                    "name": operator.name,
+                    "employee_code": (
+                        operator.employee_code
+                    ),
+                    "plant": operator.plant,
+                },
+            },
+            status=201,
+        )
+
+    except Exception as e:
+        print(
+            f"❌ Error adding operator: {e}",
+            flush=True
+        )
 
         return Response(
             {
@@ -6685,53 +6663,6 @@ def get_operators_by_plant(request):
             },
             status=500,
         )
-
-
-@api_view(["POST"])
-def add_operator(request):
-    """Add new operator from frontend"""
-    try:
-        name = request.data.get("name")
-        plant = request.data.get("plant", "plant_2")
-        emp_code = request.data.get("employee_code", "")  # 👇 Naya data aayega
-
-        if not name or not name.strip():
-            return Response(
-                {"success": False, "message": "Operator name is required"}, status=400
-            )
-
-        if plant not in ["plant_1", "plant_2"]:
-            return Response({"success": False, "message": "Invalid plant."}, status=400)
-
-        existing = Operator.objects.filter(
-            name__iexact=name.strip(), plant=plant
-        ).first()
-        if existing:
-            return Response(
-                {"success": False, "message": f"{name} already exists"}, status=400
-            )
-
-        # 👇 Employee code save kar rahe hain
-        operator = Operator.objects.create(
-            name=name.strip(), plant=plant, employee_code=emp_code
-        )
-
-        return Response(
-            {
-                "success": True,
-                "message": f"{name} added successfully",
-                "operator": {
-                    "id": operator.id,
-                    "name": operator.name,
-                    "plant": operator.plant,
-                },
-            }
-        )
-
-    except Exception as e:
-        print(f"❌ Error adding operator: {e}")
-        return Response({"success": False, "error": str(e)}, status=500)
-
 
 @api_view(["GET"])
 def get_machines_by_plant(request):
@@ -7753,23 +7684,6 @@ def distribute_segments_per_machine(segments, start_date, end_date, period, expe
 
 
 # ==========================================
-# APIs
-# ==========================================
-
-@never_cache
-@api_view(["GET"])
-def plant_wise_total(request):
-    try:
-        return Response(
-            {
-                "success": True,
-                "plant1": {"status": "Active", "total_machines": 57},
-                "plant2": {"status": "Active", "total_machines": 49},
-            }
-        )
-    except Exception as e:
-        return Response({"success": False, "error": str(e)}, status=500)
-
 @never_cache
 @api_view(["GET"])
 def date_range(request):
@@ -8092,107 +8006,6 @@ def machine_analysis(request):
         })
     except Exception as e:
         return Response({"success": False, "error": str(e)}, status=500)
-
-
-@never_cache
-@api_view(["GET"])
-def machine_wise(request):
-    plant = request.GET.get("plant", "plant1")
-    month = int(request.GET.get("month", datetime.now().month))
-    year = int(request.GET.get("year", datetime.now().year))
-    
-    table_name, total_machines = get_plant_table(plant)
-    plant_location = get_plant_location_name(plant)
-    
-    start_date, end_date, _, _ = get_time_boundaries(year, month, "monthly") 
-
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                f"""
-                SELECT machine_no, SUM(count) as total_prod
-                FROM {table_name}
-                WHERE timestamp >= %s AND timestamp < %s
-                GROUP BY machine_no
-                """,
-                [start_date, end_date],
-            )
-            prod_results = cursor.fetchall()
-
-            # FIX: Only fetch segments and calculate in Python
-            cursor.execute(
-                """
-                SELECT 
-                    machine_no,
-                    ideal_mode,
-                    (ideal_start_at AT TIME ZONE 'Asia/Kolkata') as start_dt,
-                    ideal_time
-                FROM live_data.ideal_time_segments_reason
-                WHERE plant_location = %s 
-                  AND (ideal_start_at AT TIME ZONE 'Asia/Kolkata') < %s
-                  AND ((ideal_start_at AT TIME ZONE 'Asia/Kolkata') + (ideal_time * interval '1 second')) > %s
-                """,
-                [plant_location, end_date, start_date],
-            )
-            idle_segments = cursor.fetchall()
-
-        db_data = {}
-        for row in prod_results:
-            m_no = int(row[0])
-            db_data[m_no] = {"prod": row[1] or 0, "idle": 0.0, "shutdown": 0.0}
-            
-        # Overlap Calculation per Machine
-        for row in idle_segments:
-            m_no = int(row[0])
-            mode = row[1]
-            start_dt = row[2]
-            duration_sec = row[3]
-            
-            if not duration_sec or float(duration_sec) <= 0: continue
-            
-            start_dt = start_dt.replace(tzinfo=None) if getattr(start_dt, 'tzinfo', None) else start_dt
-            end_dt = start_dt + timedelta(seconds=float(duration_sec))
-            
-            curr_start = max(start_dt, start_date)
-            curr_end = min(end_dt, end_date)
-            
-            if curr_start < curr_end:
-                overlap_mins = (curr_end - curr_start).total_seconds() / 60.0
-                if m_no not in db_data:
-                    db_data[m_no] = {"prod": 0, "idle": 0.0, "shutdown": 0.0}
-                    
-                if mode == 'ONLINE':
-                    db_data[m_no]["idle"] += overlap_mins
-                elif mode == 'OFFLINE':
-                    db_data[m_no]["shutdown"] += overlap_mins
-
-        # Global Cap for the whole selected period for each Machine
-        max_period_mins = (end_date - start_date).total_seconds() / 60.0
-        
-        machine_data = []
-        for m_no, data in db_data.items():
-            total = data["idle"] + data["shutdown"]
-            if total > max_period_mins:
-                scale = max_period_mins / total
-                data["idle"] *= scale
-                data["shutdown"] *= scale
-                
-            machine_data.append(
-                {
-                    "machine_no": m_no,
-                    "production": data["prod"],
-                    "idle_minutes": round(data["idle"], 2),
-                    "shutdown_minutes": round(data["shutdown"], 2),
-                }
-            )
-            
-        machine_data = sorted(machine_data, key=lambda x: x["machine_no"])
-
-        return Response({"success": True, "data": machine_data})
-    except Exception as e:
-        return Response({"success": False, "error": str(e)}, status=500)
-
-
 
 @never_cache
 @api_view(["GET"])
