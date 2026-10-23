@@ -15,11 +15,9 @@ from .views import (
     VerifyOTPAndResetPasswordView,
 )
 from .views import (
-    plant_wise_total,
     date_range,
     realtime_dashboard,
     monthly_summary,
-    machine_wise,
     machine_analysis,
 )
 
@@ -70,9 +68,6 @@ urlpatterns = [
     ),
     path("assignment/transfer/", views.transfer_operator, name="transfer_operator"),
     path(
-        "assignment/history/", views.get_assignment_history, name="assignment_history"
-    ),
-    path(
         "operator-profile-history/",
         views.get_operator_profile_history,
         name="operator-profile-history",
@@ -98,8 +93,9 @@ urlpatterns = [
         name="get_previous_operator_assignment",
     ),
     # Old Assignment APIs (Keep existing)
-    path("operator-timeline/", views.get_operator_timeline, name="get_operator_timeline"),
-    path("assignments/", views.create_assignment, name="create_assignment"),
+    path(
+        "operator-timeline/", views.get_operator_timeline, name="get_operator_timeline"
+    ),
     path(
         "machines/<str:machine_no>/auto-fill/",
         views.get_auto_fill_data,
@@ -115,7 +111,6 @@ urlpatterns = [
         views.submit_ideal_report,
         name="submit_ideal_report",
     ),
-    path("idle-reports/", views.create_idle_report, name="create_idle_report"),
     # Production APIs
     path(
         "machine-production/",
@@ -129,9 +124,7 @@ urlpatterns = [
     ),
     path("test-direct-query/", views.test_direct_query, name="test_direct_query"),
     # New React Dashboard Analytics APIs
-    path("plant-wise-total/", plant_wise_total, name="plant_wise_total"),
     path("monthly-summary/", monthly_summary, name="monthly_summary"),
-    path("machine-wise/", machine_wise, name="machine_wise"),
     path(
         "production-history-machines/",
         views.production_history_machine_list,
@@ -141,8 +134,6 @@ urlpatterns = [
     path("realtime-dashboard/", realtime_dashboard, name="realtime_dashboard"),
     path("machine-analysis/", machine_analysis, name="machine_analysis"),
     # Live Machine APIs
-    path("live-machines/", views.live_machines, name="live_machines"),
-    path("count52-live/", views.count52_live, name="count52_live"),
     path("plant2-raw/", views.plant2_raw, name="plant2_raw"),
     path("plant2-live/", views.plant2_live, name="plant2_live"),
     path("plant1-live/", views.plant1_live, name="plant1_live"),
@@ -161,7 +152,6 @@ urlpatterns = [
     path(
         "machine-changes/", views.get_machine_changes_from_db, name="machine_changes_db"
     ),
-    path("exact-plant2/", views.exact_plant2_data, name="exact_plant2_data"),
     path("plant2/hourly-idle/", views.plant2_hourly_idle, name="plant2-hourly-idle"),
     path(
         "plant2/hourly-idle/summary/",
@@ -194,5 +184,9 @@ urlpatterns = [
         views.attendance_employee_calendar,
         name="attendance_employee_calendar",
     ),
-    path('machine-tool-history/', views.machine_tool_and_height_history, name='machine_tool_and_height_history'),
+    path(
+        "machine-tool-history/",
+        views.machine_tool_and_height_history,
+        name="machine_tool_and_height_history",
+    ),
 ]
